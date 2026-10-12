@@ -100,16 +100,37 @@ pub fn resolve(workspace: &Path, library: &LibrarySettings, keys: &[String]) -> 
     if keys.is_empty() {
         return resolution;
     }
-    let bib = library.bibtex(workspace);
-    let folder = library.folder(workspace);
-    if !bib.exists() {
+    let paths = library.resolve(workspace);
+    let Some(configured) = paths.bibtex.clone() else {
+        let names = paths
+            .candidates
+            .iter()
+            .map(|candidate| file_label(candidate))
+            .collect::<Vec<_>>();
         for key in keys {
-            resolution
-                .missed
-                .push(format!("@{key} — no bibliography at {}", bib.display()));
+            let reason = if names.is_empty() {
+                format!("no bibliography found in {}", workspace.display())
+            } else {
+                format!(
+                    "choose a bibliography in the component bar → Corpus (found: {})",
+                    names.join(", ")
+                )
+            };
+            resolution.missed.push(format!("@{key} — {reason}"));
+        }
+        return resolution;
+    };
+    if !configured.is_file() {
+        for key in keys {
+            resolution.missed.push(format!(
+                "@{key} — no bibliography at {} (set it in the component bar → Corpus)",
+                configured.display()
+            ));
         }
         return resolution;
     }
+    let bib = configured;
+    let folder = paths.folder;
     let collection = match Collection::load_or_new(&bib) {
         Ok(collection) => collection,
         Err(err) => {
@@ -247,6 +268,13 @@ fn truncate(text: String, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+/// Short label for a path in user-facing messages.
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,10 +409,15 @@ mod tests {
         let resolution = resolve(workspace, &library(&folder, &bib), &["Key".into()]);
         assert_eq!(resolution.missed.len(), 1);
         assert!(resolution.missed[0].contains("no bibliography"));
+        assert!(
+            resolution.missed[0].contains("component bar"),
+            "{} should point at the menu",
+            resolution.missed[0]
+        );
     }
 
     #[test]
-    fn resolve_reports_unreadable_bibliography() {
+    fn resolve_reports_non_file_bibliography() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
         let folder = workspace.join("library");
@@ -393,7 +426,62 @@ mod tests {
         std::fs::create_dir_all(&bib).unwrap();
         let resolution = resolve(workspace, &library(&folder, &bib), &["Key".into()]);
         assert_eq!(resolution.missed.len(), 1);
-        assert!(resolution.missed[0].contains("cannot read"));
+        assert!(resolution.missed[0].contains("no bibliography at"));
+    }
+
+    #[test]
+    fn resolve_uses_a_discovered_workspace_bibliography() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        // No configured paths: the single CEH.bib is discovered and the
+        // corpus folder follows it.
+        write(&workspace.join("paper.md"), "discovered corpus content");
+        write(
+            &workspace.join("CEH.bib"),
+            "@misc{Smith2024,\n  file = {paper.md}\n}\n",
+        );
+
+        let resolution = resolve(
+            workspace,
+            &LibrarySettings::default(),
+            &["Smith2024".into()],
+        );
+        assert_eq!(resolution.resolved, vec!["Smith2024"]);
+        assert!(resolution.attachments[0]
+            .content
+            .contains("discovered corpus"));
+    }
+
+    #[test]
+    fn resolve_reports_ambiguous_discovery_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        write(&workspace.join("CEH.bib"), "");
+        write(&workspace.join("CEH_2.bib"), "");
+
+        let resolution = resolve(workspace, &LibrarySettings::default(), &["Key".into()]);
+        assert_eq!(resolution.missed.len(), 1);
+        assert!(resolution.missed[0].contains("choose a bibliography"));
+        assert!(
+            resolution.missed[0].contains("CEH.bib") && resolution.missed[0].contains("CEH_2.bib")
+        );
+    }
+
+    #[test]
+    fn resolve_prefers_configured_paths_over_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        // Two workspace bibliographies would be ambiguous, but the configured
+        // one wins outright.
+        write(&workspace.join("CEH.bib"), "");
+        write(&workspace.join("CEH_2.bib"), "");
+        let chosen = workspace.join("chosen.bib");
+        write(&chosen, "@misc{Key2024,\n  file = {paper.md}\n}\n");
+        write(&workspace.join("paper.md"), "chosen content");
+
+        let resolution = resolve(workspace, &library(workspace, &chosen), &["Key2024".into()]);
+        assert_eq!(resolution.resolved, vec!["Key2024"]);
+        assert!(resolution.attachments[0].content.contains("chosen content"));
     }
 
     #[test]

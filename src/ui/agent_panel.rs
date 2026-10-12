@@ -604,7 +604,7 @@ fn component_menu(ui: &mut egui::Ui, id: &str, ctx: &mut MenuContext<'_>) -> boo
                 );
             }
         }
-        RagComponent::Store | RagComponent::Corpus => {
+        RagComponent::Store => {
             return workspace_menu(
                 ui,
                 ctx.settings,
@@ -613,6 +613,20 @@ fn component_menu(ui: &mut egui::Ui, id: &str, ctx: &mut MenuContext<'_>) -> boo
                 ctx.actions,
                 ctx.dirty,
             );
+        }
+        RagComponent::Corpus => {
+            if workspace_menu(
+                ui,
+                ctx.settings,
+                ctx.editor_workspace,
+                ctx.recent_workspaces,
+                ctx.actions,
+                ctx.dirty,
+            ) {
+                return true;
+            }
+            ui.separator();
+            library_menu(ui, ctx);
         }
         RagComponent::Chunker => chunker_menu(ui, ctx.settings, ctx.dirty),
         RagComponent::Parser => {
@@ -823,6 +837,77 @@ fn workspace_menu(
     false
 }
 
+/// Bibliography and corpus folder of the library (the Corpus component).
+fn library_menu(ui: &mut egui::Ui, ctx: &mut MenuContext<'_>) {
+    let Some(workspace) = ctx.settings.effective_workspace(ctx.editor_workspace) else {
+        ui.weak(t!("agent.menu.no_workspace"));
+        return;
+    };
+    let paths = ctx.settings.library.resolve(&workspace);
+
+    // Ambiguous discovery: offer the found files as one-click choices.
+    if !paths.candidates.is_empty() {
+        ui.weak(t!("agent.menu.found_bibliographies"));
+        for candidate in paths.candidates.iter().take(4) {
+            if ui.button(file_label(candidate)).clicked() {
+                ctx.settings.library.bibtex = Some(candidate.clone());
+                ctx.dirty.set(true);
+            }
+        }
+    }
+
+    match &paths.bibtex {
+        Some(bib) => {
+            ui.weak(format!(
+                "{} {}",
+                t!("agent.menu.bibliography"),
+                file_label(bib)
+            ));
+            if paths.discovered {
+                ui.weak(t!("agent.menu.found_automatically"));
+            }
+        }
+        None => {
+            ui.weak(t!("agent.menu.no_bibliography"));
+        }
+    }
+    if ui.button(t!("agent.menu.choose_bibliography")).clicked() {
+        if let Some(file) = rfd::FileDialog::new()
+            .add_filter("BibTeX", &["bib"])
+            .pick_file()
+        {
+            ctx.settings.library.bibtex = Some(file);
+            ctx.dirty.set(true);
+        }
+    }
+
+    ui.weak(format!(
+        "{} {}",
+        t!("agent.menu.corpus_folder"),
+        paths.folder.display()
+    ));
+    if ui.button(t!("agent.menu.choose_corpus_folder")).clicked() {
+        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+            ctx.settings.library.folder = Some(folder);
+            ctx.dirty.set(true);
+        }
+    }
+
+    if (ctx.settings.library.bibtex.is_some() || ctx.settings.library.folder.is_some())
+        && ui.button(t!("agent.menu.reset_library_defaults")).clicked()
+    {
+        ctx.settings.library = crate::rag::LibrarySettings::default();
+        ctx.dirty.set(true);
+    }
+}
+
+/// Short file name for menu labels.
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 fn provider_label(provider: &Provider) -> &'static str {
     match provider {
         Provider::Deepseek => "DeepSeek",
@@ -865,6 +950,7 @@ mod tests {
             busy: false,
             store_documents: Some(3),
             init_error: None,
+            bibliography: None,
         });
         let components = bar_components(Some(&status));
         let chat = components

@@ -126,6 +126,31 @@ Verification: 37 feature tests green (`rag::`, `ui::agent_panel::`), full suite
 transient failure that did not reproduce in two subsequent runs nor in five
 isolated runs of the feature tests.
 
+### ✅ Sprint 2.1 — Bibliography configuration & discovery (follow-up fix)
+
+Triggered by a user report: `@Caspar2021 — no bibliography at
+<workspace>/.ragrig/library/library.bib` — the default path did not match a
+`--bibtex-merge` workspace, and there was no UI to point at the `.bib`.
+
+- **Corpus component menu** now owns the library paths: shows the resolved
+  bibliography (marking auto-discovered ones), offers *Choose bibliography…*
+  (file dialog), *Choose corpus folder…*, one-click buttons for discovered
+  candidates, and *Reset to defaults*.
+- **Discovery** (only while nothing is configured): conventional
+  `<workspace>/.ragrig/library/library.bib`, else a **single** `*.bib` in the
+  workspace root or its `library/` subfolder. Several candidates are listed,
+  never guessed.
+- **Corpus folder follows the bibliography's directory** when the conventional
+  folder does not exist — exactly where renamed PDFs and relative `file` links
+  live in `--bibtex-merge` workspaces.
+- The Corpus component status shows the bibliography's file name (green) and
+  the miss message points at the component menu.
+
+Verified against the reporting workspace (`yet_biomim/Literature`, two `.bib`
+files): discovery reports `found: CEH.bib, CEH_2.bib`; with `CEH.bib` pinned,
+`@Caspar2021` attaches 60 k chars of parsed PDF text via the keyed file name.
+45 feature tests green; full suite 1542 passed / 3 pre-existing failures.
+
 ### Sprint 3 — Component bar actions (next)
 
 - Activate/deactivate per stage via the hot-swap setters (`set_chat_agent`, `set_embedder`,

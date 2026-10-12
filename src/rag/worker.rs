@@ -326,6 +326,9 @@ impl WorkerState {
             Err(_) => (true, None),
         };
         let init_error = lock(&self.shared.init_error).clone();
+        let bibliography = workspace
+            .as_deref()
+            .and_then(|workspace| self.settings.library.resolve(workspace).bibtex);
         RagStatus::derive(StatusInput {
             settings: &self.settings,
             workspace: workspace.as_deref(),
@@ -333,6 +336,7 @@ impl WorkerState {
             busy,
             store_documents,
             init_error: init_error.as_deref(),
+            bibliography: bibliography.as_deref(),
         })
     }
 
@@ -698,6 +702,9 @@ fn emit_status(context: &QueryContext, events: &Sender<RagEvent>) {
         Err(_) => (true, None),
     };
     let init_error = lock(&context.shared.init_error).clone();
+    let bibliography = workspace
+        .as_deref()
+        .and_then(|workspace| context.settings.library.resolve(workspace).bibtex);
     let status = RagStatus::derive(StatusInput {
         settings: &context.settings,
         workspace: workspace.as_deref(),
@@ -705,6 +712,7 @@ fn emit_status(context: &QueryContext, events: &Sender<RagEvent>) {
         busy,
         store_documents,
         init_error: init_error.as_deref(),
+        bibliography: bibliography.as_deref(),
     });
     let _ = events.send(RagEvent::Status { status });
 }
@@ -1063,7 +1071,7 @@ mod tests {
     async fn query_reports_key_attachments() {
         let dir = tempfile::tempdir().unwrap();
         let settings = workspace_settings(dir.path());
-        let library = settings.library.folder(dir.path());
+        let library = dir.path().join("library");
         std::fs::create_dir_all(&library).unwrap();
         std::fs::write(library.join("paper.md"), "# Paper\n\nBody text.").unwrap();
         std::fs::write(

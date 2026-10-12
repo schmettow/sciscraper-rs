@@ -133,6 +133,8 @@ pub struct StatusInput<'a> {
     pub store_documents: Option<usize>,
     /// Last session-build error, if any.
     pub init_error: Option<&'a str>,
+    /// The resolved bibliography, when one exists.
+    pub bibliography: Option<&'a Path>,
 }
 
 impl RagStatus {
@@ -280,11 +282,20 @@ fn corpus_status(input: StatusInput<'_>) -> ComponentStatus {
             "no workspace",
         );
     }
-    ComponentStatus::new(
-        RagComponent::Corpus,
-        ComponentState::Inactive,
-        "no sources yet",
-    )
+    match input.bibliography {
+        Some(bib) => {
+            let label = bib
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| bib.display().to_string());
+            ComponentStatus::new(RagComponent::Corpus, ComponentState::Ready, label)
+        }
+        None => ComponentStatus::new(
+            RagComponent::Corpus,
+            ComponentState::Inactive,
+            "no bibliography — set one in the component menu",
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +311,7 @@ mod tests {
             busy: false,
             store_documents: None,
             init_error: None,
+            bibliography: None,
         })
     }
 
@@ -377,10 +389,36 @@ mod tests {
             busy: false,
             store_documents: None,
             init_error: Some("cannot open store"),
+            bibliography: None,
         });
         let store = status.component(RagComponent::Store).unwrap();
         assert_eq!(store.state, ComponentState::Error);
         assert_eq!(store.detail, "cannot open store");
+    }
+
+    #[test]
+    fn corpus_reports_the_bibliography() {
+        let settings = RagSettings::default();
+        let workspace = std::path::PathBuf::from("/tmp/ws");
+        let bibliography = std::path::PathBuf::from("/tmp/ws/CEH.bib");
+        let status = RagStatus::derive(StatusInput {
+            settings: &settings,
+            workspace: Some(&workspace),
+            initialized: false,
+            busy: false,
+            store_documents: None,
+            init_error: None,
+            bibliography: Some(&bibliography),
+        });
+        let corpus = status.component(RagComponent::Corpus).unwrap();
+        assert_eq!(corpus.state, ComponentState::Ready);
+        assert_eq!(corpus.detail, "CEH.bib");
+
+        let status = derive(&settings, Some(&workspace));
+        assert_eq!(
+            status.component(RagComponent::Corpus).unwrap().state,
+            ComponentState::Inactive
+        );
     }
 
     #[test]
@@ -394,6 +432,7 @@ mod tests {
             busy: true,
             store_documents: None,
             init_error: None,
+            bibliography: None,
         });
         assert_eq!(
             status.component(RagComponent::Chat).unwrap().state,

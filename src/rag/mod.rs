@@ -55,19 +55,90 @@ pub struct LibrarySettings {
 }
 
 impl LibrarySettings {
-    /// The effective corpus folder for `workspace`.
+    /// The conventional corpus folder for `workspace` (no discovery).
     pub fn folder(&self, workspace: &Path) -> PathBuf {
         self.folder
             .clone()
             .unwrap_or_else(|| workspace.join(".ragrig").join("library"))
     }
 
-    /// The effective bibliography path for `workspace`.
-    pub fn bibtex(&self, workspace: &Path) -> PathBuf {
-        self.bibtex
-            .clone()
-            .unwrap_or_else(|| self.folder(workspace).join("library.bib"))
+    /// Resolve the bibliography and corpus folder for `workspace`.
+    ///
+    /// Discovery order (only while nothing is configured): the conventional
+    /// `<workspace>/.ragrig/library/library.bib`, then a single `*.bib` in the
+    /// workspace root or its `library/` subfolder. Several candidates are
+    /// reported, never guessed. The corpus folder falls back to the
+    /// bibliography's directory when the conventional folder does not exist —
+    /// that is where `--bibtex-merge` workspaces keep their renamed PDFs.
+    pub fn resolve(&self, workspace: &Path) -> LibraryPaths {
+        let default_folder = self.folder(workspace);
+        let default_bib = default_folder.join("library.bib");
+
+        let (bibtex, discovered, candidates) = if let Some(explicit) = &self.bibtex {
+            (Some(explicit.clone()), false, Vec::new())
+        } else if default_bib.is_file() {
+            (Some(default_bib), false, Vec::new())
+        } else {
+            let candidates = discover_bibliographies(workspace);
+            match candidates.as_slice() {
+                [single] => (Some(single.clone()), true, Vec::new()),
+                _ => (None, false, candidates),
+            }
+        };
+
+        let folder = if let Some(folder) = &self.folder {
+            folder.clone()
+        } else if default_folder.is_dir() {
+            default_folder
+        } else if let Some(parent) = bibtex.as_ref().and_then(|bib| bib.parent()) {
+            parent.to_path_buf()
+        } else {
+            default_folder
+        };
+
+        LibraryPaths {
+            bibtex,
+            folder,
+            discovered,
+            candidates,
+        }
     }
+}
+
+/// Effective library paths (see [`LibrarySettings::resolve`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LibraryPaths {
+    /// Bibliography in use, when one could be determined.
+    pub bibtex: Option<PathBuf>,
+    /// Corpus folder for relative `file` links and keyed file names.
+    pub folder: PathBuf,
+    /// Whether the bibliography was discovered rather than configured.
+    pub discovered: bool,
+    /// Candidate bibliographies found; non-empty only when the choice is
+    /// ambiguous (`bibtex` is then `None`).
+    pub candidates: Vec<PathBuf>,
+}
+
+/// `*.bib` files in the workspace root and its `library/` subfolder.
+fn discover_bibliographies(workspace: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in [workspace.to_path_buf(), workspace.join("library")] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_bib = path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("bib"));
+            if is_bib && path.is_file() {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
 }
 
 /// Persistent settings of the RAG feature ("sciscraper").
@@ -228,29 +299,91 @@ mod tests {
     fn library_defaults_follow_the_ragrig_layout() {
         let settings = RagSettings::default();
         let workspace = PathBuf::from("/tmp/ws");
+        let folder = settings.library.folder(&workspace);
+        assert_eq!(folder, PathBuf::from("/tmp/ws/.ragrig/library"));
         assert_eq!(
-            settings.library.folder(&workspace),
-            PathBuf::from("/tmp/ws/.ragrig/library")
-        );
-        assert_eq!(
-            settings.library.bibtex(&workspace),
+            folder.join("library.bib"),
             PathBuf::from("/tmp/ws/.ragrig/library/library.bib")
         );
     }
 
     #[test]
     fn library_paths_can_be_pinned() {
-        let mut settings = RagSettings::default();
-        settings.library.folder = Some(PathBuf::from("/data/papers"));
-        settings.library.bibtex = Some(PathBuf::from("/data/bib/references.bib"));
-        let workspace = PathBuf::from("/tmp/ws");
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let bib = workspace.join("chosen.bib");
+        std::fs::write(&bib, "").unwrap();
+        let papers = workspace.join("papers");
+        let settings = LibrarySettings {
+            folder: Some(papers.clone()),
+            bibtex: Some(bib.clone()),
+        };
+        let paths = settings.resolve(workspace);
+        assert_eq!(paths.bibtex.as_deref(), Some(bib.as_path()));
+        assert_eq!(paths.folder, papers);
+        assert!(!paths.discovered, "an explicit path is never 'discovered'");
+    }
+
+    #[test]
+    fn resolve_prefers_the_conventional_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        std::fs::create_dir_all(workspace.join(".ragrig/library")).unwrap();
+        std::fs::write(workspace.join(".ragrig/library/library.bib"), "").unwrap();
+        std::fs::write(workspace.join("other.bib"), "").unwrap();
+
+        let paths = LibrarySettings::default().resolve(workspace);
         assert_eq!(
-            settings.library.folder(&workspace),
-            PathBuf::from("/data/papers")
+            paths.bibtex.as_deref(),
+            Some(workspace.join(".ragrig/library/library.bib").as_path())
         );
-        assert_eq!(
-            settings.library.bibtex(&workspace),
-            PathBuf::from("/data/bib/references.bib")
-        );
+        assert!(!paths.discovered);
+        assert!(paths.candidates.is_empty());
+        assert_eq!(paths.folder, workspace.join(".ragrig/library"));
+    }
+
+    #[test]
+    fn resolve_discovers_a_single_workspace_bibliography() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let bib = workspace.join("CEH.bib");
+        std::fs::write(&bib, "").unwrap();
+
+        let paths = LibrarySettings::default().resolve(workspace);
+        assert_eq!(paths.bibtex.as_deref(), Some(bib.as_path()));
+        assert!(paths.discovered, "a discovered bibliography is flagged");
+        // The corpus folder follows the bibliography.
+        assert_eq!(paths.folder, workspace);
+    }
+
+    #[test]
+    fn resolve_reports_ambiguity_instead_of_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        std::fs::write(workspace.join("CEH.bib"), "").unwrap();
+        std::fs::write(workspace.join("CEH_2.bib"), "").unwrap();
+
+        let paths = LibrarySettings::default().resolve(workspace);
+        assert!(paths.bibtex.is_none());
+        assert_eq!(paths.candidates.len(), 2);
+        assert!(paths.candidates[0].ends_with("CEH.bib"));
+        assert!(paths.candidates[1].ends_with("CEH_2.bib"));
+    }
+
+    #[test]
+    fn resolve_keeps_an_explicit_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let missing = workspace.join("nowhere.bib");
+        let settings = LibrarySettings {
+            folder: None,
+            bibtex: Some(missing.clone()),
+        };
+        let paths = settings.resolve(workspace);
+        // The configured path is kept so the miss message names it.
+        assert_eq!(paths.bibtex.as_deref(), Some(missing.as_path()));
+        assert!(!paths.discovered);
+        // The corpus folder follows the bibliography's directory.
+        assert_eq!(paths.folder, workspace);
     }
 }
