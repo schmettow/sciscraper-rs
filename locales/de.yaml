@@ -1014,3 +1014,37 @@ file_dialog:
     csv_tsv: CSV/TSV-Dateien
     all: Alle Dateien
     html: HTML-Dateien
+
+# Agenten-Dock (sciscraper-Fork — RAG-Funktion)
+agent:
+  toggle: "Agentenleiste umschalten"
+  section:
+    agent: "Agent"
+    library: "Bibliothek"
+  empty: "Stellen Sie eine Frage zu Ihren Quellen."
+  empty_no_workspace: "Wählen Sie im Komponenten-Menü einen Ordner für Ihre Bibliothek."
+  placeholder: "Fragen zu Ihren Quellen…"
+  send: "Senden"
+  stop: "Stopp"
+  hint: "Eingabe: Zeilenumbruch · Strg+Eingabe: senden"
+  cancelled: "Abgebrochen"
+  library:
+    empty: "Noch keine Quellen."
+  menu:
+    provider: "Anbieter"
+    model: "Modell"
+    context_window: "Kontextfenster (Token)"
+    api_key_hint: "API-Schlüssel: Umgebungsvariable DEEPSEEK_API_KEY"
+    strategy: "Strategie"
+    memory_model: "Memory-Modell"
+    top_k: "Top-k-Treffer"
+    threshold: "Ähnlichkeitsschwelle"
+    chunk_size: "Chunk-Größe (Token)"
+    chunk_overlap: "Chunk-Überlappung (Token)"
+    workspace: "Arbeitsordner"
+    no_workspace: "Kein Arbeitsordner"
+    new_folder: "Neuer Ordner…"
+    choose_folder: "Ordner wählen…"
+    change_folder: "Ordner ändern…"
+    follow_editor: "Editor-Arbeitsordner folgen"
+    recent: "Zuletzt verwendete Ordner"

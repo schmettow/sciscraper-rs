@@ -24,6 +24,7 @@ mod keyboard;
 mod line_ops;
 mod navigation;
 mod platform;
+mod rag;
 mod status_bar;
 mod title_bar;
 mod types;
@@ -52,7 +53,7 @@ use crate::ui::{
 use crate::vcs::GitAutoRefresh;
 
 #[cfg(feature = "async-workers")]
-use crate::workers::{echo_worker, WorkerCommand, WorkerHandle, WorkerResponse};
+use crate::workers::{WorkerCommand, WorkerHandle, WorkerResponse};
 
 use eframe::egui;
 use log::{debug, info, warn};
@@ -190,6 +191,9 @@ pub struct FerriteApp {
     last_active_tab_for_backlinks: usize,
     /// Flag to trigger backlink refresh (set on file save or tab switch)
     backlinks_need_refresh: bool,
+    /// RAG agent dock (feature `rag`), created lazily when first shown.
+    #[cfg(feature = "rag")]
+    agent_panel: Option<crate::ui::AgentPanel>,
     /// Single-instance listener for receiving file paths from secondary instances
     instance_listener: Option<crate::single_instance::SingleInstanceListener>,
     /// Echo worker handle for async demo (lazy initialization)
@@ -485,6 +489,8 @@ impl FerriteApp {
             pending_cjk_check: false,
             last_active_tab_for_backlinks: usize::MAX,
             backlinks_need_refresh: true,
+            #[cfg(feature = "rag")]
+            agent_panel: None,
             instance_listener: None,
             #[cfg(feature = "async-workers")]
             echo_worker: None, // Lazy - spawns when AI panel first shown
@@ -2229,6 +2235,10 @@ impl FerriteApp {
             }
         }
 
+        // Agent dock (feature `rag`) — right side, above the central panel.
+        #[cfg(feature = "rag")]
+        self.render_agent_dock(ui);
+
         // Central panel for editor content
 
         // Central panel for editor content
@@ -2443,6 +2453,10 @@ impl FerriteApp {
                 }
                 self.state.mark_settings_dirty();
             }
+            RibbonAction::ToggleAgent => {
+                debug!("Ribbon: Toggle Agent Panel");
+                self.handle_toggle_agent();
+            }
             RibbonAction::ToggleFrontmatter => {
                 debug!("Ribbon: Toggle Frontmatter tab in outline panel");
                 if !self.state.settings.outline_enabled {
@@ -2510,6 +2524,10 @@ impl eframe::App for FerriteApp {
         // Ensure echo worker is spawned if AI panel is visible (lazy initialization)
         #[cfg(feature = "async-workers")]
         self.ensure_echo_worker();
+
+        // Poll the RAG agent worker (feature `rag`).
+        #[cfg(feature = "rag")]
+        self.poll_agent_panel(&ctx);
 
         // Render the main UI (this updates editor selection)
         let deferred_format = self.render_ui(ui);

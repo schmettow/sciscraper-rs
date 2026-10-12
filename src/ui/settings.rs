@@ -111,6 +111,7 @@ fn shortcut_command_name(cmd: &ShortcutCommand) -> String {
         ShortcutCommand::InsertToc => t!("shortcuts.commands.insert_toc").to_string(),
         ShortcutCommand::ToggleTerminal => cmd.display_name().to_string(),
         ShortcutCommand::ToggleProductivityHub => cmd.display_name().to_string(),
+        ShortcutCommand::ToggleAgent => cmd.display_name().to_string(),
         ShortcutCommand::ToggleFrontmatter => "Toggle Frontmatter Panel".to_string(),
         ShortcutCommand::ZoomIn => "Zoom In".to_string(),
         ShortcutCommand::ZoomOut => "Zoom Out".to_string(),

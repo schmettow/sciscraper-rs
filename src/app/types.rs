@@ -79,6 +79,8 @@ pub(crate) enum KeyboardAction {
     ToggleTerminal,
     /// Toggle Productivity Hub panel (Ctrl+Shift+H)
     ToggleProductivityHub,
+    /// Toggle the RAG agent dock (Ctrl+Shift+A, feature `rag`)
+    ToggleAgent,
     /// Open Go to Line dialog (Ctrl+G)
     GoToLine,
     /// Duplicate current line or selection (Ctrl+Shift+D)

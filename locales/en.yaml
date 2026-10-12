@@ -1082,3 +1082,37 @@ file_dialog:
     csv_tsv: "CSV/TSV Files"
     all: "All Files"
     html: "HTML Files"
+
+# Agent dock (sciscraper fork — RAG feature)
+agent:
+  toggle: "Toggle Agent Panel"
+  section:
+    agent: "Agent"
+    library: "Library"
+  empty: "Ask a question about your sources."
+  empty_no_workspace: "Choose a folder in the component bar to start your library."
+  placeholder: "Ask about your sources…"
+  send: "Send"
+  stop: "Stop"
+  hint: "Return: newline · Ctrl+Return: send"
+  cancelled: "Cancelled"
+  library:
+    empty: "No sources yet."
+  menu:
+    provider: "Provider"
+    model: "Model"
+    context_window: "Context window (tokens)"
+    api_key_hint: "API key: DEEPSEEK_API_KEY environment variable"
+    strategy: "Strategy"
+    memory_model: "Memory model"
+    top_k: "Top-k chunks"
+    threshold: "Similarity threshold"
+    chunk_size: "Chunk size (tokens)"
+    chunk_overlap: "Chunk overlap (tokens)"
+    workspace: "Workspace"
+    no_workspace: "No workspace"
+    new_folder: "New folder…"
+    choose_folder: "Choose folder…"
+    change_folder: "Change folder…"
+    follow_editor: "Follow the editor workspace"
+    recent: "Recent folders"

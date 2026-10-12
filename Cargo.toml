@@ -23,6 +23,10 @@ async-workers = ["tokio", "poll-promise"]
 # Language Server Protocol integration (diagnostics, hover, go-to-def).
 # Deferred from v0.2.8 — will ship in v0.2.9 with proper diagnostics panel.
 lsp = []
+# RAG integration (sciscraper): agent chat pane, component bar and library,
+# backed by the `ragrig` framework. Off by default so a plain Ferrite build
+# is unchanged; see .planning/sciscraper-ragrig.md.
+rag = ["dep:ragrig", "dep:egui_chat", "dep:anyhow", "async-workers"]
 
 [dependencies]
 egui = { version = "0.34", features = ["serde"] }
@@ -125,6 +129,14 @@ krilla-svg = "0.7"
 # High-performance memory allocators (platform-specific)
 # mimalloc for Windows: faster allocation, reduced fragmentation
 # jemalloc for Unix: mature, well-tested, reduces memory usage
+
+# RAG framework for the agent pane (feature `rag`, off by default).
+# `internal` = pure-Rust vector store; `ollama-embed` = Ollama embeddings.
+ragrig = { version = "1", default-features = false, features = ["internal", "ollama-embed"], optional = true }
+# Reusable chat/agent-panel widgets (side project, co-developed).
+egui_chat = { version = "0.1.0", path = "../egui_chat", optional = true }
+# Error contexts for the RAG worker; ragrig's public API returns anyhow::Result.
+anyhow = { version = "1", optional = true }
 [target.'cfg(windows)'.dependencies]
 mimalloc = { version = "0.1", default-features = false, optional = true }
 

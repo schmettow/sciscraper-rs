@@ -17,6 +17,8 @@ use egui_phosphor::regular::{
     FOLDERS, FOLDER_SIMPLE_MINUS, GLOBE, LIGHTNING, MAGNIFYING_GLASS, PRINTER, SPARKLE,
     TERMINAL_WINDOW,
 };
+#[cfg(feature = "rag")]
+use egui_phosphor::regular::ROBOT;
 use rust_i18n::t;
 
 /// Height of the ribbon toolbar.
@@ -117,6 +119,10 @@ pub enum RibbonAction {
     // Productivity
     /// Toggle productivity hub visibility
     ToggleProductivity,
+
+    /// Toggle the RAG agent dock (feature `rag`; inert in other builds).
+    #[cfg_attr(not(feature = "rag"), allow(dead_code))]
+    ToggleAgent,
 
     // Frontmatter
     /// Toggle frontmatter editing panel
@@ -378,6 +384,19 @@ impl Ribbon {
                 .clicked()
                 {
                     action = Some(RibbonAction::ToggleTerminal);
+                }
+
+                #[cfg(feature = "rag")]
+                if icon_button(
+                    ui,
+                    ROBOT,
+                    &format!("{} ({}+Shift+A)", t!("agent.toggle"), modifier_symbol()),
+                    true,
+                    is_dark,
+                )
+                .clicked()
+                {
+                    action = Some(RibbonAction::ToggleAgent);
                 }
 
                 if file_type.is_markdown() {

@@ -43,7 +43,7 @@ fn icon_for_command(cmd: ShortcutCommand) -> &'static str {
         EYE, FILE_MAGNIFYING_GLASS, FILE_PDF, FILE_PLUS, FILE_TEXT, FLOPPY_DISK, FOLDERS, GEAR,
         GLOBE, IMAGE, INFO, LIGHTNING, LINK, LIST, LIST_BULLETS, LIST_CHECKS, LIST_NUMBERS,
         MAGNIFYING_GLASS, MAGNIFYING_GLASS_MINUS, MAGNIFYING_GLASS_PLUS, MINUS, NOTE_PENCIL,
-        PALETTE, PENCIL, PIPE, PLUS, PRINTER, SCROLL, TERMINAL_WINDOW, TEXT_B, TEXT_H_ONE,
+        PALETTE, PENCIL, PIPE, PLUS, PRINTER, ROBOT, SCROLL, TERMINAL_WINDOW, TEXT_B, TEXT_H_ONE,
         TEXT_ITALIC, TEXT_T, TRASH, TREE, X,
     };
 
@@ -70,6 +70,7 @@ fn icon_for_command(cmd: ShortcutCommand) -> &'static str {
         ShortcutCommand::TogglePipeline => PIPE,
         ShortcutCommand::ToggleTerminal => TERMINAL_WINDOW,
         ShortcutCommand::ToggleProductivityHub => LIST_CHECKS,
+        ShortcutCommand::ToggleAgent => ROBOT,
         ShortcutCommand::ZoomIn => MAGNIFYING_GLASS_PLUS,
         ShortcutCommand::ZoomOut => MAGNIFYING_GLASS_MINUS,
         ShortcutCommand::ResetZoom => MAGNIFYING_GLASS,

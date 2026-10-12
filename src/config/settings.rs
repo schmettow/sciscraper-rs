@@ -585,6 +585,8 @@ pub enum ShortcutCommand {
     TogglePipeline,
     ToggleTerminal,
     ToggleProductivityHub,
+    /// Toggle the RAG agent dock (feature `rag`).
+    ToggleAgent,
     ZoomIn,
     ZoomOut,
     ResetZoom,
@@ -662,6 +664,7 @@ impl ShortcutCommand {
             TogglePipeline,
             ToggleTerminal,
             ToggleProductivityHub,
+            ToggleAgent,
             ZoomIn,
             ZoomOut,
             ResetZoom,
@@ -738,6 +741,7 @@ impl ShortcutCommand {
             ShortcutCommand::TogglePipeline => "Toggle Pipeline",
             ShortcutCommand::ToggleTerminal => "Toggle Terminal",
             ShortcutCommand::ToggleProductivityHub => "Toggle Productivity Hub",
+            ShortcutCommand::ToggleAgent => "Toggle Agent Panel",
             ShortcutCommand::ZoomIn => "Zoom In",
             ShortcutCommand::ZoomOut => "Zoom Out",
             ShortcutCommand::ResetZoom => "Reset Zoom",
@@ -813,6 +817,7 @@ impl ShortcutCommand {
             | ShortcutCommand::TogglePipeline
             | ShortcutCommand::ToggleTerminal
             | ShortcutCommand::ToggleProductivityHub
+            | ShortcutCommand::ToggleAgent
             | ShortcutCommand::ZoomIn
             | ShortcutCommand::ZoomOut
             | ShortcutCommand::ResetZoom => "View",
@@ -891,6 +896,7 @@ impl ShortcutCommand {
             ShortcutCommand::TogglePipeline => KeyBinding::new(M::ctrl_shift(), L),
             ShortcutCommand::ToggleTerminal => KeyBinding::new(M::ctrl(), Backtick),
             ShortcutCommand::ToggleProductivityHub => KeyBinding::new(M::ctrl_shift(), H),
+            ShortcutCommand::ToggleAgent => KeyBinding::new(M::ctrl_shift(), A),
             ShortcutCommand::ZoomIn => KeyBinding::new(M::ctrl(), Equals),
             ShortcutCommand::ZoomOut => KeyBinding::new(M::ctrl(), Minus),
             ShortcutCommand::ResetZoom => KeyBinding::new(M::ctrl(), Num0),
@@ -2440,6 +2446,12 @@ pub struct Settings {
     #[serde(default)]
     pub productivity_panel_visible: bool,
 
+    /// RAG agent dock (sciscraper fork, feature `rag`). Off by default; a
+    /// settings file written by a `rag` build is ignored by other builds.
+    #[cfg(feature = "rag")]
+    #[serde(default)]
+    pub rag: crate::rag::RagSettings,
+
     /// Whether the productivity hub is docked in the outline panel (true) or floating (false)
     #[serde(default = "default_true")]
     pub productivity_panel_docked: bool,
@@ -2610,6 +2622,8 @@ impl Default for Settings {
             database_panel_visible: false,
             ssh_panel_visible: false,
             productivity_panel_visible: false,
+            #[cfg(feature = "rag")]
+            rag: crate::rag::RagSettings::default(),
             productivity_panel_docked: true,
         }
     }

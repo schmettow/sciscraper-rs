@@ -3,6 +3,8 @@
 //! This module contains reusable UI widgets and components.
 //!
 mod about;
+#[cfg(feature = "rag")]
+mod agent_panel;
 mod backlinks_panel;
 mod command_palette;
 mod dialogs;
@@ -27,6 +29,8 @@ mod welcome;
 mod window;
 
 pub use about::AboutPanel;
+#[cfg(feature = "rag")]
+pub use agent_panel::AgentPanel;
 pub use backlinks_panel::BacklinksPanel;
 pub use command_palette::CommandPalette;
 pub use dialogs::{FileOperationDialog, FileOperationResult, GoToLineDialog, GoToLineResult};

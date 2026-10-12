@@ -93,6 +93,7 @@ impl FerriteApp {
                 ShortcutCommand::ToggleProductivityHub,
                 KeyboardAction::ToggleProductivityHub
             );
+            check_shortcut!(ShortcutCommand::ToggleAgent, KeyboardAction::ToggleAgent);
             check_shortcut!(
                 ShortcutCommand::ToggleFrontmatter,
                 KeyboardAction::ToggleFrontmatter
@@ -359,6 +360,9 @@ impl FerriteApp {
             }
             KeyboardAction::ToggleTerminal => {
                 self.handle_toggle_terminal();
+            }
+            KeyboardAction::ToggleAgent => {
+                self.handle_toggle_agent();
             }
             KeyboardAction::ToggleProductivityHub => {
                 if self.state.settings.productivity_panel_docked {

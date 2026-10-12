@@ -46,6 +46,8 @@ mod markdown;
 mod path_utils;
 mod platform;
 mod preview;
+#[cfg(feature = "rag")]
+mod rag;
 mod single_instance;
 mod state;
 mod string_utils;

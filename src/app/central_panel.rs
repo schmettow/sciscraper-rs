@@ -3358,6 +3358,7 @@ impl FerriteApp {
                 }
                 self.state.mark_settings_dirty();
             }
+            ShortcutCommand::ToggleAgent => self.handle_toggle_agent(),
             ShortcutCommand::ZoomIn => egui::gui_zoom::zoom_in(ctx),
             ShortcutCommand::ZoomOut => egui::gui_zoom::zoom_out(ctx),
             ShortcutCommand::ResetZoom => ctx.set_zoom_factor(1.0),
