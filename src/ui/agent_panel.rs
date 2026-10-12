@@ -7,8 +7,16 @@
 //!
 //! Layout: one right-hand [`SectionDock`] with two stacked sections, the
 //! *Agent* chat above the *Library* (tabbed docks are a later extension for
-//! other panes). The agent bar with one icon per RAG component sits at the
-//! bottom of the agent section; clicking an icon slides up its control menu.
+//! other panels). The agent bar with one icon per RAG component sits at the
+//! bottom of the agent section; clicking an icon slides up its control menu:
+//! backend settings, *Test connection* probes, and — for the Corpus and Store
+//! components — the index housekeeping (*Update* incrementally, *Rebuild* from
+//! scratch).
+//!
+//! Menu edits mark the settings dirty; the caller hands the new snapshot to the
+//! worker, which applies it to the live session in place (the conversation
+//! survives). The bar renders one status snapshot per component, so every
+//! action the menus offer has a visible state.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -18,13 +26,15 @@ use egui_chat::agent_bar::{AgentBar, Component, ComponentStatus as BarStatus};
 use egui_chat::chat_view::{ChatMessage, ChatRole, ChatView, MessageMeta, MessageState};
 use egui_chat::composer::Composer;
 use egui_chat::dock::{DockSide, SectionDock, SectionState};
+use egui_chat::form::{note, setting_row, warning};
 use ragrig::types::Provider;
 use ragrig::MemoryStrategyKind;
 use rust_i18n::t;
 
+use crate::rag::{ChunkerKind, LibrarySettings};
 use crate::rag::{
     ComponentState, RagCommand, RagComponent, RagEvent, RagFactories, RagSettings, RagStatus,
-    RagrigWorker, SessionInfo, TurnInfo,
+    RagrigWorker, SessionInfo, SyncMode, TurnInfo,
 };
 
 /// Deferred actions produced while rendering (applied after the borrows end).
@@ -45,6 +55,7 @@ pub struct AgentPanel {
     worker: RagrigWorker,
     status: Option<RagStatus>,
     busy: bool,
+    syncing: bool,
     last_workspace: Option<PathBuf>,
     sessions: Vec<SessionInfo>,
     session: Option<String>,
@@ -60,6 +71,8 @@ impl AgentPanel {
         );
         // Continue where the user left off (no-op when nothing is saved yet).
         worker.send(RagCommand::RestoreLatest);
+        // Real Ready/Error states from the first frame on.
+        worker.send(RagCommand::Probe);
         Self {
             transcript: Vec::new(),
             input: String::new(),
@@ -69,6 +82,7 @@ impl AgentPanel {
             worker,
             status: None,
             busy: false,
+            syncing: false,
             last_workspace: editor_workspace,
             sessions: Vec::new(),
             session: None,
@@ -82,18 +96,20 @@ impl AgentPanel {
             got_event = true;
             self.handle_event(event);
         }
-        if self.busy {
-            // Keep polling the channel while a query streams.
+        if self.busy || self.syncing {
+            // Keep polling the channel while a query streams or an index run
+            // progresses.
             ctx.request_repaint_after(Duration::from_millis(50));
         } else if got_event {
             ctx.request_repaint();
         }
     }
 
-    /// Ask the worker for a fresh status snapshot (e.g. after re-opening
-    /// the dock).
+    /// Ask the worker for a fresh status snapshot and a backend probe (e.g.
+    /// after re-opening the dock).
     pub fn refresh_status(&self) {
         self.worker.send(RagCommand::Ping);
+        self.worker.send(RagCommand::Probe);
     }
 
     /// Render the dock. Returns `true` when the settings changed and should
@@ -118,6 +134,7 @@ impl AgentPanel {
         self.library_section.collapsed = settings.library_collapsed;
 
         let actions: RefCell<Vec<PanelAction>> = RefCell::new(Vec::new());
+        let commands: RefCell<Vec<RagCommand>> = RefCell::new(Vec::new());
         let settings_dirty = Cell::new(false);
         let submit_requested = Cell::new(false);
         let cancel_requested = Cell::new(false);
@@ -164,7 +181,7 @@ impl AgentPanel {
             );
 
             let composer = Composer::new(&mut self.input)
-                .busy(self.busy)
+                .busy(self.busy || self.syncing)
                 .placeholder(&t!("agent.placeholder"))
                 .labels(&t!("agent.send"), &t!("agent.stop"))
                 .hint(&t!("agent.hint"))
@@ -187,6 +204,7 @@ impl AgentPanel {
                         editor_workspace,
                         recent_workspaces,
                         actions: &actions,
+                        commands: &commands,
                         dirty: &settings_dirty,
                     },
                 )
@@ -253,6 +271,11 @@ impl AgentPanel {
         if let Some(id) = session_load_requested.into_inner() {
             self.worker.send(RagCommand::LoadSession { id });
         }
+        // Menu actions last: a settings change in the same frame is
+        // configured before the action runs against it.
+        for command in commands.into_inner() {
+            self.worker.send(command);
+        }
 
         settings_changed
     }
@@ -260,7 +283,7 @@ impl AgentPanel {
     /// Start a query with the current input buffer.
     fn submit(&mut self) {
         let text = self.input.trim().to_string();
-        if text.is_empty() || self.busy {
+        if text.is_empty() || self.busy || self.syncing {
             return;
         }
         self.transcript.push(ChatMessage::user(&text));
@@ -280,7 +303,12 @@ impl AgentPanel {
 
     fn handle_event(&mut self, event: RagEvent) {
         match event {
-            RagEvent::Status { status } => self.status = Some(status),
+            RagEvent::Status { status } => {
+                self.syncing = status
+                    .component(RagComponent::Store)
+                    .is_some_and(|store| store.state == ComponentState::Busy);
+                self.status = Some(status);
+            }
             RagEvent::Token { delta } => {
                 match self.transcript.last_mut() {
                     Some(message) if message.state == MessageState::Streaming => {
@@ -330,6 +358,40 @@ impl AgentPanel {
             RagEvent::Sessions { sessions, current } => {
                 self.sessions = sessions;
                 self.session = current;
+            }
+            RagEvent::SyncFinished {
+                indexed,
+                failed,
+                documents,
+            } => {
+                self.syncing = false;
+                self.transcript.push(sync_summary(indexed, documents));
+                for line in failed.iter().take(5) {
+                    self.transcript.push(ChatMessage {
+                        role: ChatRole::System,
+                        text: line.clone(),
+                        state: MessageState::Error,
+                        meta: None,
+                    });
+                }
+                if failed.len() > 5 {
+                    self.transcript
+                        .push(ChatMessage::system(format!("… +{}", failed.len() - 5)));
+                }
+            }
+            RagEvent::SyncCancelled => {
+                self.syncing = false;
+                self.transcript
+                    .push(ChatMessage::system(t!("agent.sync.cancelled").to_string()));
+            }
+            RagEvent::SyncFailed { message } => {
+                self.syncing = false;
+                self.transcript.push(ChatMessage {
+                    role: ChatRole::System,
+                    text: message,
+                    state: MessageState::Error,
+                    meta: None,
+                });
             }
             RagEvent::SessionSwitched { id, turns } => {
                 self.transcript = turns.into_iter().map(message_from_turn).collect();
@@ -546,6 +608,20 @@ fn component_glyph(component: RagComponent) -> &'static str {
     }
 }
 
+/// Transcript note summarising a finished index update.
+fn sync_summary(indexed: usize, documents: Option<usize>) -> ChatMessage {
+    let mut text = if indexed == 0 {
+        t!("agent.sync.up_to_date").to_string()
+    } else {
+        t!("agent.sync.updated", count = indexed).to_string()
+    };
+    if let Some(documents) = documents {
+        text.push(' ');
+        text.push_str(&t!("agent.sync.documents", count = documents));
+    }
+    ChatMessage::system(text)
+}
+
 /// Everything a component menu reads or changes.
 struct MenuContext<'a> {
     settings: &'a mut RagSettings,
@@ -553,6 +629,7 @@ struct MenuContext<'a> {
     editor_workspace: Option<&'a Path>,
     recent_workspaces: &'a [PathBuf],
     actions: &'a RefCell<Vec<PanelAction>>,
+    commands: &'a RefCell<Vec<RagCommand>>,
     dirty: &'a Cell<bool>,
 }
 
@@ -584,35 +661,30 @@ fn component_menu(ui: &mut egui::Ui, id: &str, ctx: &mut MenuContext<'_>) -> boo
     ui.separator();
 
     match component {
-        RagComponent::Chat => chat_menu(ui, ctx.settings, ctx.dirty),
+        RagComponent::Chat => {
+            chat_menu(ui, ctx.settings, ctx.dirty);
+            ui.separator();
+            probe_button(ui, ctx);
+        }
         RagComponent::Memory => memory_menu(ui, ctx.settings, ctx.dirty),
         RagComponent::Embed => {
-            embed_menu(ui, ctx.settings, ctx.dirty);
-            if ctx
-                .settings
-                .effective_workspace(ctx.editor_workspace)
-                .is_none()
-            {
-                ui.separator();
-                return workspace_menu(
-                    ui,
-                    ctx.settings,
-                    ctx.editor_workspace,
-                    ctx.recent_workspaces,
-                    ctx.actions,
-                    ctx.dirty,
-                );
-            }
+            embed_menu(ui, ctx.settings, ctx.dirty, ctx.commands);
+            ui.separator();
+            probe_button(ui, ctx);
         }
         RagComponent::Store => {
-            return workspace_menu(
+            if workspace_menu(
                 ui,
                 ctx.settings,
                 ctx.editor_workspace,
                 ctx.recent_workspaces,
                 ctx.actions,
                 ctx.dirty,
-            );
+            ) {
+                return true;
+            }
+            ui.separator();
+            return index_section(ui, ctx);
         }
         RagComponent::Corpus => {
             if workspace_menu(
@@ -627,8 +699,13 @@ fn component_menu(ui: &mut egui::Ui, id: &str, ctx: &mut MenuContext<'_>) -> boo
             }
             ui.separator();
             library_menu(ui, ctx);
+            ui.separator();
+            return index_section(ui, ctx);
         }
-        RagComponent::Chunker => chunker_menu(ui, ctx.settings, ctx.dirty),
+        RagComponent::Chunker => {
+            chunker_menu(ui, ctx.settings, ctx.dirty);
+            render_index_note(ui, ctx);
+        }
         RagComponent::Parser => {
             ui.weak("Default parser set: pdf · epub · docx · html · md");
         }
@@ -636,130 +713,256 @@ fn component_menu(ui: &mut egui::Ui, id: &str, ctx: &mut MenuContext<'_>) -> boo
     false
 }
 
+/// Check-backends button shared by the network-backed components.
+fn probe_button(ui: &mut egui::Ui, ctx: &mut MenuContext<'_>) {
+    if ui
+        .button(t!("agent.menu.test_connection"))
+        .on_hover_text(t!("agent.menu.test_connection_hint"))
+        .clicked()
+    {
+        ctx.commands.borrow_mut().push(RagCommand::Probe);
+    }
+}
+
 fn chat_menu(ui: &mut egui::Ui, settings: &mut RagSettings, dirty: &Cell<bool>) {
-    ui.label(t!("agent.menu.provider"));
     let mut provider = settings.ragrig.chat.provider.clone();
-    egui::ComboBox::from_id_salt("agent_chat_provider")
-        .selected_text(provider_label(&provider))
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut provider, Provider::Deepseek, "DeepSeek");
-            ui.selectable_value(&mut provider, Provider::Ollama, "Ollama");
-        });
+    setting_row(ui, &t!("agent.menu.provider"), |ui| {
+        egui::ComboBox::from_id_salt("agent_chat_provider")
+            .selected_text(provider_label(&provider))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut provider, Provider::Deepseek, "DeepSeek");
+                ui.selectable_value(&mut provider, Provider::Ollama, "Ollama");
+            });
+    });
     if provider != settings.ragrig.chat.provider {
         settings.ragrig.chat.provider = provider;
         dirty.set(true);
     }
 
-    ui.label(t!("agent.menu.model"));
-    let changed = match settings.ragrig.chat.provider {
-        Provider::Deepseek => ui
-            .text_edit_singleline(&mut settings.ragrig.chat.deepseek_model)
-            .changed(),
-        _ => ui
-            .text_edit_singleline(&mut settings.ragrig.chat.model)
-            .changed(),
-    };
-    if changed {
-        dirty.set(true);
-    }
+    setting_row(ui, &t!("agent.menu.model"), |ui| {
+        let changed = match settings.ragrig.chat.provider {
+            Provider::Deepseek => ui.text_edit_singleline(&mut settings.ragrig.chat.deepseek_model),
+            _ => ui.text_edit_singleline(&mut settings.ragrig.chat.model),
+        };
+        if changed.changed() {
+            dirty.set(true);
+        }
+    });
 
-    ui.label(t!("agent.menu.context_window"));
-    let mut tokens = settings.ragrig.chat.context_tokens as u64;
-    if ui
-        .add(
-            egui::DragValue::new(&mut tokens)
-                .range(4_096..=2_000_000)
-                .speed(1_000),
-        )
-        .changed()
-    {
-        settings.ragrig.chat.context_tokens = tokens as usize;
-        dirty.set(true);
-    }
-    ui.weak(t!("agent.menu.api_key_hint"));
+    setting_row(ui, &t!("agent.menu.context_window"), |ui| {
+        let mut tokens = settings.ragrig.chat.context_tokens as u64;
+        if ui
+            .add(
+                egui::DragValue::new(&mut tokens)
+                    .range(4_096..=2_000_000)
+                    .speed(1_000),
+            )
+            .changed()
+        {
+            settings.ragrig.chat.context_tokens = tokens as usize;
+            dirty.set(true);
+        }
+    });
+    note(ui, &t!("agent.menu.api_key_hint"));
 }
 
 fn memory_menu(ui: &mut egui::Ui, settings: &mut RagSettings, dirty: &Cell<bool>) {
-    ui.label(t!("agent.menu.strategy"));
     let mut strategy = settings.ragrig.memory.strategy.clone();
-    egui::ComboBox::from_id_salt("agent_memory_strategy")
-        .selected_text(memory_strategy_label(&strategy))
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut strategy, MemoryStrategyKind::Transcript, "Transcript");
-            ui.selectable_value(&mut strategy, MemoryStrategyKind::Rewrite, "Rewrite (LLM)");
-            ui.selectable_value(&mut strategy, MemoryStrategyKind::Log, "Log history");
-            ui.selectable_value(&mut strategy, MemoryStrategyKind::Summary, "Summary");
-            ui.selectable_value(&mut strategy, MemoryStrategyKind::Off, "Off");
-        });
+    setting_row(ui, &t!("agent.menu.strategy"), |ui| {
+        egui::ComboBox::from_id_salt("agent_memory_strategy")
+            .selected_text(memory_strategy_label(&strategy))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut strategy, MemoryStrategyKind::Transcript, "Transcript");
+                ui.selectable_value(&mut strategy, MemoryStrategyKind::Rewrite, "Rewrite (LLM)");
+                ui.selectable_value(&mut strategy, MemoryStrategyKind::Log, "Log history");
+                ui.selectable_value(&mut strategy, MemoryStrategyKind::Summary, "Summary");
+                ui.selectable_value(&mut strategy, MemoryStrategyKind::Off, "Off");
+            });
+    });
     if strategy != settings.ragrig.memory.strategy {
         settings.ragrig.memory.strategy = strategy;
         dirty.set(true);
     }
     if settings.ragrig.memory.strategy == MemoryStrategyKind::Rewrite {
-        ui.label(t!("agent.menu.memory_model"));
-        if ui
-            .text_edit_singleline(&mut settings.ragrig.memory.model)
-            .changed()
-        {
-            dirty.set(true);
-        }
+        setting_row(ui, &t!("agent.menu.memory_model"), |ui| {
+            if ui
+                .text_edit_singleline(&mut settings.ragrig.memory.model)
+                .changed()
+            {
+                dirty.set(true);
+            }
+        });
     }
 }
 
-fn embed_menu(ui: &mut egui::Ui, settings: &mut RagSettings, dirty: &Cell<bool>) {
-    ui.label(t!("agent.menu.model"));
+fn embed_menu(
+    ui: &mut egui::Ui,
+    settings: &mut RagSettings,
+    dirty: &Cell<bool>,
+    commands: &RefCell<Vec<RagCommand>>,
+) {
+    let mut enabled = settings.embeddings_enabled;
     if ui
-        .text_edit_singleline(&mut settings.ragrig.embed.model)
+        .checkbox(&mut enabled, t!("agent.menu.enable_embeddings"))
         .changed()
     {
+        settings.embeddings_enabled = enabled;
         dirty.set(true);
+        if enabled {
+            // Give immediate feedback on whether the backend answers.
+            commands.borrow_mut().push(RagCommand::Probe);
+        }
     }
-    ui.label(t!("agent.menu.top_k"));
-    let mut top_k = settings.ragrig.embed.top_k as u64;
-    if ui
-        .add(egui::DragValue::new(&mut top_k).range(1..=1_000).speed(1))
-        .changed()
-    {
-        settings.ragrig.embed.top_k = top_k as usize;
-        dirty.set(true);
-    }
-    ui.label(t!("agent.menu.threshold"));
-    if ui
-        .add(
-            egui::DragValue::new(&mut settings.ragrig.embed.similarity_threshold)
-                .range(0.0..=1.0)
-                .speed(0.005)
-                .max_decimals(3),
-        )
-        .changed()
-    {
-        dirty.set(true);
+    ui.add_enabled_ui(settings.embeddings_enabled, |ui| {
+        setting_row(ui, &t!("agent.menu.model"), |ui| {
+            if ui
+                .text_edit_singleline(&mut settings.ragrig.embed.model)
+                .changed()
+            {
+                dirty.set(true);
+            }
+        });
+        setting_row(ui, &t!("agent.menu.top_k"), |ui| {
+            let mut top_k = settings.ragrig.embed.top_k as u64;
+            if ui
+                .add(egui::DragValue::new(&mut top_k).range(1..=1_000).speed(1))
+                .changed()
+            {
+                settings.ragrig.embed.top_k = top_k as usize;
+                dirty.set(true);
+            }
+        });
+        setting_row(ui, &t!("agent.menu.threshold"), |ui| {
+            if ui
+                .add(
+                    egui::DragValue::new(&mut settings.ragrig.embed.similarity_threshold)
+                        .range(0.0..=1.0)
+                        .speed(0.005)
+                        .max_decimals(3),
+                )
+                .changed()
+            {
+                dirty.set(true);
+            }
+        });
+    });
+    if !settings.embeddings_enabled {
+        note(ui, &t!("agent.menu.embeddings_disabled"));
     }
 }
 
 fn chunker_menu(ui: &mut egui::Ui, settings: &mut RagSettings, dirty: &Cell<bool>) {
-    ui.label(t!("agent.menu.chunk_size"));
-    let mut chunk_size = settings.ragrig.parse.chunk_size as u64;
-    if ui
-        .add(
-            egui::DragValue::new(&mut chunk_size)
-                .range(128..=8_192)
-                .speed(16),
-        )
-        .changed()
-    {
-        settings.ragrig.parse.chunk_size = chunk_size as usize;
+    let mut kind = settings.chunker;
+    setting_row(ui, &t!("agent.menu.chunker_kind"), |ui| {
+        egui::ComboBox::from_id_salt("agent_chunker_kind")
+            .selected_text(kind.label())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut kind, ChunkerKind::Markdown, "Markdown");
+                ui.selectable_value(&mut kind, ChunkerKind::Token, "Token");
+            });
+    });
+    if kind != settings.chunker {
+        settings.chunker = kind;
         dirty.set(true);
     }
-    ui.label(t!("agent.menu.chunk_overlap"));
-    let mut overlap = settings.ragrig.parse.chunk_overlap as u64;
-    if ui
-        .add(egui::DragValue::new(&mut overlap).range(0..=2_048).speed(8))
-        .changed()
-    {
-        settings.ragrig.parse.chunk_overlap = overlap as usize;
-        dirty.set(true);
+    setting_row(ui, &t!("agent.menu.chunk_size"), |ui| {
+        let mut chunk_size = settings.ragrig.parse.chunk_size as u64;
+        if ui
+            .add(
+                egui::DragValue::new(&mut chunk_size)
+                    .range(128..=8_192)
+                    .speed(16),
+            )
+            .changed()
+        {
+            settings.ragrig.parse.chunk_size = chunk_size as usize;
+            dirty.set(true);
+        }
+    });
+    setting_row(ui, &t!("agent.menu.chunk_overlap"), |ui| {
+        let mut overlap = settings.ragrig.parse.chunk_overlap as u64;
+        if ui
+            .add(egui::DragValue::new(&mut overlap).range(0..=2_048).speed(8))
+            .changed()
+        {
+            settings.ragrig.parse.chunk_overlap = overlap as usize;
+            dirty.set(true);
+        }
+    });
+}
+
+/// Housekeeping state of the corpus index, as seen from a component menu.
+enum IndexNote {
+    /// A sync is running; the store's detail already describes it.
+    Busy(String),
+    /// Nothing indexed yet.
+    Missing,
+    /// The index was built with the current settings.
+    Fresh(String),
+    /// The index was built with different settings.
+    Stale(String),
+}
+
+fn index_note_state(ctx: &MenuContext<'_>) -> IndexNote {
+    let store = ctx
+        .status
+        .and_then(|status| status.component(RagComponent::Store));
+    if let Some(store) = store {
+        if store.state == ComponentState::Busy {
+            return IndexNote::Busy(store.detail.clone());
+        }
     }
+    match ctx.status.and_then(|status| status.index.as_ref()) {
+        None => IndexNote::Missing,
+        Some(index) if index.matches(ctx.settings) => IndexNote::Fresh(index.describe()),
+        Some(index) => IndexNote::Stale(index.describe()),
+    }
+}
+
+/// One line about the index state; warnings stand out, notes stay quiet.
+fn render_index_note(ui: &mut egui::Ui, ctx: &MenuContext<'_>) {
+    match index_note_state(ctx) {
+        IndexNote::Busy(detail) => note(ui, &detail),
+        IndexNote::Missing => note(ui, &t!("agent.menu.index_missing")),
+        IndexNote::Fresh(built) => note(ui, &t!("agent.menu.index_fresh", built = built)),
+        IndexNote::Stale(built) => warning(ui, &t!("agent.menu.index_stale", built = built)),
+    }
+}
+
+/// Index housekeeping for the Corpus and Store menus: summary plus the
+/// incremental *Update* and the destructive *Rebuild*.
+///
+/// Returns `true` when a sync was requested (the menu closes; the agent bar
+/// then shows the run).
+fn index_section(ui: &mut egui::Ui, ctx: &mut MenuContext<'_>) -> bool {
+    render_index_note(ui, ctx);
+    if !ctx.settings.embeddings_enabled {
+        note(ui, &t!("agent.menu.index_needs_embeddings"));
+        return false;
+    }
+    let running = matches!(index_note_state(ctx), IndexNote::Busy(_));
+    let mut requested = false;
+    if ui
+        .add_enabled(!running, egui::Button::new(t!("agent.menu.update_index")))
+        .on_hover_text(t!("agent.menu.update_index_hint"))
+        .clicked()
+    {
+        ctx.commands.borrow_mut().push(RagCommand::SyncCorpus {
+            mode: SyncMode::Incremental,
+        });
+        requested = true;
+    }
+    if ui
+        .add_enabled(!running, egui::Button::new(t!("agent.menu.rebuild_index")))
+        .on_hover_text(t!("agent.menu.rebuild_index_hint"))
+        .clicked()
+    {
+        ctx.commands.borrow_mut().push(RagCommand::SyncCorpus {
+            mode: SyncMode::Rebuild,
+        });
+        requested = true;
+    }
+    requested
 }
 
 /// Workspace picker shown when a component depends on the RAG workspace.
@@ -896,7 +1099,7 @@ fn library_menu(ui: &mut egui::Ui, ctx: &mut MenuContext<'_>) {
     if (ctx.settings.library.bibtex.is_some() || ctx.settings.library.folder.is_some())
         && ui.button(t!("agent.menu.reset_library_defaults")).clicked()
     {
-        ctx.settings.library = crate::rag::LibrarySettings::default();
+        ctx.settings.library = LibrarySettings::default();
         ctx.dirty.set(true);
     }
 }
@@ -947,10 +1150,14 @@ mod tests {
             settings: &settings,
             workspace: Some(Path::new("/tmp/ws")),
             initialized: true,
-            busy: false,
-            store_documents: Some(3),
+            activity: None,
+            documents: Some(3),
+            chunks: Some(120),
             init_error: None,
             bibliography: None,
+            probes: Default::default(),
+            sync: None,
+            index: None,
         });
         let components = bar_components(Some(&status));
         let chat = components
@@ -963,7 +1170,39 @@ mod tests {
             .find(|c| c.id == "store")
             .expect("store component");
         assert_eq!(store.status, BarStatus::Ready);
-        assert_eq!(store.detail.as_deref(), Some("3 documents"));
+        assert_eq!(store.detail.as_deref(), Some("3 documents · 120 chunks"));
+    }
+
+    #[test]
+    fn sync_strings_interpolate() {
+        // Guards against typos in the new keys/placeholders (unresolved
+        // placeholders would surface as `{count}` in the transcript).
+        let updated = sync_summary(2, Some(7));
+        assert!(updated.text.contains('2'), "{}", updated.text);
+        assert!(updated.text.contains('7'), "{}", updated.text);
+        assert!(!updated.text.contains("{count}"), "{}", updated.text);
+
+        let up_to_date = sync_summary(0, None);
+        assert!(!up_to_date.text.contains("{count}"), "{}", up_to_date.text);
+    }
+
+    #[test]
+    fn every_component_menu_renders_headless() {
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = RagSettings::default();
+        settings.ragrig.workspace = dir.path().to_path_buf();
+        let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
+        // Open each slide-up menu once; the menus are only rendered when open,
+        // so this is what exercises the Sprint 3 actions (probes, index
+        // housekeeping, chunker kind).
+        for component in RagComponent::all() {
+            panel.open_menu = Some(component.id().to_string());
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+            });
+        }
+        assert!(panel.open_menu.is_some(), "no clicks, menu stays open");
     }
 
     #[test]

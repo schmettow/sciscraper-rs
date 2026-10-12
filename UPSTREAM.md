@@ -26,6 +26,7 @@ every entry is filed and closed.
 | US-8 | ragrig (docs) | low | GUI/worker integration pattern is undocumented | to file |
 | US-9 | ragrig (ergonomics) | low | `AttachedDocument` lacks `PartialEq` | to file |
 | US-10 | ragrig (ergonomics) | low | Listing saved sessions requires a fully built agent | to file |
+| US-11 | ragrig (store API) | medium | No way to replace one pipeline's chunks; parser/chunker changes accumulate in the store | to file |
 
 ## US-1 — Publish `grobid-bibtex` 0.2.1
 
@@ -163,11 +164,15 @@ every entry is filed and closed.
   snapshot of "what is configured/available" and no last-error surface. A status bar has to
   reassemble that from the host's own config plus heuristics.
 - **Impact on sciscraper.** The agent bar's Ready/Inactive/Error states are derived from
-  settings and the host's own last-operation results; e.g. "Ollama reachable?" is not
-  answerable from the library, so we only probe in a later sprint. A `status()` method would
-  make the bar honest for free.
+  settings and the host's own last-operation results. Sprint 3 added reachability probes the
+  host performs itself: `GET {OLLAMA_API_BASE_URL or localhost:11434}/api/tags` for Ollama and
+  `GET https://api.deepseek.com/models` for DeepSeek — the endpoints had to be re-derived
+  from rig's sources (`rig-core/src/providers/ollama.rs`, `deepseek.rs`), where they are
+  private constants. A `status()`/`health()` method (or public endpoint accessors) would make
+  the bar honest for free and keep hosts from duplicating endpoint knowledge that can drift.
 - **Suggested fix.** A small `RagAgent::status() -> AgentStatus` (backend names, model names,
-  store document count, context window, last error) — read-only, cheap, host-facing.
+  store document count, context window, last error) plus a cheap `health_check()` —
+  read-only, host-facing.
 
 ## US-8 — GUI/worker integration pattern is undocumented
 
@@ -202,6 +207,41 @@ every entry is filed and closed.
 - **Suggested fix.** Document the store-only listing path, or provide a free function /
   `SessionStore` accessor that does not require an agent.
 
+## US-11 — No way to replace one pipeline's chunks
+
+- **Target:** `ragrig` (store / sync API)
+- **Severity:** medium (silent retrieval-quality regression on a normal settings change)
+- **Context.** The store deduplicates by `(corpus, document, parser, chunker)` *and* records
+  per-chunk provenance, but there is no public operation to delete (or atomically replace)
+  *one pipeline's* chunks. `sync_corpus` therefore re-indexes a document under the new
+  chunker while the chunks of the previous chunker remain in the store — the same text is
+  then retrieved twice, in two chunk shapes, for every query. `delete_corpus` is the only
+  removal primitive for a corpus, and it drops *all* of that corpus' pipelines (fine for the
+  corpus the host just re-indexed, wrong for a multi-pipeline setup where other pipelines are
+  still in use).
+- **Evidence.**
+  - `src/vector.rs`, `sync_corpus_inner`: the skip test is
+    `s.chunker == chunker_name && s.pipeline == pipeline_id && s.document_id == current_hash`;
+    any chunker change makes every document "new/changed".
+  - Source doc comment (`src/agent.rs`, `reindex_*` docs): *“Because the store deduplicates
+    by `(corpus, document, parser, chunker)`, indexing with different chunkers accumulates
+    parallel pipelines instead of replacing them.”* — documented, but with no API to undo it.
+  - `VectorStore` trait offers `delete_by_document`, `delete_document(corpus, document)`,
+    `delete_corpus(corpus)` — no `delete_pipeline`/`delete_provenance`.
+  - The index manifest (`chunk_size`, `chunk_overlap`, `chunker`, `embedding_model`) makes the
+    *staleness* detectable — hosts see the problem but cannot fix it selectively.
+- **Impact in sciscraper.** Changing chunker/chunk size/embedding model cannot be applied by
+  *Update*: the UI warns against a stale index (`IndexInfo::matches`) and offers an explicit
+  *Rebuild* = `delete_corpus` + full sync. That works, but throws away all pipelines of that
+  corpus and makes a routine settings change an expensive, destructive-looking operation for
+  the user (why should changing the chunker delete my index?).
+- **Suggested fix.** `VectorStore::delete_pipeline(&self, corpus: &str, pipeline: &str)` (and/
+  or `delete_document_with(&self, corpus, document, chunker)`) so a host can replace exactly
+  the pipeline it is about to re-ingest; alternatively a `sync_corpus` mode that prunes
+  non-matching provenance for the documents it touches. A one-line host-side choice —
+  `sync_corpus_with_pipeline` already stamps a pipeline id, so an accompanying delete would
+  complete the primitive.
+
 ## Notes (monitoring — not issues to file)
 
 - **Tier-2 surface used.** sciscraper depends on `AgentSession`, the `progress` module and
@@ -229,8 +269,9 @@ every entry is filed and closed.
 | US-4 | Key read from env/settings only, never written | `src/rag/mod.rs`, docs |
 | US-5 | Bibliography configurable in the Corpus menu + discovery | `src/rag/mod.rs`, `src/ui/agent_panel.rs` |
 | US-6 | Not yet: single-path assumption | `src/rag/cite.rs` (Sprint 4 TODO) |
-| US-7 | Status derived from settings + host state | `src/rag/status.rs` |
+| US-7 | Status derived from settings + host state; own probes (Ollama `/api/tags`, DeepSeek `/models`) | `src/rag/status.rs`, `src/rag/probe.rs` |
 | US-10 | Worker builds `FsSessionStore` directly for listing | `src/rag/worker.rs` |
+| US-11 | Explicit *Rebuild* (`delete_corpus` + full sync) + staleness warning from the manifest | `src/rag/worker.rs`, `src/ui/agent_panel.rs` |
 
 ## Suggested filing order
 
@@ -239,4 +280,6 @@ every entry is filed and closed.
 3. **US-4** (secret exposure) — small fix, real impact on shared/collaborative workspaces.
 4. **US-2** (reusable pipeline) — largest payoff, largest design discussion.
 5. **US-5**, then US-6 (bibliography interop) — pairs naturally with the library sprint.
-6. **US-7 → US-10** (ergonomics/docs) — file together, low traffic.
+6. **US-11** (pipeline replacement) — a small store API addition with direct UX payoff for
+   every settings change; pairs with the ingestion sprint.
+7. **US-7 → US-10** (ergonomics/docs) — file together, low traffic.

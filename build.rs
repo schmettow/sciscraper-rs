@@ -26,4 +26,8 @@ fn main() {
 
     // Rerun build script if build.rs changes
     println!("cargo:rerun-if-changed=build.rs");
+    // Translations are embedded at compile time by `rust_i18n::i18n!` in
+    // `main.rs`; without this, cargo would not notice edited locale files and
+    // changes to strings would only appear after a manual rebuild.
+    println!("cargo:rerun-if-changed=locales");
 }

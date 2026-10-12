@@ -20,16 +20,21 @@
 //! [`AgentSession`]: ragrig::AgentSession
 
 pub mod cite;
+pub mod probe;
 pub mod status;
 pub mod worker;
 
 use std::path::{Path, PathBuf};
 
+use ragrig::chunker::{MarkdownChunker, TokenChunker};
 use ragrig::types::{ContextSizeMode, MemoryStrategyKind, Provider, RagrigConfig};
+use ragrig::Chunker;
 use serde::{Deserialize, Serialize};
 
 pub use status::{ComponentState, RagComponent, RagStatus, StatusInput};
-pub use worker::{RagCommand, RagEvent, RagFactories, RagrigWorker, SessionInfo, TurnInfo};
+pub use worker::{
+    RagCommand, RagEvent, RagFactories, RagrigWorker, SessionInfo, SyncMode, TurnInfo,
+};
 
 /// Default chat context window in tokens (decision: DeepSeek, > 400 000).
 pub const DEFAULT_CONTEXT_TOKENS: usize = 409_600;
@@ -141,6 +146,48 @@ fn discover_bibliographies(workspace: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Chunking algorithm for corpus ingestion.
+///
+/// A host-level choice: [`RagrigConfig`] carries the chunk *sizes*, the
+/// algorithm is selected here (ragrig's `Chunker` trait is not part of its
+/// serde config).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChunkerKind {
+    /// Heading- and paragraph-aware Markdown chunking (ragrig's default).
+    #[default]
+    Markdown,
+    /// Plain token splitting with overlap.
+    Token,
+}
+
+impl ChunkerKind {
+    /// Human-readable label for menus.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Markdown => "Markdown",
+            Self::Token => "Token",
+        }
+    }
+
+    /// ragrig's stable chunker identifier (`Chunker::name`); this is what the
+    /// store's index manifest records, so it detects a pending re-index.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Token => "token",
+        }
+    }
+
+    /// Build the ragrig chunker.
+    pub fn build(self) -> Box<dyn Chunker> {
+        match self {
+            Self::Markdown => Box::new(MarkdownChunker),
+            Self::Token => Box::new(TokenChunker),
+        }
+    }
+}
+
 /// Persistent settings of the RAG feature ("sciscraper").
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -153,6 +200,11 @@ pub struct RagSettings {
     pub agent_collapsed: bool,
     /// Whether the library section is collapsed.
     pub library_collapsed: bool,
+    /// Whether retrieval is available at all (ragrig's no-op embedder when
+    /// off: answers run without corpus context).
+    pub embeddings_enabled: bool,
+    /// Chunking algorithm for corpus ingestion.
+    pub chunker: ChunkerKind,
     /// The ragrig configuration (chat, embeddings, parsing, memory).
     pub ragrig: RagrigConfig,
     /// The bibliography and corpus folder.
@@ -175,6 +227,8 @@ impl Default for RagSettings {
             width: DEFAULT_PANEL_WIDTH,
             agent_collapsed: false,
             library_collapsed: false,
+            embeddings_enabled: true,
+            chunker: ChunkerKind::default(),
             ragrig,
             library: LibrarySettings::default(),
         }
@@ -236,6 +290,8 @@ mod tests {
     fn default_settings_follow_the_decisions() {
         let settings = RagSettings::default();
         assert!(!settings.enabled);
+        assert!(settings.embeddings_enabled, "retrieval is on by default");
+        assert_eq!(settings.chunker, ChunkerKind::Markdown);
         assert_eq!(settings.width, DEFAULT_PANEL_WIDTH);
         assert_eq!(settings.ragrig.chat.provider, Provider::Deepseek);
         assert_eq!(settings.ragrig.chat.context_tokens, DEFAULT_CONTEXT_TOKENS);
@@ -270,6 +326,27 @@ mod tests {
         let loaded: RagSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(loaded.ragrig.chat.provider, Provider::Deepseek);
         assert_eq!(loaded.ragrig.embed.similarity_threshold, 0.03);
+        assert!(loaded.embeddings_enabled);
+        assert_eq!(loaded.chunker, ChunkerKind::Markdown);
+    }
+
+    #[test]
+    fn chunker_kinds_match_ragrig_identifiers() {
+        assert_eq!(ChunkerKind::Markdown.build().name(), "markdown");
+        assert_eq!(ChunkerKind::Token.build().name(), "token");
+        assert_eq!(ChunkerKind::Markdown.name(), "markdown");
+        assert_eq!(ChunkerKind::Token.name(), "token");
+    }
+
+    #[test]
+    fn old_settings_files_without_the_new_fields_still_load() {
+        // A settings file written before Sprint 3 must keep working.
+        let json = r#"{ "enabled": true, "width": 420.0 }"#;
+        let loaded: RagSettings = serde_json::from_str(json).unwrap();
+        assert!(loaded.enabled);
+        assert_eq!(loaded.width, 420.0);
+        assert!(loaded.embeddings_enabled);
+        assert_eq!(loaded.chunker, ChunkerKind::Markdown);
     }
 
     #[test]

@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "egui_chat"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "egui",
  "pulldown-cmark 0.13.4",
@@ -2108,6 +2108,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "async-trait",
  "blake3",
  "chardetng",
  "chrono",

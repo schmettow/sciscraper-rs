@@ -23,17 +23,20 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Context;
+use ragrig::corpora::FolderCorpus;
 use ragrig::parsers::DocumentParsers;
+use ragrig::progress::ProgressEvent;
 use ragrig::store::open_store;
 use ragrig::types::{ContextSizeMode, EmbeddingProvider, MemoryStrategyKind, Provider};
 use ragrig::{
     build_parsers, AgentSession, AttachedDocument, CancellationToken, ChatAgentSpec, ChunkConfig,
-    Embedder, EmbedderSpec, FsSessionStore, Generator, LogHistory, PrependAttach, RagAgent,
+    Corpus, Embedder, EmbedderSpec, FsSessionStore, Generator, LogHistory, PrependAttach, RagAgent,
     SessionId, SessionManifest, SessionStore, SummaryHistory, TurnRole,
 };
 
-use super::cite;
-use super::{RagSettings, RagStatus, StatusInput};
+use super::probe;
+use super::status::{ActivityKind, IndexInfo, ProbeResults, Reachability, SyncProgress};
+use super::{cite, RagSettings, RagStatus, StatusInput};
 
 /// Builds the chat agent for a settings snapshot.
 ///
@@ -92,6 +95,13 @@ pub enum RagCommand {
         /// The user's question.
         text: String,
     },
+    /// Index the library folder into the vector store.
+    SyncCorpus {
+        /// Incremental update or full rebuild.
+        mode: SyncMode,
+    },
+    /// Probe the configured backends for reachability.
+    Probe,
     /// Cancel the running query or ingestion.
     Cancel,
     /// Refresh the saved-session list.
@@ -107,6 +117,19 @@ pub enum RagCommand {
     },
     /// Stop the worker thread.
     Shutdown,
+}
+
+/// How [`RagCommand::SyncCorpus`] treats the existing index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncMode {
+    /// Index new and changed files, drop removed ones; skip the rest.
+    Incremental,
+    /// Delete this corpus' chunks first, then index every file.
+    ///
+    /// Needed to apply a parser/chunker/chunk-size/embedding-model change:
+    /// the incremental sync keys documents by chunker and would otherwise
+    /// keep the old chunks alongside the new ones.
+    Rebuild,
 }
 
 /// Events sent from the worker to the UI.
@@ -149,6 +172,22 @@ pub enum RagEvent {
         resolved: Vec<String>,
         /// One line per key that could not be attached.
         missed: Vec<String>,
+    },
+    /// The corpus sync finished.
+    SyncFinished {
+        /// Files (re-)indexed without errors.
+        indexed: usize,
+        /// One line per file that failed (`file — error`).
+        failed: Vec<String>,
+        /// Documents in the store after the sync.
+        documents: Option<usize>,
+    },
+    /// The corpus sync was cancelled; the store holds whatever finished.
+    SyncCancelled,
+    /// The corpus sync could not run or failed; `message` explains.
+    SyncFailed {
+        /// User-presentable reason.
+        message: String,
     },
     /// The saved-session list (and the current session id).
     Sessions {
@@ -278,6 +317,22 @@ struct Shared {
     cancel: Mutex<Option<CancellationToken>>,
     init_error: Mutex<Option<String>>,
     busy: AtomicBool,
+    syncing: AtomicBool,
+    probes: Mutex<ProbeResults>,
+    sync_progress: Mutex<Option<SyncProgress>>,
+}
+
+impl Shared {
+    /// What the worker is doing right now, for the status snapshot.
+    fn activity(&self) -> Option<ActivityKind> {
+        if self.busy.load(Ordering::SeqCst) {
+            Some(ActivityKind::Query)
+        } else if self.syncing.load(Ordering::SeqCst) {
+            Some(ActivityKind::Sync)
+        } else {
+            None
+        }
+    }
 }
 
 /// Everything a query task needs, snapshotted from the worker state.
@@ -313,37 +368,55 @@ struct WorkerState {
 
 impl WorkerState {
     fn status(&self) -> RagStatus {
-        let workspace = self
-            .settings
-            .effective_workspace(self.editor_workspace.as_deref());
-        let busy = self.shared.busy.load(Ordering::SeqCst);
-        let (initialized, store_documents) = match self.shared.session.try_lock() {
-            Ok(guard) => (
-                guard.is_some(),
-                guard.as_ref().map(|session| session.agent().store().len()),
-            ),
-            // A running task holds the lock: the session necessarily exists.
-            Err(_) => (true, None),
-        };
-        let init_error = lock(&self.shared.init_error).clone();
-        let bibliography = workspace
-            .as_deref()
-            .and_then(|workspace| self.settings.library.resolve(workspace).bibtex);
-        RagStatus::derive(StatusInput {
-            settings: &self.settings,
-            workspace: workspace.as_deref(),
-            initialized,
-            busy,
-            store_documents,
-            init_error: init_error.as_deref(),
-            bibliography: bibliography.as_deref(),
-        })
+        status_snapshot(
+            &self.settings,
+            self.editor_workspace.as_deref(),
+            &self.shared,
+        )
     }
 
     fn emit_status(&self, events: &Sender<RagEvent>) {
         let _ = events.send(RagEvent::Status {
             status: self.status(),
         });
+    }
+
+    /// Whether a query or sync is running.
+    fn is_busy(&self) -> bool {
+        self.shared.busy.load(Ordering::SeqCst) || self.shared.syncing.load(Ordering::SeqCst)
+    }
+
+    /// Apply the current settings to the live session in place.
+    ///
+    /// This is the hot-swap path behind [`RagCommand::Configure`]: chat,
+    /// embeddings, chunker, parsers and memory change under a running agent
+    /// while the conversation and the open store survive. When an operation
+    /// holds the session lock, the epoch is advanced instead — the task drops
+    /// its session when it finishes and the next one is built from these
+    /// settings (with the same result, one rebuild later).
+    fn hot_swap(&self) {
+        let mut guard = match self.shared.session.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.shared.session_epoch.fetch_add(1, Ordering::SeqCst);
+                return;
+            }
+        };
+        let Some(session) = guard.as_mut() else {
+            // Nothing open yet; it will be built from these settings.
+            return;
+        };
+        match apply_live_settings(session, &self.settings, &self.factories) {
+            Ok(()) => *lock(&self.shared.init_error) = None,
+            Err(err) => {
+                // Keep the old session out of service: the next operation
+                // rebuilds and reports the same error with context.
+                let message = format!("cannot apply the new settings: {err:#}");
+                log::warn!("RAG: {message}");
+                *lock(&self.shared.init_error) = Some(message);
+                *guard = None;
+            }
+        }
     }
 
     /// Drop a session built from older settings; a running task notices the
@@ -430,9 +503,19 @@ async fn worker_main(
                 settings,
                 editor_workspace,
             } => {
+                let previous = state
+                    .settings
+                    .effective_workspace(state.editor_workspace.as_deref());
+                let next = settings.effective_workspace(editor_workspace.as_deref());
                 state.settings = *settings;
                 state.editor_workspace = editor_workspace;
-                state.invalidate_session();
+                if previous != next {
+                    // A different corpus: the live session (and its store)
+                    // belongs to the old workspace.
+                    state.invalidate_session();
+                } else {
+                    state.hot_swap();
+                }
                 state.emit_status(&events);
             }
             RagCommand::SetWorkspace(workspace) => {
@@ -441,7 +524,32 @@ async fn worker_main(
                 state.emit_status(&events);
             }
             RagCommand::Query { text } => {
-                tokio::spawn(run_query(state.query_context(), text, events.clone()));
+                // The flag is claimed here, in the single-threaded command
+                // loop, so two operations can never run at once.
+                if state.is_busy() {
+                    let _ = events.send(RagEvent::QueryFailed {
+                        message: busy_message(),
+                    });
+                } else {
+                    state.shared.busy.store(true, Ordering::SeqCst);
+                    tokio::spawn(run_query(state.query_context(), text, events.clone()));
+                }
+            }
+            RagCommand::SyncCorpus { mode } => {
+                if state.is_busy() {
+                    let _ = events.send(RagEvent::SyncFailed {
+                        message: busy_message(),
+                    });
+                } else {
+                    state.shared.syncing.store(true, Ordering::SeqCst);
+                    tokio::spawn(run_sync(state.query_context(), mode, events.clone()));
+                }
+            }
+            RagCommand::Probe => {
+                let context = state.query_context();
+                mark_probing(&context);
+                emit_status(&context, &events);
+                tokio::spawn(run_probe(context, events.clone()));
             }
             RagCommand::Cancel => {
                 if let Some(token) = lock(&state.shared.cancel).as_ref() {
@@ -457,6 +565,56 @@ async fn worker_main(
             RagCommand::Shutdown => break,
         }
     }
+}
+
+/// Message shown when an operation is requested while another one runs (the
+/// UI disables its controls in that state; this guards programmatic use).
+fn busy_message() -> String {
+    "another RAG operation is running — stop it first".to_string()
+}
+
+/// Mark the backends that are about to be probed.
+fn mark_probing(context: &QueryContext) {
+    let mut probes = lock(&context.shared.probes);
+    let ollama_used = context.settings.ragrig.chat.provider == Provider::Ollama
+        || context.settings.embeddings_enabled;
+    if ollama_used {
+        probes.ollama = Reachability::Probing;
+    }
+    if context.settings.resolve_deepseek_api_key().is_some() {
+        probes.deepseek = Reachability::Probing;
+    }
+}
+
+/// Probe the configured backends off the executor thread.
+async fn run_probe(context: QueryContext, events: Sender<RagEvent>) {
+    let base_url = probe::ollama_base_url();
+    let ollama_used = context.settings.ragrig.chat.provider == Provider::Ollama
+        || context.settings.embeddings_enabled;
+    let api_key = context.settings.resolve_deepseek_api_key();
+    let probed = tokio::task::spawn_blocking(move || {
+        let ollama = ollama_used.then(|| probe::probe_ollama(&base_url));
+        let deepseek = api_key.as_deref().map(probe::probe_deepseek);
+        (ollama, deepseek)
+    })
+    .await;
+    let (ollama, deepseek) = match probed {
+        Ok(results) => results,
+        Err(err) => {
+            log::warn!("RAG: probe task failed: {err}");
+            (None, None)
+        }
+    };
+    {
+        let mut probes = lock(&context.shared.probes);
+        if let Some(ollama) = ollama {
+            probes.ollama = ollama;
+        }
+        if let Some(deepseek) = deepseek {
+            probes.deepseek = deepseek;
+        }
+    }
+    emit_status(&context, &events);
 }
 
 /// Session actions the worker can perform on the active session.
@@ -601,7 +759,6 @@ fn turns_of(session: &AgentSession) -> Vec<TurnInfo> {
 
 async fn run_query(context: QueryContext, text: String, events: Sender<RagEvent>) {
     let shared = &context.shared;
-    shared.busy.store(true, Ordering::SeqCst);
     let token = CancellationToken::new();
     *lock(&shared.cancel) = Some(token.clone());
     let epoch = shared.session_epoch.load(Ordering::SeqCst);
@@ -689,31 +846,66 @@ async fn run_query(context: QueryContext, text: String, events: Sender<RagEvent>
     emit_status(&context, &events);
 }
 
-fn emit_status(context: &QueryContext, events: &Sender<RagEvent>) {
-    let workspace = context
-        .settings
-        .effective_workspace(context.editor_workspace.as_deref());
-    let busy = context.shared.busy.load(Ordering::SeqCst);
-    let (initialized, store_documents) = match context.shared.session.try_lock() {
-        Ok(guard) => (
-            guard.is_some(),
-            guard.as_ref().map(|session| session.agent().store().len()),
-        ),
-        Err(_) => (true, None),
+/// A status snapshot from the shared runtime facts (used by the command
+/// loop and by running tasks alike).
+fn status_snapshot(
+    settings: &RagSettings,
+    editor_workspace: Option<&Path>,
+    shared: &Shared,
+) -> RagStatus {
+    let workspace = settings.effective_workspace(editor_workspace);
+    let (initialized, documents, chunks, index) = match shared.session.try_lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(session) => {
+                let store = session.agent().store();
+                (
+                    true,
+                    Some(store.document_ids().len()),
+                    Some(store.len()),
+                    store.manifest().map(index_info),
+                )
+            }
+            None => (false, None, None, None),
+        },
+        // A running task holds the lock: the session necessarily exists.
+        Err(_) => (true, None, None, None),
     };
-    let init_error = lock(&context.shared.init_error).clone();
+    let init_error = lock(&shared.init_error).clone();
     let bibliography = workspace
         .as_deref()
-        .and_then(|workspace| context.settings.library.resolve(workspace).bibtex);
-    let status = RagStatus::derive(StatusInput {
-        settings: &context.settings,
+        .and_then(|workspace| settings.library.resolve(workspace).bibtex);
+    let probes = *lock(&shared.probes);
+    let sync = lock(&shared.sync_progress).clone();
+    RagStatus::derive(StatusInput {
+        settings,
         workspace: workspace.as_deref(),
         initialized,
-        busy,
-        store_documents,
+        activity: shared.activity(),
+        documents,
+        chunks,
         init_error: init_error.as_deref(),
         bibliography: bibliography.as_deref(),
-    });
+        probes,
+        sync: sync.as_ref(),
+        index: index.as_ref(),
+    })
+}
+
+fn index_info(manifest: ragrig::types::IndexManifest) -> IndexInfo {
+    IndexInfo {
+        chunker: manifest.chunker,
+        chunk_size: manifest.chunk_size,
+        chunk_overlap: manifest.chunk_overlap,
+        embedding_model: manifest.embedding_model,
+    }
+}
+
+fn emit_status(context: &QueryContext, events: &Sender<RagEvent>) {
+    let status = status_snapshot(
+        &context.settings,
+        context.editor_workspace.as_deref(),
+        &context.shared,
+    );
     let _ = events.send(RagEvent::Status { status });
 }
 
@@ -756,6 +948,202 @@ async fn resolve_attachments(
     resolution.attachments
 }
 
+/// What a sync needs, resolved before the session is touched.
+struct SyncPlan {
+    /// The library folder to index.
+    folder: PathBuf,
+    /// The corpus over that folder.
+    corpus: FolderCorpus,
+    /// The corpus' store identity (see [`library_corpus`]).
+    corpus_name: String,
+}
+
+/// Resolve the corpus to sync, or explain why it cannot be.
+fn sync_plan(context: &QueryContext) -> anyhow::Result<SyncPlan> {
+    if !context.settings.embeddings_enabled {
+        anyhow::bail!(
+            "embeddings are disabled — enable them in the Embeddings menu to index the corpus"
+        );
+    }
+    let workspace = context
+        .settings
+        .effective_workspace(context.editor_workspace.as_deref())
+        .context("no RAG workspace configured — use the component bar to choose a folder")?;
+    let folder = context.settings.library.resolve(&workspace).folder;
+    if !folder.is_dir() {
+        anyhow::bail!(
+            "corpus folder not found: {} — set it in the Corpus menu",
+            folder.display()
+        );
+    }
+    let corpus = library_corpus(&workspace, &folder);
+    let corpus_name = corpus.name();
+    Ok(SyncPlan {
+        folder,
+        corpus,
+        corpus_name,
+    })
+}
+
+/// The store identity of the library corpus.
+///
+/// Mirrors ragrig-cli: when the library folder *is* the RAG workspace (the
+/// `--bibtex-merge` layout, where the PDFs sit next to the `.bib`), the
+/// corpus is named `"folder"` so the CLI and the editor share one index.
+/// Any other folder uses the canonical path as its name — distinct folders
+/// must never share a corpus name, because a sync removes the stored
+/// documents of its corpus that are no longer present.
+fn library_corpus(workspace: &Path, folder: &Path) -> FolderCorpus {
+    let same = match (workspace.canonicalize(), folder.canonicalize()) {
+        (Ok(workspace), Ok(folder)) => workspace == folder,
+        _ => workspace == folder,
+    };
+    if same {
+        FolderCorpus::named("folder", folder)
+    } else {
+        FolderCorpus::new(folder)
+    }
+}
+
+/// Map a ragrig progress event onto the host's progress model.
+fn map_progress(event: &ProgressEvent) -> Option<SyncProgress> {
+    match event {
+        ProgressEvent::FileStarted {
+            index,
+            total,
+            document,
+            ..
+        } => Some(SyncProgress::File {
+            done: index + 1,
+            total: *total,
+            name: document.0.clone(),
+        }),
+        ProgressEvent::ChunksEmbedded { done, total } => Some(SyncProgress::Embedding {
+            done: *done,
+            total: *total,
+        }),
+        _ => None,
+    }
+}
+
+/// Update the corpus index on the worker runtime.
+async fn run_sync(context: QueryContext, mode: SyncMode, events: Sender<RagEvent>) {
+    let plan = match sync_plan(&context) {
+        Ok(plan) => plan,
+        Err(err) => {
+            let _ = events.send(RagEvent::SyncFailed {
+                message: format!("{err:#}"),
+            });
+            context.shared.syncing.store(false, Ordering::SeqCst);
+            emit_status(&context, &events);
+            return;
+        }
+    };
+    let shared = &context.shared;
+    let token = CancellationToken::new();
+    *lock(&shared.cancel) = Some(token.clone());
+    emit_status(&context, &events);
+
+    let result = run_sync_inner(&context, &plan, mode, &token, &events).await;
+
+    shared.syncing.store(false, Ordering::SeqCst);
+    *lock(&shared.cancel) = None;
+    *lock(&shared.sync_progress) = None;
+    if result.is_ok() {
+        *lock(&shared.init_error) = None;
+    }
+    match result {
+        Ok(outcome) => {
+            let _ = events.send(RagEvent::SyncFinished {
+                indexed: outcome.indexed,
+                failed: outcome.failed,
+                documents: outcome.documents,
+            });
+        }
+        Err(err) if err.downcast_ref::<ragrig::Cancelled>().is_some() => {
+            let _ = events.send(RagEvent::SyncCancelled);
+        }
+        Err(err) => {
+            let _ = events.send(RagEvent::SyncFailed {
+                message: format!("{err:#}"),
+            });
+        }
+    }
+    emit_status(&context, &events);
+}
+
+/// Summary of one sync run.
+struct SyncOutcome {
+    indexed: usize,
+    failed: Vec<String>,
+    documents: Option<usize>,
+}
+
+impl SyncOutcome {
+    fn from_results(results: Vec<ragrig::documents::FileIndexResult>, documents: usize) -> Self {
+        let mut indexed = 0usize;
+        let mut failed = Vec::new();
+        for result in results {
+            if result.ok {
+                indexed += 1;
+            } else {
+                let error = result.error.unwrap_or_else(|| "unknown error".to_string());
+                failed.push(format!("{} — {error}", result.file_name.0));
+            }
+        }
+        Self {
+            indexed,
+            failed,
+            documents: Some(documents),
+        }
+    }
+}
+
+async fn run_sync_inner(
+    context: &QueryContext,
+    plan: &SyncPlan,
+    mode: SyncMode,
+    token: &CancellationToken,
+    events: &Sender<RagEvent>,
+) -> anyhow::Result<SyncOutcome> {
+    let mut guard = match context.ensure_session().await {
+        Ok(guard) => guard,
+        Err(err) => {
+            // Mirror the query path: a store/agent that cannot be built
+            // shows up in the component status, not only in the transcript.
+            *lock(&context.shared.init_error) = Some(format!("{err:#}"));
+            return Err(err);
+        }
+    };
+    let Some(session) = guard.as_mut() else {
+        anyhow::bail!("RAG session unavailable");
+    };
+    let agent = session.agent();
+    log::info!(
+        "RAG: syncing corpus '{}' from {} ({mode:?})",
+        plan.corpus_name,
+        plan.folder.display()
+    );
+    if mode == SyncMode::Rebuild {
+        agent
+            .store()
+            .delete_corpus(&plan.corpus_name)
+            .await
+            .with_context(|| format!("cannot clear the corpus index '{}'", plan.corpus_name))?;
+    }
+    let progress = |event: &ProgressEvent| {
+        if let Some(mapped) = map_progress(event) {
+            *lock(&context.shared.sync_progress) = Some(mapped);
+            emit_status(context, events);
+        }
+    };
+    let results = agent
+        .sync_corpus_with_progress(&plan.corpus, Some(&progress), Some(token))
+        .await?;
+    let documents = agent.store().document_ids().len();
+    Ok(SyncOutcome::from_results(results, documents))
+}
+
 /// Build a complete [`AgentSession`] for `workspace` from explicit agents.
 ///
 /// Exposed for tests and for the later ingestion sprint; the worker uses it
@@ -770,32 +1158,23 @@ pub async fn build_session(
     let store = open_store(workspace)
         .await
         .with_context(|| format!("cannot open the vector store in {}", workspace.display()))?;
-    let chunk_config = ChunkConfig::new(config.parse.chunk_size, config.parse.chunk_overlap)
-        .context("invalid chunk configuration")?;
 
     let mut builder = RagAgent::builder()
         .chat(chat)
         .embed(embed)
         .store(store)
         .parsers(DocumentParsers::new(build_parsers()))
-        .chunk_config(chunk_config)
+        .chunker(settings.chunker.build())
+        .chunk_config(chunk_config(settings)?)
         .attach_strategy(Box::new(PrependAttach))
         .context_tokens(config.chat.context_tokens)
         .top_k(config.embed.top_k)
         .similarity_threshold(config.embed.similarity_threshold);
 
-    if config.memory.strategy == MemoryStrategyKind::Rewrite {
-        let spec = ChatAgentSpec::ollama(
-            config.memory.model.clone(),
-            config.chat.params.clone(),
-            None,
-        );
-        let rewriter = spec.build().context("cannot build the memory rewriter")?;
+    if let Some(rewriter) = build_rewriter(settings)? {
         builder = builder.rewriter(rewriter);
     }
-    if let Some(path) = &config.chat.system_prompt_path {
-        let prompt = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read the system prompt {}", path.display()))?;
+    if let Some(prompt) = system_prompt(settings)? {
         builder = builder.system_prompt(prompt);
     }
     if let Some(path) = &config.memory.rewrite_prompt_path {
@@ -811,6 +1190,71 @@ pub async fn build_session(
     let mut session = AgentSession::new(agent, Box::new(session_store));
     apply_memory_strategy(&mut session, settings);
     Ok(session)
+}
+
+/// Apply a settings snapshot to a live session through the hot-swap setters.
+///
+/// Mirrors [`build_session`] step for step (minus the constructor wiring):
+/// the conversation turns, the open store and its index survive.
+fn apply_live_settings(
+    session: &mut AgentSession,
+    settings: &RagSettings,
+    factories: &RagFactories,
+) -> anyhow::Result<()> {
+    let chat = (factories.chat)(settings).context("cannot build the chat agent")?;
+    let embed = (factories.embed)(settings).context("cannot build the embedding backend")?;
+    let chunk_config = chunk_config(settings)?;
+    let rewriter = build_rewriter(settings)?;
+    let prompt = system_prompt(settings)?;
+    {
+        let agent = session.agent_mut();
+        agent.set_chat_agent(chat);
+        agent.set_embedder(embed);
+        agent.set_chunker(settings.chunker.build());
+        agent.set_chunk_config(chunk_config);
+        agent.set_parsers(DocumentParsers::new(build_parsers()));
+        agent.set_top_k(settings.ragrig.embed.top_k);
+        agent.set_similarity_threshold(settings.ragrig.embed.similarity_threshold);
+        agent.set_context_tokens(settings.ragrig.chat.context_tokens);
+        agent.set_rewriter(rewriter);
+        if let Some(prompt) = prompt {
+            agent.set_system_prompt(prompt);
+        }
+    }
+    apply_memory_strategy(session, settings);
+    Ok(())
+}
+
+/// Chunk size and overlap for ingestion (validated by ragrig).
+fn chunk_config(settings: &RagSettings) -> anyhow::Result<ChunkConfig> {
+    let parse = &settings.ragrig.parse;
+    ChunkConfig::new(parse.chunk_size, parse.chunk_overlap).context("invalid chunk configuration")
+}
+
+/// The query rewriter, when the memory strategy uses one.
+fn build_rewriter(settings: &RagSettings) -> anyhow::Result<Option<Box<dyn Generator>>> {
+    let memory = &settings.ragrig.memory;
+    if memory.strategy != MemoryStrategyKind::Rewrite {
+        return Ok(None);
+    }
+    let spec = ChatAgentSpec::ollama(
+        memory.model.clone(),
+        settings.ragrig.chat.params.clone(),
+        None,
+    );
+    spec.build()
+        .context("cannot build the memory rewriter")
+        .map(Some)
+}
+
+/// The configured system prompt, when a file is set.
+fn system_prompt(settings: &RagSettings) -> anyhow::Result<Option<String>> {
+    let Some(path) = &settings.ragrig.chat.system_prompt_path else {
+        return Ok(None);
+    };
+    std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read the system prompt {}", path.display()))
+        .map(Some)
 }
 
 /// Apply the declarative memory strategy (mirrors ragrig-cli).
@@ -884,6 +1328,11 @@ fn production_chat(settings: &RagSettings) -> anyhow::Result<Box<dyn Generator>>
 }
 
 fn production_embed(settings: &RagSettings) -> anyhow::Result<Box<dyn Embedder>> {
+    if !settings.embeddings_enabled {
+        // Pure-chat mode: retrieval is skipped entirely (ragrig's no-op
+        // embedder reports `is_enabled() == false`).
+        return Ok(Box::new(ragrig::NoopEmbedder));
+    }
     let embed = &settings.ragrig.embed;
     match embed.provider {
         EmbeddingProvider::Ollama => EmbedderSpec::Ollama {
@@ -910,7 +1359,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use crate::rag::{ComponentState, RagComponent};
-    use ragrig::{MutexGenerator, NoopEmbedder, SimpleGenerator};
+    use ragrig::{Embedding, MutexGenerator, NoopEmbedder, SimpleGenerator};
 
     /// A streaming-less generator that echoes its prompt.
     #[derive(Debug, Clone)]
@@ -928,10 +1377,50 @@ mod tests {
         }
     }
 
+    /// Deterministic offline embedder: non-empty vectors, so retrieval and
+    /// ingestion are enabled without a network.
+    #[derive(Debug, Clone)]
+    struct TinyEmbedder;
+
+    #[async_trait::async_trait]
+    impl Embedder for TinyEmbedder {
+        async fn embed(&self, texts: Vec<String>) -> anyhow::Result<Vec<Embedding>> {
+            Ok(texts
+                .into_iter()
+                .map(|text| {
+                    let mut hash = 0u64;
+                    for byte in text.bytes() {
+                        hash = hash.wrapping_mul(31).wrapping_add(u64::from(byte));
+                    }
+                    let vector = (0..4)
+                        .map(|i| ((hash >> (i * 8)) & 0xff) as f32 / 255.0)
+                        .collect();
+                    Embedding { text, vector }
+                })
+                .collect())
+        }
+        fn backend_name(&self) -> &'static str {
+            "tiny"
+        }
+        fn model_name(&self) -> &str {
+            "tiny-v1"
+        }
+        fn dimension(&self) -> usize {
+            4
+        }
+    }
+
     fn echo_factories() -> RagFactories {
         RagFactories {
             chat: Arc::new(|_| Ok(Box::new(MutexGenerator::new(EchoGen)) as Box<dyn Generator>)),
             embed: Arc::new(|_| Ok(Box::new(NoopEmbedder) as Box<dyn Embedder>)),
+        }
+    }
+
+    fn tiny_factories() -> RagFactories {
+        RagFactories {
+            chat: Arc::new(|_| Ok(Box::new(MutexGenerator::new(EchoGen)) as Box<dyn Generator>)),
+            embed: Arc::new(|_| Ok(Box::new(TinyEmbedder) as Box<dyn Embedder>)),
         }
     }
 
@@ -983,6 +1472,13 @@ mod tests {
         settings.library.folder = Some(workspace.join("library"));
         settings.library.bibtex = Some(workspace.join("library").join("library.bib"));
         settings
+    }
+
+    /// Write a source file into the workspace's library folder.
+    fn write_library_file(workspace: &Path, name: &str, content: &str) {
+        let library = workspace.join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::write(library.join(name), content).unwrap();
     }
 
     #[tokio::test]
@@ -1099,6 +1595,286 @@ mod tests {
         });
     }
 
+    #[tokio::test]
+    async fn configure_hot_swaps_without_losing_the_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = workspace_settings(dir.path());
+        let worker = RagrigWorker::spawn(settings.clone(), None, echo_factories());
+        wait_for_status(&worker);
+
+        worker.send(RagCommand::Query {
+            text: "hello".into(),
+        });
+        wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::QueryFinished { .. })
+        });
+        worker.send(RagCommand::ListSessions);
+        let event = wait_for_event(&worker, |event| matches!(event, RagEvent::Sessions { .. }));
+        let RagEvent::Sessions { current, .. } = event else {
+            unreachable!()
+        };
+        let first_id = current.expect("the answered query opened a session");
+
+        // A settings edit (e.g. a new top_k) is hot-swapped in place.
+        let mut changed = settings.clone();
+        changed.ragrig.embed.top_k = 7;
+        worker.send(RagCommand::Configure {
+            settings: Box::new(changed),
+            editor_workspace: None,
+        });
+        wait_for_status(&worker);
+
+        worker.send(RagCommand::Query {
+            text: "again".into(),
+        });
+        wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::QueryFinished { .. })
+        });
+        worker.send(RagCommand::ListSessions);
+        let event = wait_for_event(&worker, |event| matches!(event, RagEvent::Sessions { .. }));
+        let RagEvent::Sessions { current, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(
+            current.as_deref(),
+            Some(first_id.as_str()),
+            "the hot-swap must not replace the session"
+        );
+
+        // Both exchanges live in the same conversation.
+        worker.send(RagCommand::LoadSession { id: first_id });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SessionSwitched { .. })
+        });
+        let RagEvent::SessionSwitched { turns, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(turns.len(), 4, "two exchanges, one conversation");
+    }
+
+    #[tokio::test]
+    async fn sync_indexes_the_library_folder_incrementally() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = workspace_settings(dir.path());
+        write_library_file(dir.path(), "paper.md", "# Title\n\nSome body text.\n");
+
+        let worker = RagrigWorker::spawn(settings.clone(), None, tiny_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::SyncCorpus {
+            mode: SyncMode::Incremental,
+        });
+
+        // Progress shows up live in the store status (the bar's model).
+        let status = wait_for_status_where(&worker, |status| {
+            status
+                .component(RagComponent::Store)
+                .is_some_and(|store| store.detail.contains("paper.md"))
+        });
+        let store = status.component(RagComponent::Store).unwrap();
+        assert_eq!(store.state, ComponentState::Busy);
+        assert_eq!(store.detail, "indexing 1/1 · paper.md");
+
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SyncFinished { .. })
+        });
+        let RagEvent::SyncFinished {
+            indexed,
+            failed,
+            documents,
+        } = event
+        else {
+            unreachable!()
+        };
+        assert_eq!(indexed, 1, "the markdown file is indexed");
+        assert!(failed.is_empty(), "unexpected failures: {failed:?}");
+        assert_eq!(documents, Some(1));
+
+        // A second run skips the unchanged file.
+        worker.send(RagCommand::SyncCorpus {
+            mode: SyncMode::Incremental,
+        });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SyncFinished { .. })
+        });
+        let RagEvent::SyncFinished { indexed, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(indexed, 0, "nothing changed, nothing re-indexed");
+
+        // A new file is picked up.
+        write_library_file(dir.path(), "second.md", "# Another\n\nMore text.\n");
+        worker.send(RagCommand::SyncCorpus {
+            mode: SyncMode::Incremental,
+        });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SyncFinished { .. })
+        });
+        let RagEvent::SyncFinished {
+            indexed, documents, ..
+        } = event
+        else {
+            unreachable!()
+        };
+        assert_eq!(indexed, 1);
+        assert_eq!(documents, Some(2));
+
+        // The status snapshot carries the counts and the index manifest.
+        worker.send(RagCommand::Ping);
+        let status = wait_for_status_where(&worker, |status| status.chunks.is_some());
+        assert_eq!(status.documents, Some(2));
+        assert!(status.chunks.unwrap() >= 2);
+        let index = status.index.expect("the sync recorded a manifest");
+        assert_eq!(index.chunker, "markdown");
+        assert_eq!(index.chunk_size, settings.ragrig.parse.chunk_size);
+        assert_eq!(index.chunk_overlap, settings.ragrig.parse.chunk_overlap);
+        assert_eq!(
+            index.embedding_model, "tiny-v1",
+            "the manifest records the live embedder, not the configured name"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_applies_a_chunker_change_without_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = workspace_settings(dir.path());
+        // Three sections: the markdown chunker emits one chunk per section,
+        // the token chunker merges them into one.
+        write_library_file(
+            dir.path(),
+            "sections.md",
+            "# One\n\nFirst section.\n\n# Two\n\nSecond section.\n\n# Three\n\nThird section.\n",
+        );
+
+        let worker = RagrigWorker::spawn(settings.clone(), None, tiny_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::SyncCorpus {
+            mode: SyncMode::Incremental,
+        });
+        wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SyncFinished { .. })
+        });
+        worker.send(RagCommand::Ping);
+        let status = wait_for_status_where(&worker, |status| status.index.is_some());
+        let markdown_chunks = status.chunks.expect("chunk count after the first sync");
+        assert!(markdown_chunks > 1, "expected section chunks");
+
+        // Switch the chunker: the hot-swap must reach the live session, and a
+        // rebuild replaces the old chunks instead of accumulating them.
+        let mut changed = settings;
+        changed.chunker = crate::rag::ChunkerKind::Token;
+        worker.send(RagCommand::Configure {
+            settings: Box::new(changed),
+            editor_workspace: None,
+        });
+        wait_for_status(&worker);
+        worker.send(RagCommand::SyncCorpus {
+            mode: SyncMode::Rebuild,
+        });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SyncFinished { .. })
+        });
+        let RagEvent::SyncFinished { indexed, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(indexed, 1, "the rebuild re-indexes the file");
+
+        worker.send(RagCommand::Ping);
+        let status = wait_for_status_where(&worker, |status| status.index.is_some());
+        let index = status.index.expect("manifest after the rebuild");
+        assert_eq!(index.chunker, "token", "the hot-swap reached the session");
+        assert_eq!(
+            status.chunks,
+            Some(1),
+            "the rebuild replaced the {markdown_chunks} markdown chunks"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_without_embeddings_fails_with_an_actionable_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = workspace_settings(dir.path());
+        settings.embeddings_enabled = false;
+        let worker = RagrigWorker::spawn(settings, None, tiny_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::SyncCorpus {
+            mode: SyncMode::Incremental,
+        });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SyncFailed { .. })
+        });
+        let RagEvent::SyncFailed { message } = event else {
+            unreachable!()
+        };
+        assert!(
+            message.contains("embeddings are disabled"),
+            "unexpected message: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_without_a_workspace_fails_with_an_actionable_message() {
+        let worker = RagrigWorker::spawn(RagSettings::default(), None, echo_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::SyncCorpus {
+            mode: SyncMode::Incremental,
+        });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SyncFailed { .. })
+        });
+        let RagEvent::SyncFailed { message } = event else {
+            unreachable!()
+        };
+        assert!(
+            message.contains("no RAG workspace"),
+            "unexpected message: {message}"
+        );
+    }
+
+    #[test]
+    fn library_corpus_mirrors_the_ragrig_cli_convention() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let library = workspace.join("library");
+        std::fs::create_dir_all(&library).unwrap();
+
+        // The `--bibtex-merge` layout: the folder *is* the workspace.
+        let corpus = library_corpus(workspace, workspace);
+        assert_eq!(corpus.name(), "folder");
+
+        // Any other folder is identified by its canonical path, so two
+        // folders can never share (and delete) each other's chunks.
+        let corpus = library_corpus(workspace, &library);
+        assert_ne!(corpus.name(), "folder");
+        assert_eq!(
+            corpus.name(),
+            library.canonicalize().unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn progress_events_map_onto_the_host_model() {
+        let event = ProgressEvent::FileStarted {
+            index: 0,
+            total: 3,
+            corpus: "folder".into(),
+            document: ragrig::types::DocumentId("a.pdf".into()),
+        };
+        assert_eq!(
+            map_progress(&event),
+            Some(SyncProgress::File {
+                done: 1,
+                total: 3,
+                name: "a.pdf".into()
+            })
+        );
+        let event = ProgressEvent::ChunksEmbedded { done: 8, total: 20 };
+        assert_eq!(
+            map_progress(&event),
+            Some(SyncProgress::Embedding { done: 8, total: 20 })
+        );
+        assert_eq!(map_progress(&ProgressEvent::FileStored), None);
+    }
+
     /// Poll until `predicate` matches; panics after ~4 s.
     fn wait_for_event(worker: &RagrigWorker, predicate: impl Fn(&RagEvent) -> bool) -> RagEvent {
         for _ in 0..400 {
@@ -1109,6 +1885,21 @@ mod tests {
             }
         }
         panic!("expected event not seen within 4 s");
+    }
+
+    /// Poll for a status snapshot matching `predicate`.
+    fn wait_for_status_where(
+        worker: &RagrigWorker,
+        predicate: impl Fn(&RagStatus) -> bool,
+    ) -> RagStatus {
+        for _ in 0..400 {
+            match worker.try_recv() {
+                Some(RagEvent::Status { status }) if predicate(&status) => return status,
+                Some(_) => {}
+                None => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        panic!("no matching status within 4 s");
     }
 
     fn wait_for_status(worker: &RagrigWorker) -> RagStatus {

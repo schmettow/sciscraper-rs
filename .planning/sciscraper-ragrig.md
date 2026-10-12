@@ -65,8 +65,9 @@ sciscraper-rs  (feature `rag`, off by default)
 |---|---|---|
 | 0.1 | Dock, chat view (incl. streaming/error/meta), composer with submit keys, agent bar with status dots + slide-up menus. | ✅ Sprint 1 |
 | 0.2 | Light Markdown in assistant bubbles via `pulldown-cmark` (default feature `markdown`): emphasis, headings, lists (nested/ordered), inline + fenced code, quotes, rules, links with targets; streaming-safe. 28 unit tests + 5 doctests. | ✅ Sprint 2 |
-| 0.3 | Message actions (copy feedback, retry), clickable links, draggable splitter between dock sections, setting-row helpers. | next |
-| 0.4 | Tabbed dock mode; theme presets; publish on crates.io. | planned |
+| 0.3 | `form` module: `setting_row` (label + widget, truncated label column), `note`/`warning` lines — used by the sciscraper component menus. 31 unit tests + 6 doctests. | ✅ Sprint 3 |
+| 0.4 | Message actions (copy feedback, retry), clickable links, draggable splitter between dock sections. | next |
+| 0.5 | Tabbed dock mode; theme presets; publish on crates.io. | planned |
 
 Crate inquiry (Sprint 2): `egui_commonmark` was the candidate for editor-side
 Markdown rendering, but 0.24 requires **egui 0.35** (sciscraper pins 0.34) and
@@ -101,6 +102,28 @@ Verified: `cargo check --features rag` clean; 19 new tests pass; full suite 1516
 with 3 **pre-existing** failures (verified against clean HEAD) and the 5 stale-test files
 quarantined temporarily for the run (see §5). Known environment quirk: builds need
 `RUST_FONTCONFIG_DLOPEN=1` when `fontconfig.pc` is absent.
+
+**Sprint 3 design notes (recorded).**
+
+- **Chat has no "deactivate".** ragrig has neither `Provider::None` nor a no-op
+  generator outside its test fixtures, and a chat pane without a chat model is
+  not a chat. Deactivation therefore exists where it is meaningful: memory
+  (`Off`), embeddings (`NoopEmbedder`) and the corpus (no workspace). The Chat
+  menu offers *Test connection* instead. (Recorded, not an upstream issue — a
+  "disabled chat" state has no use case here.)
+- **Changing the chunker cannot be done in place.** The store keys chunks by
+  `(corpus, document, parser, chunker)`; a chunker change makes an incremental
+  sync re-index every file *under the new chunker* while the old chunks stay →
+  the same text would be retrieved twice. Hence the explicit *Rebuild* (delete
+  corpus, full sync) and the staleness warning. Upstream: US-11.
+- **The index manifest is the staleness oracle.** `store.manifest()` carries
+  chunker, chunk size/overlap and embedding model — exactly the settings an
+  incremental run silently ignores. `IndexInfo::matches` compares them; empty
+  legacy fields count as "unknown", not as a mismatch.
+- **Probes mirror rig's endpoints.** The Ollama base URL must honour
+  `OLLAMA_API_BASE_URL` (rig's env var) or the probe would test a different
+  server than ragrig talks to. DeepSeek probes `GET /models` (the endpoint
+  rig's own tests use) so an invalid key shows as an error instead of "ready".
 
 ### ✅ Sprint 2 — Chat depth (done)
 
@@ -151,14 +174,55 @@ files): discovery reports `found: CEH.bib, CEH_2.bib`; with `CEH.bib` pinned,
 `@Caspar2021` attaches 60 k chars of parsed PDF text via the keyed file name.
 45 feature tests green; full suite 1542 passed / 3 pre-existing failures.
 
-### Sprint 3 — Component bar actions (next)
+### ✅ Sprint 3 — Component bar actions (done)
 
-- Activate/deactivate per stage via the hot-swap setters (`set_chat_agent`, `set_embedder`,
-  `set_rewriter`, `set_parsers`, `set_chunker`, `set_top_k`, `set_context_tokens`).
-- "Update": incremental `sync_corpus_with_progress` (manifest-driven), re-embed changed docs.
-- Connectivity probes (Ollama ping, DeepSeek key check) feeding real Ready/Error states.
+Delivered:
 
-### Sprint 4 — Library + drag-to-cite
+- **Hot-swap via ragrig's setters.** `Configure` now applies chat, embeddings,
+  chunker, chunk config, parsers, top-k/threshold, context window, rewriter and
+  memory strategy to the *live* session (`apply_live_settings`, mirroring
+  `build_session`); the conversation and the open store survive a settings
+  change. When an operation holds the session lock, the epoch is advanced
+  instead and the next operation rebuilds lazily — same result, one rebuild
+  later. A workspace change still drops the session (it belongs to the old
+  corpus).
+- **Embeddings on/off** (`RagSettings::embeddings_enabled`): off maps to
+  `EmbedderSpec::None` (ragrig's `NoopEmbedder`, `is_enabled() == false`) — the
+  D3 "Embeddings inactive" state, honest because ragrig skips retrieval
+  entirely. Component status shows the disabled state, chat still works.
+- **Chunker selectable** (`ChunkerKind::Markdown|Token`, serde-default
+  `Markdown`) wired into the Chunker menu.
+- **"Update" / "Rebuild" in the Corpus and Store menus.** Update runs
+  `sync_corpus_with_progress` incrementally (manifest-driven: new/changed files
+  indexed, removed files dropped, unchanged skipped); Rebuild deletes this
+  corpus from the store first, then re-indexes everything. The menus warn when
+  the stored index manifest differs from the current settings
+  (`IndexInfo::matches`) — the exact case where an incremental run would keep
+  old chunks *alongside* the new ones (see US-11).
+- **Corpus identity** mirrors ragrig-cli: the library folder that *is* the RAG
+  workspace (the `--bibtex-merge` layout) is indexed as corpus `"folder"`, so
+  CLI and editor share one index; any other folder is named by its canonical
+  path (distinct names, so one corpus' sync can never delete another's chunks).
+- **Connectivity probes.** `src/rag/probe.rs`: Ollama `GET /api/tags` honouring
+  rig's `OLLAMA_API_BASE_URL`, DeepSeek `GET /models` with the bearer key
+  (`401/403` = rejected, transport error = unreachable, any other answer =
+  reachable). Probes run at dock open and from *Test connection* in the Chat/
+  Embed menus; results feed `Reachability` into the status model
+  (probing → Busy, unreachable → Error, no key → Inactive as before). Probes
+  skip the DeepSeek call when no key is configured.
+- **Status model** grew `ActivityKind` (a sync no longer marks the chat busy),
+  document/chunk counts (`document_ids().len()` / `len()` — the old label said
+  "documents" for a chunk count), the index manifest (`IndexInfo`) and the live
+  sync step; all of it pure and unit-tested.
+- **UX details:** the composer's Stop button cancels a running sync too, and
+  finished runs leave a transcript note ("Index updated — 3 files indexed. 42
+  documents in the store."), failures list the first five files individually.
+
+Verification: 70 feature tests green (25 new); full suite 1567 passed with the
+3 pre-existing failures (baseline was 1542 + 3). Clippy has no warnings in the
+feature files; `cargo check` without the feature unchanged.
+
+### Sprint 4 — Library + drag-to-cite (next)
 
 - `grobid` feature (server-dependent paths gated separately); `.bib` view model
   (the `rag` feature already carries `grobid-bibtex` for `@Key` resolution),
@@ -183,6 +247,12 @@ files): discovery reports `found: CEH.bib, CEH_2.bib`; with `CEH.bib` pinned,
   `markdown::video_embed::tests::document_parses_bare_youtube_url_paragraph`,
   `state::tests::test_recovery_identity_original_bleeding_repro_rejected`,
   `state::tests::test_recovery_identity_path_mismatch_rejected` (verified in a clean worktree).
+- **Locale edits need a rebuild.** `rust_i18n::i18n!` embeds the YAML at compile
+  time of `main.rs`, and `build.rs` did not declare `locales/` as a dependency,
+  so cargo saw no reason to recompile: edited strings only appeared after a
+  manual rebuild (this bit us in Sprint 3 — a new string kept failing a test
+  until `main.rs` was touched). Fixed by `cargo:rerun-if-changed=locales` in
+  `build.rs`; a plain `cargo test` now picks locale changes up.
 
 ## 6. Upstream issues to file (not fixed locally)
 
@@ -193,10 +263,17 @@ lives in [`../UPSTREAM.md`](../UPSTREAM.md). Summary:
    rename + merge) exists only inside the `ragrig-cli` binary. Please expose it as a reusable
    API (e.g. `grobid-bibtex` feature `pipeline`) so GUI hosts do not re-implement it.
 2. **ragrig** — a component-status/diagnostics snapshot on `RagAgent` (backend names, store
-   counts, last error) would let hosts render status bars without guessing.
+   counts, last error) would let hosts render status bars without guessing. Sprint 3 made
+   this concrete: the editor probes Ollama/DeepSeek itself (including rig's
+   `OLLAMA_API_BASE_URL` env) because the library offers no health check.
 3. **ragrig** — document the GUI integration pattern for `chat_streaming_detailed`
    (worker + mpsc) in the book/README; the pieces exist but are only discoverable by reading
    `ragrig-cli`.
+4. **ragrig** — no way to replace one pipeline's chunks: changing parser/chunker/chunk size
+   forces an incremental sync to keep the old chunks next to the new ones (the dedup key
+   includes the chunker). Hosts must `delete_corpus` — which drops *all* pipelines of that
+   corpus. A `delete_pipeline(corpus, pipeline)` or a "replace" sync would make *Update*
+   sufficient; see US-11.
 
 ## 7. crates.io inquiries performed
 
@@ -204,10 +281,14 @@ lives in [`../UPSTREAM.md`](../UPSTREAM.md). Summary:
 |---|---|---|---|
 | Chat/agent widgets | `egui_chat` (own repo) | 0.1 + 0.2 here | reuse across hosts |
 | Rich text in bubbles | `egui_commonmark` | exists, reputable, **but 0.24 needs egui 0.35 and 0.25 needs Rust 1.95** — incompatible with the pinned egui 0.34 / Rust 1.92 | in-house renderer via `pulldown-cmark` 0.13 |
+| Setting rows / notes in menus | — | nothing in the pinned egui ecosystem fits better than five lines of `Ui` code | `egui_chat::form` (0.3), reused by the host |
 | Bibliography model | `grobid-bibtex` | crates.io has 0.2.0 only, which lacks `Collection::cite_entries`; local repo is 0.2.1 | **path + version dependency** (same co-development pattern as ragrig-cli); publish 0.2.1 before dropping the path |
 | Composer/icons/menus | — | egui built-ins + `egui-phosphor` (host) | no new deps |
+| Connectivity probes | `ureq` 2 | already a (non-optional) dependency for update checks, TLS included | reuse; no `reqwest` pulled in for two GETs |
+| RAG progress/cancel seams | `ragrig::progress` | `Progress`/`Cancel` are exactly the GUI seams | used in-process |
 | URL/filter/watch/table | `url`, `fuzzy-matcher`, `notify`, `egui_extras` | first three already in tree; `egui_extras` from the egui authors | reuse |
 | RAG stack | `ragrig` 1.1.1 | current, maintained | as planned |
+| Test doubles for `Embedder` | `async-trait` 0.1 (dev-dep) | ragrig declares its traits with `#[async_trait]`, so hermetic impls need the same attribute | dev-dependency only — not part of the published build |
 
 ## 8. Release blockers found in Sprint 2
 
