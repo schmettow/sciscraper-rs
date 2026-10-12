@@ -186,6 +186,9 @@ files): discovery reports `found: CEH.bib, CEH_2.bib`; with `CEH.bib` pinned,
 
 ## 6. Upstream issues to file (not fixed locally)
 
+The consolidated, structured list — with evidence, impact, workarounds and filing order —
+lives in [`../UPSTREAM.md`](../UPSTREAM.md). Summary:
+
 1. **grobid-bibtex / ragrig** — the pre-pass orchestration (manifest + extract + complete +
    rename + merge) exists only inside the `ragrig-cli` binary. Please expose it as a reusable
    API (e.g. `grobid-bibtex` feature `pipeline`) so GUI hosts do not re-implement it.
