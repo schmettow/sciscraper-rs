@@ -1,0 +1,458 @@
+//! `@Key` citation resolution for query attachments (decision D5).
+//!
+//! Mirrors the semantics of ragrig-cli's citation attach:
+//!
+//! 1. [`cite_keys`] scans the query for `@Key` mentions (word boundaries, so
+//!    e-mail addresses never match).
+//! 2. [`resolve`] looks each key up in the library bibliography
+//!    ([`grobid_bibtex::Collection`]) and falls back to a corpus file named
+//!    after the key (`<key> - …`, the ragrig rename convention).
+//! 3. The matched document is parsed with the ragrig parser cascade and
+//!    returned as a one-shot [`AttachedDocument`].
+//!
+//! Failures are reported per key with a human-readable reason; missed keys
+//! never abort a query. Ambiguous keyed file names are reported instead of
+//! guessing — silently attaching the wrong paper would be worse than a miss.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use grobid_bibtex::Collection;
+use ragrig::parsers::DocumentParsers;
+use ragrig::{build_parsers, AttachedDocument};
+
+use super::LibrarySettings;
+
+/// Maximum characters attached per source (≈ 20k tokens at 3 chars/token).
+pub const MAX_ATTACH_CHARS: usize = 60_000;
+/// Maximum number of sources attached to one query.
+pub const MAX_ATTACHMENTS: usize = 3;
+
+/// Outcome of resolving the `@Key` mentions of one query.
+#[derive(Clone, Debug, Default)]
+pub struct CiteResolution {
+    /// Documents ready to attach.
+    pub attachments: Vec<AttachedDocument>,
+    /// Canonical keys that were attached.
+    pub resolved: Vec<String>,
+    /// One human-readable line per key that could not be attached.
+    pub missed: Vec<String>,
+}
+
+impl PartialEq for CiteResolution {
+    // `AttachedDocument` has no `PartialEq`; compare name and content.
+    fn eq(&self, other: &Self) -> bool {
+        self.resolved == other.resolved
+            && self.missed == other.missed
+            && self.attachments.len() == other.attachments.len()
+            && self
+                .attachments
+                .iter()
+                .zip(&other.attachments)
+                .all(|(a, b)| a.name == b.name && a.content == b.content)
+    }
+}
+
+/// Scan `text` for citation-key mentions.
+///
+/// A mention is `@` at the start of the input or after a character that is
+/// not alphanumeric (so `user@example.com` never matches), followed by at
+/// least one key character (ASCII letter/digit or one of `_ . : + -`).
+/// Trailing `.`, `:`, `+` and `-` are treated as sentence punctuation and
+/// trimmed; the first character must be a letter or digit. Mentions are
+/// deduplicated in order of first appearance.
+pub fn cite_keys(text: &str) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    let mut prev: Option<char> = None;
+    let mut chars = text.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        if c == '@' && !prev.is_some_and(char::is_alphanumeric) {
+            let key_start = start + 1;
+            let mut end = key_start;
+            while let Some(&(index, next)) = chars.peek() {
+                if !is_key_char(next) {
+                    break;
+                }
+                end = index + next.len_utf8();
+                chars.next();
+            }
+            let token = text[key_start..end].trim_end_matches(['.', ':', '+', '-']);
+            let well_formed = token
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric());
+            if well_formed && !keys.iter().any(|key| key == token) {
+                keys.push(token.to_string());
+            }
+        }
+        prev = Some(c);
+    }
+    keys
+}
+
+fn is_key_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '+' | '-')
+}
+
+/// Resolve `keys` against the library of `workspace`.
+pub fn resolve(workspace: &Path, library: &LibrarySettings, keys: &[String]) -> CiteResolution {
+    let mut resolution = CiteResolution::default();
+    if keys.is_empty() {
+        return resolution;
+    }
+    let bib = library.bibtex(workspace);
+    let folder = library.folder(workspace);
+    if !bib.exists() {
+        for key in keys {
+            resolution
+                .missed
+                .push(format!("@{key} — no bibliography at {}", bib.display()));
+        }
+        return resolution;
+    }
+    let collection = match Collection::load_or_new(&bib) {
+        Ok(collection) => collection,
+        Err(err) => {
+            for key in keys {
+                resolution
+                    .missed
+                    .push(format!("@{key} — cannot read {}: {err}", bib.display()));
+            }
+            return resolution;
+        }
+    };
+    let entries: Vec<_> = collection.cite_entries().collect();
+    let parsers = DocumentParsers::new(build_parsers());
+    let mut scan: Option<Vec<(String, PathBuf)>> = None;
+    let mut attached_paths: HashSet<PathBuf> = HashSet::new();
+
+    for key in keys {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.key.eq_ignore_ascii_case(key));
+        let canonical = entry.map_or_else(|| key.clone(), |entry| entry.key.clone());
+
+        // 1. The document recorded in the entry's `file` field.
+        let mut path: Option<PathBuf> = None;
+        if let Some(recorded) = entry.and_then(|entry| entry.file.as_deref()) {
+            let in_corpus = if recorded.is_absolute() {
+                recorded.to_path_buf()
+            } else {
+                folder.join(recorded)
+            };
+            if in_corpus.is_file() {
+                path = Some(in_corpus);
+            } else if recorded.is_file() {
+                path = Some(recorded.to_path_buf());
+            }
+        }
+
+        // 2. A corpus file named after the key (`<key> - …`).
+        let mut reason: Option<String> = None;
+        if path.is_none() {
+            if entry.is_none() {
+                reason = Some("unknown key".to_string());
+            } else {
+                let files = scan.get_or_insert_with(|| corpus_files(&folder));
+                let mut matches = candidates(&canonical, files);
+                match matches.len() {
+                    0 => {
+                        reason = Some(if entry.and_then(|entry| entry.file.as_ref()).is_some() {
+                            "linked document not found".to_string()
+                        } else {
+                            "no document linked".to_string()
+                        });
+                    }
+                    1 => path = matches.pop(),
+                    count => reason = Some(format!("{count} candidate files (ambiguous)")),
+                }
+            }
+        }
+
+        let Some(path) = path else {
+            resolution
+                .missed
+                .push(format!("@{canonical} — {}", reason.unwrap_or_default()));
+            continue;
+        };
+
+        if attached_paths.contains(&path) {
+            // An alias of an already attached document counts as resolved.
+            resolution.resolved.push(canonical);
+            continue;
+        }
+        if resolution.attachments.len() >= MAX_ATTACHMENTS {
+            resolution.missed.push(format!(
+                "@{canonical} — attachment limit ({MAX_ATTACHMENTS}) reached"
+            ));
+            continue;
+        }
+        match parsers.parse(&path) {
+            Ok(text) => {
+                resolution.attachments.push(AttachedDocument {
+                    name: format!("@{canonical}"),
+                    content: truncate(text, MAX_ATTACH_CHARS),
+                });
+                resolution.resolved.push(canonical);
+                attached_paths.insert(path);
+            }
+            Err(err) => resolution.missed.push(format!(
+                "@{canonical} — cannot read {}: {err:#}",
+                path.display()
+            )),
+        }
+    }
+    resolution
+}
+
+/// Corpus files as `(lowercase stem, path)` pairs.
+fn corpus_files(folder: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| {
+            let path = entry.path();
+            let stem = path.file_stem()?.to_str()?.to_lowercase();
+            Some((stem, path))
+        })
+        .collect()
+}
+
+/// Files whose name matches the key exactly or starts with `<key> - `.
+fn candidates(key: &str, files: &[(String, PathBuf)]) -> Vec<PathBuf> {
+    let lowercase = key.to_lowercase();
+    let prefix = format!("{lowercase} - ");
+    let mut matches: Vec<PathBuf> = files
+        .iter()
+        .filter(|(stem, _)| *stem == lowercase || stem.starts_with(&prefix))
+        .map(|(_, path)| path.clone())
+        .collect();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn truncate(text: String, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    text.chars().take(max_chars).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn library(folder: &Path, bib: &Path) -> LibrarySettings {
+        LibrarySettings {
+            folder: Some(folder.to_path_buf()),
+            bibtex: Some(bib.to_path_buf()),
+        }
+    }
+
+    fn write(path: &Path, content: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn cite_keys_finds_mentions_at_word_boundaries() {
+        assert_eq!(
+            cite_keys("Compare @Smith2024 and @Jones_2020-a, not user@example.com."),
+            vec!["Smith2024", "Jones_2020-a"]
+        );
+    }
+
+    #[test]
+    fn cite_keys_trims_sentence_punctuation_and_deduplicates() {
+        assert_eq!(
+            cite_keys("See @Key2024. Again @Key2024: and @A1+"),
+            vec!["Key2024", "A1"]
+        );
+    }
+
+    #[test]
+    fn cite_keys_rejects_stray_at_signs() {
+        assert!(cite_keys("@ example @-bad @").is_empty());
+    }
+
+    #[test]
+    fn resolve_attaches_linked_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        write(&folder.join("paper.md"), "# Paper\n\nContent of the paper.");
+        write(
+            &bib,
+            "@misc{Smith2024,\n  author = {Smith, Jane},\n  title = {A Paper},\n  file = {paper.md}\n}\n",
+        );
+
+        let resolution = resolve(workspace, &library(&folder, &bib), &["Smith2024".into()]);
+        assert_eq!(resolution.resolved, vec!["Smith2024"]);
+        assert!(resolution.missed.is_empty());
+        assert_eq!(resolution.attachments.len(), 1);
+        assert_eq!(resolution.attachments[0].name, "@Smith2024");
+        assert!(resolution.attachments[0]
+            .content
+            .contains("Content of the paper."));
+    }
+
+    #[test]
+    fn resolve_finds_keyed_filename_in_corpus() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        write(
+            &folder.join("Smith2024 - Jane Smith - A Paper - 2024.md"),
+            "keyed file content",
+        );
+        write(&bib, "@misc{Smith2024,\n  title = {A Paper}\n}\n");
+
+        let resolution = resolve(workspace, &library(&folder, &bib), &["Smith2024".into()]);
+        assert_eq!(resolution.resolved, vec!["Smith2024"]);
+        assert!(resolution.attachments[0]
+            .content
+            .contains("keyed file content"));
+    }
+
+    #[test]
+    fn resolve_is_case_insensitive_and_uses_canonical_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        write(&folder.join("paper.md"), "text");
+        write(&bib, "@misc{Smith2024,\n  file = {paper.md}\n}\n");
+
+        let resolution = resolve(workspace, &library(&folder, &bib), &["smith2024".into()]);
+        assert_eq!(resolution.resolved, vec!["Smith2024"]);
+        assert_eq!(resolution.attachments[0].name, "@Smith2024");
+    }
+
+    #[test]
+    fn resolve_reports_unknown_missing_and_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        write(&folder.join("A2024 - one.md"), "one");
+        write(&folder.join("A2024 - two.md"), "two");
+        write(
+            &bib,
+            "@misc{A2024,\n  title = {T}\n}\n@misc{B2024,\n  title = {T}\n}\n",
+        );
+
+        let keys = vec![
+            "A2024".to_string(),
+            "B2024".to_string(),
+            "Ghost".to_string(),
+        ];
+        let resolution = resolve(workspace, &library(&folder, &bib), &keys);
+        assert!(resolution.attachments.is_empty());
+        assert_eq!(resolution.missed.len(), 3);
+        assert!(
+            resolution.missed[0].contains("@A2024") && resolution.missed[0].contains("ambiguous")
+        );
+        assert!(
+            resolution.missed[1].contains("@B2024")
+                && resolution.missed[1].contains("no document linked")
+        );
+        assert!(
+            resolution.missed[2].contains("@Ghost") && resolution.missed[2].contains("unknown key")
+        );
+    }
+
+    #[test]
+    fn resolve_reports_missing_bibliography() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        let resolution = resolve(workspace, &library(&folder, &bib), &["Key".into()]);
+        assert_eq!(resolution.missed.len(), 1);
+        assert!(resolution.missed[0].contains("no bibliography"));
+    }
+
+    #[test]
+    fn resolve_reports_unreadable_bibliography() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        // A directory at the bibliography path cannot be read as a file.
+        std::fs::create_dir_all(&bib).unwrap();
+        let resolution = resolve(workspace, &library(&folder, &bib), &["Key".into()]);
+        assert_eq!(resolution.missed.len(), 1);
+        assert!(resolution.missed[0].contains("cannot read"));
+    }
+
+    #[test]
+    fn resolve_truncates_oversized_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        write(&folder.join("big.md"), &"x".repeat(MAX_ATTACH_CHARS + 100));
+        write(&bib, "@misc{Big2024,\n  file = {big.md}\n}\n");
+
+        let resolution = resolve(workspace, &library(&folder, &bib), &["Big2024".into()]);
+        assert_eq!(
+            resolution.attachments[0].content.chars().count(),
+            MAX_ATTACH_CHARS
+        );
+    }
+
+    #[test]
+    fn resolve_limits_attachments_per_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        let mut bib_text = String::new();
+        for index in 0..(MAX_ATTACHMENTS + 2) {
+            let name = format!("K{index}.md");
+            write(&folder.join(&name), "text");
+            bib_text.push_str(&format!("@misc{{K{index},\n  file = {{{name}}}\n}}\n"));
+        }
+        write(&bib, &bib_text);
+
+        let keys: Vec<String> = (0..MAX_ATTACHMENTS + 2)
+            .map(|index| format!("K{index}"))
+            .collect();
+        let resolution = resolve(workspace, &library(&folder, &bib), &keys);
+        assert_eq!(resolution.attachments.len(), MAX_ATTACHMENTS);
+        assert_eq!(resolution.missed.len(), 2);
+        assert!(resolution.missed[0].contains("limit"));
+    }
+
+    #[test]
+    fn resolve_deduplicates_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        write(&folder.join("shared.md"), "shared text");
+        write(
+            &bib,
+            "@misc{Alias1,\n  file = {shared.md}\n}\n@misc{Alias2,\n  file = {shared.md}\n}\n",
+        );
+
+        let resolution = resolve(
+            workspace,
+            &library(&folder, &bib),
+            &["Alias1".into(), "Alias2".into()],
+        );
+        assert_eq!(resolution.attachments.len(), 1);
+        assert_eq!(resolution.resolved, vec!["Alias1", "Alias2"]);
+    }
+}

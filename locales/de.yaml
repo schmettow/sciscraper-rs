@@ -1028,6 +1028,16 @@ agent:
   stop: "Stopp"
   hint: "Eingabe: Zeilenumbruch · Strg+Eingabe: senden"
   cancelled: "Abgebrochen"
+  attached: "Angehängt"
+  attach_missed: "Konnte nicht anhängen"
+  session:
+    new: "Neu"
+    new_hint: "Neue Unterhaltung beginnen"
+    refresh: "Liste aktualisieren"
+    empty: "Noch keine gespeicherten Unterhaltungen."
+    current: "Unterhaltung"
+    turns: "Beiträge"
+    just_now: "gerade eben"
   library:
     empty: "Noch keine Quellen."
   menu:

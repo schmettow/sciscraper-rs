@@ -63,10 +63,16 @@ sciscraper-rs  (feature `rag`, off by default)
 
 | Version | Content | Status |
 |---|---|---|
-| 0.1 | Dock, chat view (incl. streaming/error/meta), composer with submit keys, agent bar with status dots + slide-up menus. 16 unit tests + 4 doctests. | ✅ shipped in Sprint 1 |
-| 0.2 | Light Markdown in assistant bubbles (emphasis, lists, inline/fenced code), message actions (copy feedback, retry), smoother streaming caret. | next |
-| 0.3 | Draggable splitter between dock sections; setting-row helpers (text/slider/combo) to cut host boilerplate; tabbed dock mode. | planned |
-| 0.4 | Theme presets; publish on crates.io (name `egui_chat` is available; process the usual metadata checklist). | planned |
+| 0.1 | Dock, chat view (incl. streaming/error/meta), composer with submit keys, agent bar with status dots + slide-up menus. | ✅ Sprint 1 |
+| 0.2 | Light Markdown in assistant bubbles via `pulldown-cmark` (default feature `markdown`): emphasis, headings, lists (nested/ordered), inline + fenced code, quotes, rules, links with targets; streaming-safe. 28 unit tests + 5 doctests. | ✅ Sprint 2 |
+| 0.3 | Message actions (copy feedback, retry), clickable links, draggable splitter between dock sections, setting-row helpers. | next |
+| 0.4 | Tabbed dock mode; theme presets; publish on crates.io. | planned |
+
+Crate inquiry (Sprint 2): `egui_commonmark` was the candidate for editor-side
+Markdown rendering, but 0.24 requires **egui 0.35** (sciscraper pins 0.34) and
+0.25 requires Rust 1.95 (> pinned 1.92) — hence the renderer lives in
+`egui_chat` behind the `markdown` feature, built on `pulldown-cmark` 0.13
+(the de-facto Rust CommonMark parser).
 
 Until 0.2, `sciscraper-rs` depends on `egui_chat` by path + version
 (`{ version = "0.1.0", path = "../egui_chat" }`); publishing `egui_chat` before an
@@ -96,16 +102,31 @@ with 3 **pre-existing** failures (verified against clean HEAD) and the 5 stale-t
 quarantined temporarily for the run (see §5). Known environment quirk: builds need
 `RUST_FONTCONFIG_DLOPEN=1` when `fontconfig.pc` is absent.
 
-### Sprint 2 — Chat depth (next)
+### ✅ Sprint 2 — Chat depth (done)
 
-- Conversation continuity across restarts: restore/pick sessions from
-  `.ragrig/sessions` (`AgentSession::load_session`, `list_sessions`); "New conversation".
-- `@Key` attachments (D5): resolve keys against the bibliography, attach the PDF text
-  via `chat_streaming_detailed_with_attachments`.
-- Markdown rendering for assistant messages (**lands in `egui_chat` 0.2**).
-- Current-selection attachment (stretch): send the editor selection as a one-off document.
+Delivered:
 
-### Sprint 3 — Component bar actions
+- **Conversation continuity**: worker lists/loads/creates sessions
+  (`FsSessionStore` in `<workspace>/.ragrig/sessions`); the dock resumes the
+  last conversation on startup (`RestoreLatest`), offers *New* and a session
+  picker with age/turn count. Session actions are locked while a query runs.
+- **`@Key` attachments (D5)**: `src/rag/cite.rs` scans mentions, resolves
+  them against the bibliography (`Collection::cite_entries`) with a keyed-filename
+  fallback (`<key> - …`), parses the document and attaches it as one-shot
+  context; misses/ambiguity are reported as a system note, never guessing.
+  Caps: 3 attachments, 60 000 chars each.
+- **Markdown**: `egui_chat` 0.2 renders assistant bubbles as light Markdown
+  (see §3).
+
+Deferred (stretch, not urgent): attaching the current editor selection as a
+one-off document — the attachment plumbing now exists, so it is a small follow-up.
+
+Verification: 37 feature tests green (`rag::`, `ui::agent_panel::`), full suite
+1534 passed / 3 pre-existing failures. One full-suite run showed an extra
+transient failure that did not reproduce in two subsequent runs nor in five
+isolated runs of the feature tests.
+
+### Sprint 3 — Component bar actions (next)
 
 - Activate/deactivate per stage via the hot-swap setters (`set_chat_agent`, `set_embedder`,
   `set_rewriter`, `set_parsers`, `set_chunker`, `set_top_k`, `set_context_tokens`).
@@ -114,8 +135,9 @@ quarantined temporarily for the run (see §5). Known environment quirk: builds n
 
 ### Sprint 4 — Library + drag-to-cite
 
-- `grobid-bibtex` dependency + `grobid` feature (server-dependent paths gated separately);
-  `.bib` view model, Au–Yr–Ti–Source rows, filter, watcher (`notify`), corrupt-file states.
+- `grobid` feature (server-dependent paths gated separately); `.bib` view model
+  (the `rag` feature already carries `grobid-bibtex` for `@Key` resolution),
+  Au–Yr–Ti–Source rows, filter, watcher (`notify`), corrupt-file states.
 - Typed cite-drag payload → editor insertion with undo; formats fixed per D2
   (`@key` inline, `[@k1, @k2]` bracketed); accessible non-drag path.
 
@@ -152,8 +174,17 @@ quarantined temporarily for the run (see §5). Known environment quirk: builds n
 
 | Need | Crate | Result | Decision |
 |---|---|---|---|
-| Chat/agent widgets | `egui_chat` (own repo) | bootstrapped here | reuse across hosts |
-| Rich text in bubbles | `egui_commonmark` | exists, reputable; 0.25 needs Rust 1.95 (> pinned 1.92); pin ≤ 0.24 if adopted | decide at `egui_chat` 0.2 |
+| Chat/agent widgets | `egui_chat` (own repo) | 0.1 + 0.2 here | reuse across hosts |
+| Rich text in bubbles | `egui_commonmark` | exists, reputable, **but 0.24 needs egui 0.35 and 0.25 needs Rust 1.95** — incompatible with the pinned egui 0.34 / Rust 1.92 | in-house renderer via `pulldown-cmark` 0.13 |
+| Bibliography model | `grobid-bibtex` | crates.io has 0.2.0 only, which lacks `Collection::cite_entries`; local repo is 0.2.1 | **path + version dependency** (same co-development pattern as ragrig-cli); publish 0.2.1 before dropping the path |
 | Composer/icons/menus | — | egui built-ins + `egui-phosphor` (host) | no new deps |
 | URL/filter/watch/table | `url`, `fuzzy-matcher`, `notify`, `egui_extras` | first three already in tree; `egui_extras` from the egui authors | reuse |
-| RAG stack | `ragrig` 1.1.1, `grobid-bibtex` 0.2.1 | current, maintained | as planned |
+| RAG stack | `ragrig` 1.1.1 | current, maintained | as planned |
+
+## 8. Release blockers found in Sprint 2
+
+1. **Publish `grobid-bibtex` 0.2.1 before dropping the path dependency**
+   (crates.io carries 0.2.0, which lacks `Collection::cite_entries`).
+2. `pdfsink-rs` (via `ragrig` → `pdf-extract`) resolves to a version requiring
+   Rust 1.97 on crates.io; the lock pins **0.2.10** to match the pinned 1.92
+   toolchain. Upstream will need this pin (or a raised MSRV).

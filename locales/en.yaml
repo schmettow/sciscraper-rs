@@ -1096,6 +1096,16 @@ agent:
   stop: "Stop"
   hint: "Return: newline · Ctrl+Return: send"
   cancelled: "Cancelled"
+  attached: "Attached"
+  attach_missed: "Could not attach"
+  session:
+    new: "New"
+    new_hint: "Start a new conversation"
+    refresh: "Refresh list"
+    empty: "No saved conversations yet."
+    current: "Conversation"
+    turns: "turns"
+    just_now: "just now"
   library:
     empty: "No sources yet."
   menu:

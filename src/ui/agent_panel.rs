@@ -24,7 +24,7 @@ use rust_i18n::t;
 
 use crate::rag::{
     ComponentState, RagCommand, RagComponent, RagEvent, RagFactories, RagSettings, RagStatus,
-    RagrigWorker,
+    RagrigWorker, SessionInfo, TurnInfo,
 };
 
 /// Deferred actions produced while rendering (applied after the borrows end).
@@ -46,25 +46,32 @@ pub struct AgentPanel {
     status: Option<RagStatus>,
     busy: bool,
     last_workspace: Option<PathBuf>,
+    sessions: Vec<SessionInfo>,
+    session: Option<String>,
 }
 
 impl AgentPanel {
-    /// Create the panel and spawn its worker.
+    /// Create the panel, spawn its worker and restore the last conversation.
     pub fn new(settings: &RagSettings, editor_workspace: Option<PathBuf>) -> Self {
+        let worker = RagrigWorker::spawn(
+            settings.clone(),
+            editor_workspace.clone(),
+            RagFactories::production(),
+        );
+        // Continue where the user left off (no-op when nothing is saved yet).
+        worker.send(RagCommand::RestoreLatest);
         Self {
             transcript: Vec::new(),
             input: String::new(),
             open_menu: None,
             agent_section: SectionState::new(t!("agent.section.agent").to_string()),
             library_section: SectionState::new(t!("agent.section.library").to_string()),
-            worker: RagrigWorker::spawn(
-                settings.clone(),
-                editor_workspace.clone(),
-                RagFactories::production(),
-            ),
+            worker,
             status: None,
             busy: false,
             last_workspace: editor_workspace,
+            sessions: Vec::new(),
+            session: None,
         }
     }
 
@@ -114,6 +121,9 @@ impl AgentPanel {
         let settings_dirty = Cell::new(false);
         let submit_requested = Cell::new(false);
         let cancel_requested = Cell::new(false);
+        let new_session_requested = Cell::new(false);
+        let sessions_refresh_requested = Cell::new(false);
+        let session_load_requested: RefCell<Option<String>> = RefCell::new(None);
 
         let empty_text = if self
             .status
@@ -129,15 +139,26 @@ impl AgentPanel {
         let dock = SectionDock::new("sciscraper_agent_dock", DockSide::Right, settings.width)
             .width_range(300.0, 720.0);
 
-        // Section 1: chat transcript, composer, component bar.
+        // Section 1: conversation controls, transcript, composer, bar.
         let dock = dock.section(&mut self.agent_section, |ui| {
-            let transcript_height = (ui.available_height() - 96.0).max(140.0);
+            session_row(
+                ui,
+                self.session.as_deref(),
+                &self.sessions,
+                self.busy,
+                &new_session_requested,
+                &sessions_refresh_requested,
+                &session_load_requested,
+            );
+
+            let transcript_height = (ui.available_height() - 120.0).max(140.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), transcript_height),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ChatView::new(&self.transcript)
                         .empty_text(&empty_text)
+                        .markdown(true)
                         .show(ui);
                 },
             );
@@ -223,6 +244,15 @@ impl AgentPanel {
         if cancel_requested.get() {
             self.worker.send(RagCommand::Cancel);
         }
+        if new_session_requested.get() {
+            self.worker.send(RagCommand::NewSession);
+        }
+        if sessions_refresh_requested.get() {
+            self.worker.send(RagCommand::ListSessions);
+        }
+        if let Some(id) = session_load_requested.into_inner() {
+            self.worker.send(RagCommand::LoadSession { id });
+        }
 
         settings_changed
     }
@@ -292,6 +322,27 @@ impl AgentPanel {
                 )));
                 self.busy = false;
             }
+            RagEvent::QueryAttachments { resolved, missed } => {
+                if let Some(note) = attachment_note(&resolved, &missed) {
+                    self.transcript.push(note);
+                }
+            }
+            RagEvent::Sessions { sessions, current } => {
+                self.sessions = sessions;
+                self.session = current;
+            }
+            RagEvent::SessionSwitched { id, turns } => {
+                self.transcript = turns.into_iter().map(message_from_turn).collect();
+                self.session = Some(id);
+            }
+            RagEvent::SessionFailed { message } => {
+                self.transcript.push(ChatMessage {
+                    role: ChatRole::System,
+                    text: message,
+                    state: MessageState::Error,
+                    meta: None,
+                });
+            }
         }
     }
 
@@ -324,6 +375,127 @@ impl AgentPanel {
             }
         }
     }
+}
+
+/// Conversation controls: new conversation, pick a saved one, refresh.
+fn session_row(
+    ui: &mut egui::Ui,
+    current: Option<&str>,
+    sessions: &[SessionInfo],
+    busy: bool,
+    new_session: &Cell<bool>,
+    refresh: &Cell<bool>,
+    load: &RefCell<Option<String>>,
+) {
+    use crate::ui::phosphor_icons::{ARROW_CLOCKWISE, PLUS};
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                !busy,
+                egui::Button::new(format!("{PLUS} {}", t!("agent.session.new"))),
+            )
+            .on_hover_text(t!("agent.session.new_hint"))
+            .clicked()
+        {
+            new_session.set(true);
+        }
+        let label = current
+            .and_then(|id| sessions.iter().find(|session| session.id == id))
+            .map_or_else(|| t!("agent.session.current").to_string(), session_label);
+        egui::ComboBox::from_id_salt("agent_session_picker")
+            .selected_text(label)
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                ui.set_min_width(240.0);
+                if sessions.is_empty() {
+                    ui.weak(t!("agent.session.empty"));
+                }
+                for info in sessions {
+                    let selected = current == Some(info.id.as_str());
+                    if ui.selectable_label(selected, session_label(info)).clicked() {
+                        load.borrow_mut().replace(info.id.clone());
+                    }
+                }
+                ui.separator();
+                if ui
+                    .button(format!("{ARROW_CLOCKWISE} {}", t!("agent.session.refresh")))
+                    .clicked()
+                {
+                    refresh.set(true);
+                }
+            });
+    });
+}
+
+fn session_label(info: &SessionInfo) -> String {
+    let turns = format!("{} {}", info.turns, t!("agent.session.turns"));
+    let age = human_age(info.updated);
+    match &info.summary {
+        Some(summary) => format!("{turns} · {age} · {summary}"),
+        None => format!("{turns} · {age}"),
+    }
+}
+
+/// Coarse timestamp for the session picker (`3 m`, `5 h`, `2 d`).
+fn human_age(updated: std::time::SystemTime) -> String {
+    let Ok(age) = std::time::SystemTime::now().duration_since(updated) else {
+        return t!("agent.session.just_now").to_string();
+    };
+    let minutes = age.as_secs() / 60;
+    if minutes < 1 {
+        t!("agent.session.just_now").to_string()
+    } else if minutes < 60 {
+        format!("{minutes} m")
+    } else if minutes < 60 * 24 {
+        format!("{} h", minutes / 60)
+    } else {
+        format!("{} d", minutes / (60 * 24))
+    }
+}
+
+fn message_from_turn(turn: TurnInfo) -> ChatMessage {
+    if turn.from_user {
+        ChatMessage::user(turn.text)
+    } else {
+        ChatMessage::assistant(turn.text)
+    }
+}
+
+/// One system note per query that carried or missed `@Key` attachments;
+/// `None` when the query had no mentions at all.
+fn attachment_note(resolved: &[String], missed: &[String]) -> Option<ChatMessage> {
+    if resolved.is_empty() && missed.is_empty() {
+        return None;
+    }
+    let mut text = String::new();
+    if !resolved.is_empty() {
+        text.push_str(&format!(
+            "{}: @{}",
+            t!("agent.attached"),
+            resolved.join(", @")
+        ));
+    }
+    if !missed.is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&format!(
+            "{}:\n{}",
+            t!("agent.attach_missed"),
+            missed.join("\n")
+        ));
+    }
+    let state = if missed.is_empty() {
+        MessageState::Complete
+    } else {
+        MessageState::Error
+    };
+    Some(ChatMessage {
+        role: ChatRole::System,
+        text,
+        state,
+        meta: None,
+    })
 }
 
 /// Build the agent-bar items from the latest status snapshot.

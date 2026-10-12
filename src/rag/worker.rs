@@ -27,10 +27,12 @@ use ragrig::parsers::DocumentParsers;
 use ragrig::store::open_store;
 use ragrig::types::{ContextSizeMode, EmbeddingProvider, MemoryStrategyKind, Provider};
 use ragrig::{
-    build_parsers, AgentSession, CancellationToken, ChatAgentSpec, ChunkConfig, Embedder,
-    EmbedderSpec, FsSessionStore, Generator, LogHistory, PrependAttach, RagAgent, SummaryHistory,
+    build_parsers, AgentSession, AttachedDocument, CancellationToken, ChatAgentSpec, ChunkConfig,
+    Embedder, EmbedderSpec, FsSessionStore, Generator, LogHistory, PrependAttach, RagAgent,
+    SessionId, SessionManifest, SessionStore, SummaryHistory, TurnRole,
 };
 
+use super::cite;
 use super::{RagSettings, RagStatus, StatusInput};
 
 /// Builds the chat agent for a settings snapshot.
@@ -92,6 +94,17 @@ pub enum RagCommand {
     },
     /// Cancel the running query or ingestion.
     Cancel,
+    /// Refresh the saved-session list.
+    ListSessions,
+    /// Restore the most recently updated session, if any.
+    RestoreLatest,
+    /// Start a fresh conversation.
+    NewSession,
+    /// Continue a saved conversation.
+    LoadSession {
+        /// Session identifier (as reported in `Sessions`).
+        id: String,
+    },
     /// Stop the worker thread.
     Shutdown,
 }
@@ -130,6 +143,65 @@ pub enum RagEvent {
         /// Tokens received before cancellation.
         tokens: usize,
     },
+    /// `@Key` mentions resolved for the running query.
+    QueryAttachments {
+        /// Keys that were attached.
+        resolved: Vec<String>,
+        /// One line per key that could not be attached.
+        missed: Vec<String>,
+    },
+    /// The saved-session list (and the current session id).
+    Sessions {
+        /// Saved sessions, newest first.
+        sessions: Vec<SessionInfo>,
+        /// The currently active session, if one is open.
+        current: Option<String>,
+    },
+    /// The active conversation changed (new or restored).
+    SessionSwitched {
+        /// New session id.
+        id: String,
+        /// Conversation turns to rebuild the transcript from.
+        turns: Vec<TurnInfo>,
+    },
+    /// A session action failed.
+    SessionFailed {
+        /// User-presentable reason.
+        message: String,
+    },
+}
+
+/// Summary of one saved conversation, for the session picker.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionInfo {
+    /// Session identifier.
+    pub id: String,
+    /// Last modification time.
+    pub updated: std::time::SystemTime,
+    /// Number of turns in the session.
+    pub turns: usize,
+    /// Optional strategy summary.
+    pub summary: Option<String>,
+}
+
+impl SessionInfo {
+    fn from_manifest(manifest: SessionManifest) -> Self {
+        Self {
+            id: manifest.id.0,
+            updated: manifest.updated,
+            turns: manifest.turn_count,
+            summary: manifest.summary,
+        }
+    }
+}
+
+/// One conversation turn, for restoring the transcript.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurnInfo {
+    /// Whether the user authored the turn (otherwise the assistant).
+    pub from_user: bool,
+    /// Turn text.
+    pub text: String,
 }
 
 /// Handle for talking to the worker thread.
@@ -216,6 +288,21 @@ struct QueryContext {
     shared: Arc<Shared>,
 }
 
+impl QueryContext {
+    /// Ensure a session exists for this query.
+    async fn ensure_session(
+        &self,
+    ) -> anyhow::Result<tokio::sync::MutexGuard<'_, Option<AgentSession>>> {
+        ensure_session(
+            &self.settings,
+            self.editor_workspace.as_deref(),
+            &self.factories,
+            &self.shared,
+        )
+        .await
+    }
+}
+
 /// Worker-loop state (owned by the command loop, not shared).
 struct WorkerState {
     settings: RagSettings,
@@ -273,6 +360,48 @@ impl WorkerState {
             shared: self.shared.clone(),
         }
     }
+
+    /// Directory holding the saved conversations.
+    fn sessions_dir(&self) -> Option<PathBuf> {
+        self.settings
+            .effective_workspace(self.editor_workspace.as_deref())
+            .map(|workspace| workspace.join(".ragrig").join("sessions"))
+    }
+
+    /// Open the session store without needing a full RAG session.
+    fn session_store(&self) -> Option<FsSessionStore> {
+        self.sessions_dir()
+            .and_then(|dir| FsSessionStore::new(dir).ok())
+    }
+
+    fn current_session_id(&self) -> Option<String> {
+        match self.shared.session.try_lock() {
+            Ok(guard) => guard.as_ref().map(|session| session.session_id().0.clone()),
+            Err(_) => None,
+        }
+    }
+
+    /// Emit the saved-session list (newest first) plus the current id.
+    async fn emit_sessions(&self, events: &Sender<RagEvent>) {
+        let sessions = match self.session_store() {
+            Some(store) => store
+                .list()
+                .await
+                .map(|mut manifests| {
+                    manifests.sort_by(|a, b| b.updated.cmp(&a.updated));
+                    manifests
+                        .into_iter()
+                        .map(SessionInfo::from_manifest)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let _ = events.send(RagEvent::Sessions {
+            sessions,
+            current: self.current_session_id(),
+        });
+    }
 }
 
 async fn worker_main(
@@ -315,9 +444,155 @@ async fn worker_main(
                     token.cancel();
                 }
             }
+            RagCommand::ListSessions => state.emit_sessions(&events).await,
+            RagCommand::RestoreLatest => restore_latest(&state, &events).await,
+            RagCommand::NewSession => switch_session(&state, &events, SessionAction::New).await,
+            RagCommand::LoadSession { id } => {
+                switch_session(&state, &events, SessionAction::Load(id)).await;
+            }
             RagCommand::Shutdown => break,
         }
     }
+}
+
+/// Session actions the worker can perform on the active session.
+enum SessionAction {
+    /// Start a fresh conversation.
+    New,
+    /// Continue the session with this id.
+    Load(String),
+}
+
+/// Ensure a session exists, building it lazily on first use.
+async fn ensure_session<'a>(
+    settings: &RagSettings,
+    editor_workspace: Option<&Path>,
+    factories: &RagFactories,
+    shared: &'a Shared,
+) -> anyhow::Result<tokio::sync::MutexGuard<'a, Option<AgentSession>>> {
+    let mut guard = shared.session.lock().await;
+    if guard.is_none() {
+        let workspace = settings
+            .effective_workspace(editor_workspace)
+            .context("no RAG workspace configured — use the component bar to choose a folder")?;
+        let chat = (factories.chat)(settings).context("cannot build the chat agent")?;
+        let embed = (factories.embed)(settings).context("cannot build the embedding backend")?;
+        let session = build_session(settings, &workspace, chat, embed).await?;
+        *lock(&shared.init_error) = None;
+        *guard = Some(session);
+    }
+    Ok(guard)
+}
+
+/// Restore the most recently updated saved conversation, if any.
+async fn restore_latest(state: &WorkerState, events: &Sender<RagEvent>) {
+    state.emit_sessions(events).await;
+    let Some(store) = state.session_store() else {
+        return;
+    };
+    let mut manifests = store.list().await.unwrap_or_default();
+    manifests.sort_by(|a, b| b.updated.cmp(&a.updated));
+    let Some(latest) = manifests.into_iter().next() else {
+        return;
+    };
+    let switched = {
+        let mut guard = match ensure_session(
+            &state.settings,
+            state.editor_workspace.as_deref(),
+            &state.factories,
+            &state.shared,
+        )
+        .await
+        {
+            // Without a workspace or API key there is nothing to restore;
+            // the status snapshot already explains why.
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        match session.load_session(&latest.id).await {
+            Ok(true) => Some((session.session_id().0.clone(), turns_of(session))),
+            Ok(false) => None,
+            Err(err) => {
+                log::warn!("RAG: cannot restore session {}: {err:#}", latest.id.0);
+                None
+            }
+        }
+    };
+    if let Some((id, turns)) = switched {
+        let _ = events.send(RagEvent::SessionSwitched { id, turns });
+        state.emit_sessions(events).await;
+    }
+}
+
+/// Start a fresh conversation or continue a saved one.
+async fn switch_session(state: &WorkerState, events: &Sender<RagEvent>, action: SessionAction) {
+    let switched = {
+        let mut guard = match ensure_session(
+            &state.settings,
+            state.editor_workspace.as_deref(),
+            &state.factories,
+            &state.shared,
+        )
+        .await
+        {
+            Ok(guard) => guard,
+            Err(err) => {
+                let _ = events.send(RagEvent::SessionFailed {
+                    message: format!("{err:#}"),
+                });
+                return;
+            }
+        };
+        let Some(session) = guard.as_mut() else {
+            let _ = events.send(RagEvent::SessionFailed {
+                message: "RAG session unavailable".to_string(),
+            });
+            return;
+        };
+        match action {
+            SessionAction::New => {
+                session.new_session();
+                if let Err(err) = session.save().await {
+                    log::warn!("RAG: cannot save the new session: {err:#}");
+                }
+                Some((session.session_id().0.clone(), Vec::new()))
+            }
+            SessionAction::Load(id) => match session.load_session(&SessionId(id.clone())).await {
+                Ok(true) => Some((session.session_id().0.clone(), turns_of(session))),
+                Ok(false) => {
+                    let _ = events.send(RagEvent::SessionFailed {
+                        message: format!("Session {id} not found"),
+                    });
+                    None
+                }
+                Err(err) => {
+                    let _ = events.send(RagEvent::SessionFailed {
+                        message: format!("Cannot load session {id}: {err:#}"),
+                    });
+                    None
+                }
+            },
+        }
+    };
+    if let Some((id, turns)) = switched {
+        let _ = events.send(RagEvent::SessionSwitched { id, turns });
+        state.emit_sessions(events).await;
+    }
+}
+
+/// Conversation turns of a session, for rebuilding the transcript.
+fn turns_of(session: &AgentSession) -> Vec<TurnInfo> {
+    session
+        .turns()
+        .iter()
+        .map(|turn| TurnInfo {
+            from_user: matches!(turn.role, TurnRole::User),
+            text: turn.text.clone(),
+        })
+        .collect()
 }
 
 async fn run_query(context: QueryContext, text: String, events: Sender<RagEvent>) {
@@ -325,30 +600,19 @@ async fn run_query(context: QueryContext, text: String, events: Sender<RagEvent>
     shared.busy.store(true, Ordering::SeqCst);
     let token = CancellationToken::new();
     *lock(&shared.cancel) = Some(token.clone());
-    let workspace = context
-        .settings
-        .effective_workspace(context.editor_workspace.as_deref());
-    emit_status(&context, &events);
-
     let epoch = shared.session_epoch.load(Ordering::SeqCst);
-    let mut guard = shared.session.lock().await;
-    if guard.is_none() {
-        match build_workspace_session(&context, workspace.as_deref()).await {
-            Ok(session) => {
-                *lock(&shared.init_error) = None;
-                *guard = Some(session);
-            }
-            Err(err) => {
-                let message = format!("{err:#}");
-                *lock(&shared.init_error) = Some(message.clone());
-                drop(guard);
-                let _ = events.send(RagEvent::QueryFailed { message });
-                shared.busy.store(false, Ordering::SeqCst);
-                emit_status(&context, &events);
-                return;
-            }
+    let attachments = resolve_attachments(&context, &text, &events).await;
+    let mut guard = match context.ensure_session().await {
+        Ok(guard) => guard,
+        Err(err) => {
+            let message = format!("{err:#}");
+            *lock(&shared.init_error) = Some(message.clone());
+            let _ = events.send(RagEvent::QueryFailed { message });
+            shared.busy.store(false, Ordering::SeqCst);
+            emit_status(&context, &events);
+            return;
         }
-    }
+    };
 
     let Some(session) = guard.as_mut() else {
         drop(guard);
@@ -370,9 +634,15 @@ async fn run_query(context: QueryContext, text: String, events: Sender<RagEvent>
         }
     };
 
-    let result = session
-        .chat_streaming_detailed(&text, &on_token, Some(&token))
-        .await;
+    let result = if attachments.is_empty() {
+        session
+            .chat_streaming_detailed(&text, &on_token, Some(&token))
+            .await
+    } else {
+        session
+            .chat_streaming_detailed_with_attachments(&text, &attachments, &on_token, Some(&token))
+            .await
+    };
     let tokens = token_count.load(Ordering::Relaxed);
 
     match result {
@@ -439,24 +709,49 @@ fn emit_status(context: &QueryContext, events: &Sender<RagEvent>) {
     let _ = events.send(RagEvent::Status { status });
 }
 
-/// Build the session for `workspace` (error when none is configured).
-async fn build_workspace_session(
+/// Resolve `@Key` mentions into query attachments.
+///
+/// Parsing the bibliography and the documents is blocking I/O, so it runs
+/// off the async executor thread. Misses never abort the query; they are
+/// reported to the UI as a system note.
+async fn resolve_attachments(
     context: &QueryContext,
-    workspace: Option<&Path>,
-) -> anyhow::Result<AgentSession> {
-    let workspace = workspace
-        .context("no RAG workspace configured — use the component bar to choose a folder")?;
-    let chat =
-        (context.factories.chat)(&context.settings).context("cannot build the chat agent")?;
-    let embed = (context.factories.embed)(&context.settings)
-        .context("cannot build the embedding backend")?;
-    build_session(&context.settings, workspace, chat, embed).await
+    text: &str,
+    events: &Sender<RagEvent>,
+) -> Vec<AttachedDocument> {
+    let keys = cite::cite_keys(text);
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let Some(workspace) = context
+        .settings
+        .effective_workspace(context.editor_workspace.as_deref())
+    else {
+        let _ = events.send(RagEvent::QueryAttachments {
+            resolved: Vec::new(),
+            missed: keys
+                .iter()
+                .map(|key| format!("@{key} — no workspace"))
+                .collect(),
+        });
+        return Vec::new();
+    };
+    let library = context.settings.library.clone();
+    let resolution =
+        tokio::task::spawn_blocking(move || cite::resolve(&workspace, &library, &keys))
+            .await
+            .unwrap_or_default();
+    let _ = events.send(RagEvent::QueryAttachments {
+        resolved: resolution.resolved.clone(),
+        missed: resolution.missed.clone(),
+    });
+    resolution.attachments
 }
 
 /// Build a complete [`AgentSession`] for `workspace` from explicit agents.
 ///
 /// Exposed for tests and for the later ingestion sprint; the worker uses it
-/// through [`build_workspace_session`].
+/// through `ensure_session`.
 pub async fn build_session(
     settings: &RagSettings,
     workspace: &Path,
@@ -672,6 +967,140 @@ mod tests {
         worker.send(RagCommand::Ping);
         let status = wait_for_status(&worker);
         assert!(!status.initialized);
+    }
+
+    fn workspace_settings(workspace: &Path) -> RagSettings {
+        let mut settings = RagSettings::default();
+        settings.ragrig.workspace = workspace.to_path_buf();
+        settings.library.folder = Some(workspace.join("library"));
+        settings.library.bibtex = Some(workspace.join("library").join("library.bib"));
+        settings
+    }
+
+    #[tokio::test]
+    async fn session_new_query_and_list_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = RagrigWorker::spawn(workspace_settings(dir.path()), None, echo_factories());
+        wait_for_status(&worker);
+
+        worker.send(RagCommand::NewSession);
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SessionSwitched { .. })
+        });
+        let RagEvent::SessionSwitched { turns, .. } = event else {
+            unreachable!()
+        };
+        assert!(turns.is_empty(), "a new conversation starts empty");
+
+        worker.send(RagCommand::Query {
+            text: "hello".into(),
+        });
+        wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::QueryFinished { .. })
+        });
+
+        worker.send(RagCommand::ListSessions);
+        let event = wait_for_event(&worker, |event| matches!(event, RagEvent::Sessions { .. }));
+        let RagEvent::Sessions { sessions, current } = event else {
+            unreachable!()
+        };
+        assert!(!sessions.is_empty(), "the answered query must be saved");
+        assert_eq!(sessions[0].turns, 2, "user + assistant turn saved");
+        assert!(current.is_some());
+    }
+
+    #[tokio::test]
+    async fn restore_latest_continues_the_last_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = workspace_settings(dir.path());
+
+        // First "app run": ask a question (auto-saves the session).
+        let worker = RagrigWorker::spawn(settings.clone(), None, echo_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::Query {
+            text: "hello".into(),
+        });
+        wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::QueryFinished { .. })
+        });
+        drop(worker);
+
+        // Second "app run": the panel opens and restores the conversation.
+        let worker = RagrigWorker::spawn(settings, None, echo_factories());
+        worker.send(RagCommand::RestoreLatest);
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SessionSwitched { .. })
+        });
+        let RagEvent::SessionSwitched { turns, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(turns.len(), 2, "restored transcript holds both turns");
+        assert!(turns[0].from_user);
+        assert!(!turns[1].from_user);
+    }
+
+    #[tokio::test]
+    async fn loading_an_unknown_session_fails_gracefully() {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = RagrigWorker::spawn(workspace_settings(dir.path()), None, echo_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::LoadSession {
+            id: "does-not-exist".into(),
+        });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::SessionFailed { .. })
+        });
+        let RagEvent::SessionFailed { message } = event else {
+            unreachable!()
+        };
+        assert!(
+            message.contains("not found"),
+            "unexpected message: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_reports_key_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = workspace_settings(dir.path());
+        let library = settings.library.folder(dir.path());
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::write(library.join("paper.md"), "# Paper\n\nBody text.").unwrap();
+        std::fs::write(
+            library.join("library.bib"),
+            "@misc{Key2024,\n  file = {paper.md}\n}\n",
+        )
+        .unwrap();
+
+        let worker = RagrigWorker::spawn(settings, None, echo_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::Query {
+            text: "Summarize @Key2024 and @Missing".into(),
+        });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::QueryAttachments { .. })
+        });
+        let RagEvent::QueryAttachments { resolved, missed } = event else {
+            unreachable!()
+        };
+        assert_eq!(resolved, vec!["Key2024"]);
+        assert_eq!(missed.len(), 1);
+        assert!(missed[0].contains("@Missing"));
+        wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::QueryFinished { .. })
+        });
+    }
+
+    /// Poll until `predicate` matches; panics after ~4 s.
+    fn wait_for_event(worker: &RagrigWorker, predicate: impl Fn(&RagEvent) -> bool) -> RagEvent {
+        for _ in 0..400 {
+            match worker.try_recv() {
+                Some(event) if predicate(&event) => return event,
+                Some(_) => {}
+                None => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        panic!("expected event not seen within 4 s");
     }
 
     fn wait_for_status(worker: &RagrigWorker) -> RagStatus {

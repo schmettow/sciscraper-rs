@@ -19,6 +19,7 @@
 //!
 //! [`AgentSession`]: ragrig::AgentSession
 
+pub mod cite;
 pub mod status;
 pub mod worker;
 
@@ -28,7 +29,7 @@ use ragrig::types::{ContextSizeMode, MemoryStrategyKind, Provider, RagrigConfig}
 use serde::{Deserialize, Serialize};
 
 pub use status::{ComponentState, RagComponent, RagStatus, StatusInput};
-pub use worker::{RagCommand, RagEvent, RagFactories, RagrigWorker};
+pub use worker::{RagCommand, RagEvent, RagFactories, RagrigWorker, SessionInfo, TurnInfo};
 
 /// Default chat context window in tokens (decision: DeepSeek, > 400 000).
 pub const DEFAULT_CONTEXT_TOKENS: usize = 409_600;
@@ -38,6 +39,36 @@ pub const DEFAULT_TOP_K: usize = 300;
 pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.03;
 /// Default width of the agent dock in points.
 pub const DEFAULT_PANEL_WIDTH: f32 = 380.0;
+
+/// Workspace conventions for the library (bibliography + source files).
+///
+/// Defaults follow the ragrig-cli layout so both tools can share a corpus:
+/// sources live in `<workspace>/.ragrig/library/`, the bibliography in
+/// `<library>/library.bib`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LibrarySettings {
+    /// Corpus folder with the source files; `None` = `<workspace>/.ragrig/library`.
+    pub folder: Option<PathBuf>,
+    /// BibTeX file; `None` = `<library folder>/library.bib`.
+    pub bibtex: Option<PathBuf>,
+}
+
+impl LibrarySettings {
+    /// The effective corpus folder for `workspace`.
+    pub fn folder(&self, workspace: &Path) -> PathBuf {
+        self.folder
+            .clone()
+            .unwrap_or_else(|| workspace.join(".ragrig").join("library"))
+    }
+
+    /// The effective bibliography path for `workspace`.
+    pub fn bibtex(&self, workspace: &Path) -> PathBuf {
+        self.bibtex
+            .clone()
+            .unwrap_or_else(|| self.folder(workspace).join("library.bib"))
+    }
+}
 
 /// Persistent settings of the RAG feature ("sciscraper").
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +84,8 @@ pub struct RagSettings {
     pub library_collapsed: bool,
     /// The ragrig configuration (chat, embeddings, parsing, memory).
     pub ragrig: RagrigConfig,
+    /// The bibliography and corpus folder.
+    pub library: LibrarySettings,
 }
 
 impl Default for RagSettings {
@@ -72,6 +105,7 @@ impl Default for RagSettings {
             agent_collapsed: false,
             library_collapsed: false,
             ragrig,
+            library: LibrarySettings::default(),
         }
     }
 }
@@ -188,5 +222,35 @@ mod tests {
             Some(PathBuf::from("/tmp/pinned"))
         );
         assert!(settings.workspace_is_pinned());
+    }
+
+    #[test]
+    fn library_defaults_follow_the_ragrig_layout() {
+        let settings = RagSettings::default();
+        let workspace = PathBuf::from("/tmp/ws");
+        assert_eq!(
+            settings.library.folder(&workspace),
+            PathBuf::from("/tmp/ws/.ragrig/library")
+        );
+        assert_eq!(
+            settings.library.bibtex(&workspace),
+            PathBuf::from("/tmp/ws/.ragrig/library/library.bib")
+        );
+    }
+
+    #[test]
+    fn library_paths_can_be_pinned() {
+        let mut settings = RagSettings::default();
+        settings.library.folder = Some(PathBuf::from("/data/papers"));
+        settings.library.bibtex = Some(PathBuf::from("/data/bib/references.bib"));
+        let workspace = PathBuf::from("/tmp/ws");
+        assert_eq!(
+            settings.library.folder(&workspace),
+            PathBuf::from("/data/papers")
+        );
+        assert_eq!(
+            settings.library.bibtex(&workspace),
+            PathBuf::from("/data/bib/references.bib")
+        );
     }
 }
