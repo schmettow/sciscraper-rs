@@ -29,9 +29,11 @@
 //!
 //! **Scope.** 6.0 shipped the protocol, the writers and the attachment
 //! strategy; 6.2 added [`RoundtripContext::document`] (the active buffer) and
-//! 6.3 adds [`RoundtripContext::selection`] (a marked passage). The result
-//! parser lands in the sprint whose feature first calls it (6.4, Co-Edit) —
-//! a foundation without a caller would only be dead code.
+//! 6.3 [`RoundtripContext::selection`] (a marked passage). 6.4 closes the loop
+//! with the result half: [`Replacement`] lifts the answer's replacement block
+//! out of the transcript, and [`EditorEdit`] is the payload that lands it in
+//! the document — digest-guarded, so an answer never writes into text that
+//! changed underneath it.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -289,6 +291,20 @@ impl RoundtripContext {
         self.chars
     }
 
+    /// The char range of the marked passage, for selections only — what a
+    /// Co-Edit payload hands to the host.
+    #[must_use]
+    pub fn range(&self) -> Option<Range<usize>> {
+        self.range.clone()
+    }
+
+    /// Identity of the full text (see [`digest`]); meaningful for selections,
+    /// where it guards the write-back.
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
     /// The container's attributes, in a fixed order.
     ///
     /// `digest` is written for selections only: it exists for the Co-Edit
@@ -388,6 +404,125 @@ pub fn replace_at(content: &str, range: Range<usize>, replacement: &str) -> Stri
     out.push_str(replacement);
     out.extend(content.chars().skip(range.end));
     out
+}
+
+/// One way an agent answer may land in the document (sprint 6.4).
+///
+/// The result half of the protocol has two shapes: a digest-guarded
+/// replacement of the marked passage the question was about, and a plain
+/// insertion at the caret — the fallback when an answer could not be applied
+/// (nothing marked, or the region changed meanwhile) and the author still
+/// wants its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditorEdit {
+    /// Replace the passage `tab_id` marked at `range`, guarded by `digest`.
+    Replace {
+        /// The tab the passage lives in — an answer arrives seconds later,
+        /// and the passage stays where it was even if the author switched
+        /// documents meanwhile.
+        tab_id: usize,
+        /// Char range of the passage inside that document.
+        range: Range<usize>,
+        /// Identity of the passage when it was marked (see [`digest`]): the
+        /// host must find exactly this text at `range` or refuse to write.
+        digest: String,
+        /// The finished text for the passage.
+        text: String,
+    },
+    /// Insert `text` at the caret of the active document, as one undo step.
+    Insert {
+        /// The replacement text to insert.
+        text: String,
+    },
+}
+
+/// The result half of the protocol: one replacement an answer asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replacement {
+    /// The passage the answer names in its `target="a..b"` attribute, when it
+    /// names a parseable one.
+    ///
+    /// Informational: the host applies at the range the author actually
+    /// marked (the pending selection), never at what the model says — a model
+    /// can transpose digits, the author's mark cannot.
+    pub target: Option<Range<usize>>,
+    /// The finished text for the passage, the fence's trailing newline
+    /// removed.
+    pub body: String,
+}
+
+impl Replacement {
+    /// Lift every replacement block out of `answer`, or `None` when the
+    /// answer carries none (the common case — the caller keeps its text as it
+    /// is).
+    ///
+    /// Returns the prose with the blocks removed and the blocks in document
+    /// order. The blocks are found wherever the answer put them: the prompt
+    /// asks for them after the prose, but a block *before* the prose has been
+    /// observed in the wild, and that is not the author's problem. Only
+    /// fenced blocks whose info string starts with [`MARKER_REPLACE`] are
+    /// lifted; every other code block stays in the prose rather than being
+    /// mistaken for an edit.
+    #[must_use]
+    pub fn extract(answer: &str) -> Option<(String, Vec<Self>)> {
+        let arena = comrak::Arena::new();
+        let root = comrak::parse_document(&arena, answer, &comrak::Options::default());
+        let mut blocks = Vec::new();
+        let mut fences: Vec<std::ops::RangeInclusive<usize>> = Vec::new();
+        for node in root.descendants() {
+            let data = node.data.borrow();
+            let comrak::nodes::NodeValue::CodeBlock(code) = &data.value else {
+                continue;
+            };
+            if info_marker(&code.info) != Some(MARKER_REPLACE) {
+                continue;
+            }
+            blocks.push(Self {
+                target: target_attribute(&code.info),
+                body: code
+                    .literal
+                    .strip_suffix('\n')
+                    .unwrap_or(&code.literal)
+                    .to_string(),
+            });
+            // Whole fence lines go: the closing fence may only be followed by
+            // whitespace, and the opening fence may only be indented.
+            fences.push(data.sourcepos.start.line..=data.sourcepos.end.line);
+        }
+        if blocks.is_empty() {
+            return None;
+        }
+        // Removing a block leaves its blank neighbours behind: collapse the
+        // run so the prose reads as if the block was never there.
+        let mut prose = String::new();
+        for (index, line) in answer.lines().enumerate() {
+            if fences.iter().any(|fence| fence.contains(&(index + 1))) {
+                continue;
+            }
+            if line.trim().is_empty() && prose.ends_with("\n\n") {
+                continue;
+            }
+            prose.push_str(line);
+            prose.push('\n');
+        }
+        Some((prose.trim().to_string(), blocks))
+    }
+}
+
+/// The first word of a code block's info string.
+fn info_marker(info: &str) -> Option<&str> {
+    info.split_whitespace().next()
+}
+
+/// The `target="a..b"` attribute of a replacement info string.
+fn target_attribute(info: &str) -> Option<Range<usize>> {
+    let value = info
+        .split_once("target=")
+        .map(|(_, rest)| rest.trim_start())?
+        .strip_prefix('"')?;
+    let value = value.split('"').next()?;
+    let (start, end) = value.split_once("..")?;
+    Some(start.trim().parse().ok()?..end.trim().parse().ok()?)
 }
 
 /// Attachment strategy: mark attachments and retrieved chunks as separate
@@ -768,5 +903,96 @@ mod tests {
                 context.container()
             )
         );
+    }
+
+    #[test]
+    fn a_replacement_block_is_lifted_out_of_the_answer() {
+        let answer = "Here is a shorter version.\n\n```sciscraper:v1:replace target=\"120..480\"\nThe passage, shortened.\n```\n\nIt keeps your terminology.\n";
+        let (prose, blocks) = Replacement::extract(answer).expect("a block was lifted");
+        assert_eq!(
+            prose, "Here is a shorter version.\n\nIt keeps your terminology.",
+            "the block leaves the prose, and a blank line is not left behind"
+        );
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].target, Some(120..480));
+        assert_eq!(blocks[0].body, "The passage, shortened.");
+    }
+
+    #[test]
+    fn a_block_before_the_prose_is_lifted_too() {
+        // The model put the block first (observed 2026-10-13): the prose is
+        // what remains, wherever the block stood.
+        let answer = "```sciscraper:v1:replace\nNew text.\n```\nDone — I shortened it.\n";
+        let (prose, blocks) = Replacement::extract(answer).expect("a block was lifted");
+        assert_eq!(prose, "Done — I shortened it.");
+        assert_eq!(blocks[0].body, "New text.");
+        assert_eq!(blocks[0].target, None, "a target is optional");
+    }
+
+    #[test]
+    fn only_our_blocks_are_lifted() {
+        let answer = "Try:\n\n```rust\nlet x = 1;\n```\n\n```sciscraper:v1:other\nnot ours\n```\n\n```sciscraper:v1:replace\nThe real one.\n```\n";
+        let (prose, blocks) = Replacement::extract(answer).expect("one block");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].body, "The real one.");
+        assert!(
+            prose.contains("```rust") && prose.contains("not ours"),
+            "other code blocks stay exactly where they were: {prose:?}"
+        );
+        assert!(!prose.contains("The real one."), "{prose:?}");
+    }
+
+    #[test]
+    fn tilde_fences_and_spaced_info_strings_work() {
+        // A body that itself contains ``` needs the ~~~ fence (CommonMark),
+        // and the info string may carry the target after whitespace.
+        let answer = "~~~ sciscraper:v1:replace target=\"7..9\"\nUse this:\n\n```rust\nlet x = 1;\n```\n~~~\n";
+        let (prose, blocks) = Replacement::extract(answer).expect("a block");
+        assert!(prose.is_empty(), "{prose:?}");
+        assert_eq!(blocks[0].body, "Use this:\n\n```rust\nlet x = 1;\n```");
+        assert_eq!(blocks[0].target, Some(7..9));
+    }
+
+    #[test]
+    fn a_quoted_protocol_example_is_not_lifted() {
+        // The protocol's own escape hatch (a longer fence) keeps examples
+        // examples: the model may quote the format, that is not an edit.
+        let answer = "The block looks like\n\n````\n```sciscraper:v1:replace\n…\n```\n````\n";
+        assert!(Replacement::extract(answer).is_none(), "{answer}");
+    }
+
+    #[test]
+    fn a_plain_answer_carries_no_block() {
+        assert!(Replacement::extract("Just prose, no fences.").is_none());
+        assert!(Replacement::extract("").is_none());
+    }
+
+    #[test]
+    fn a_garbled_target_is_not_a_target() {
+        let answer = "```sciscraper:v1:replace target=\"not a range\"\nBody.\n```\n";
+        let (_, blocks) = Replacement::extract(answer).expect("a block");
+        assert_eq!(blocks[0].target, None);
+        assert_eq!(blocks[0].body, "Body.");
+    }
+
+    #[test]
+    fn an_empty_block_is_still_lifted() {
+        // The client reports it as a no-op; silence would look like a bug.
+        let answer = "```sciscraper:v1:replace\n```\n";
+        let (prose, blocks) = Replacement::extract(answer).expect("a block");
+        assert!(prose.is_empty());
+        assert!(blocks[0].body.is_empty());
+    }
+
+    #[test]
+    fn several_blocks_come_back_in_order() {
+        let answer = "```sciscraper:v1:replace target=\"1..2\"\nfirst\n```\n\n```sciscraper:v1:replace\nsecond\n```\n";
+        let (prose, blocks) = Replacement::extract(answer).expect("blocks");
+        assert!(prose.is_empty(), "{prose:?}");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].body, "first");
+        assert_eq!(blocks[0].target, Some(1..2));
+        assert_eq!(blocks[1].body, "second");
+        assert_eq!(blocks[1].target, None);
     }
 }

@@ -686,7 +686,53 @@ only; 1496 with no features — all three feature sets `cargo check` clean, touc
 rustfmt-clean, clippy reports nothing in the new code. A headless click test needs two frames
 (egui hit-tests against the previous frame's layout) — noted in `focus_button`'s test.
 
-### 🚧 Phase "Editor Roundtrip" (6.0–6.3 landed, 6.4 open) — chat ⇄ editor
+### ✅ Sprint 6.4 — Co-Edit (feature 4)
+
+- **Result parser.** `roundtrip::Replacement::extract(answer)` lifts replacement blocks with
+  `comrak` (the crate the export path already uses): fenced blocks whose info string starts
+  with `sciscraper:v1:replace` — ``` and `~~~` alike, with an optional `target="a..b"`. The
+  fence lines leave the prose via their `sourcepos` (start line = opening fence, end line =
+  closing fence; verified against comrak 0.22 with a throwaway probe) and blank-run collapse
+  keeps the remainder readable. **Wherever a block sits**: the first live test (2026-10-13)
+  put it *before* the prose — the plan's "at the end" is a request, not a guarantee — so the
+  parser is position-agnostic and the prompt now says *after your prose* and names `target`
+  explicitly. Other code blocks (```rust, other protocol markers, a longer-fence-quoted
+  protocol example) stay exactly where they are: a quoted format is not an edit.
+- **Transport.** `EditorEdit` (`Replace { tab_id, range, digest, text }` | `Insert { text }`)
+  is the protocol's result-half payload; `AgentPanelOutput.edit` carries it to the host. The
+  panel lifts a block on `QueryFinished` only (never mid-stream), moves the marked passage
+  from `pending` to `in_flight` at submit, and keeps the handed-over replacement in
+  `awaiting_report` until the host's verdict — the copy handed over is deliberate: the panel
+  needs its own text back for the insert offer when the host refuses.
+- **Digest guard.** `FerriteApp::apply_editor_edit` finds the passage's tab **by id**, not by
+  "the active tab" — the answer arrives seconds later and the passage stays where it was —
+  then re-extracts `range` from the current content and compares `roundtrip::digest`; only
+  then `TabState::set_content(replace_at(…))`, the citation contract, one undo step, caret
+  after the replacement. `EditReport::{Applied, RegionChanged, DocumentClosed}` comes back to
+  the panel, which renders the card (*−removed / +added* or the refusal, tinted as an error)
+  and, on refusal, keeps the text as the insert chip.
+- **Insert fallback.** The chip above the composer (*"Replacement ready (N chars) · Insert ·
+  ✕"* — the `selection_chip` pattern) emits `EditorEdit::Insert`; the host inserts at the
+  caret through the newly shared `insert_at_caret`, which `insert_citation` now delegates to
+  as well (the commonality analysis's "one apply path", finally true for two real callers).
+  The offer exists exactly when a replacement was *not* written (mismatch, closed document,
+  no marked passage); an empty block or extra blocks are cards without an offer.
+- **Scope note.** The plan promised an *edit card* in the transcript, not an action button:
+  `egui_chat`'s transcript has no message actions, so the recovery action lives in the
+  panel's own composer-footer chip — no `egui_chat` change needed, and no upstream issue to
+  file (recorded in UPSTREAM.md's monitoring notes).
+- Pinned by eight `Replacement` tests (lift before/after, only ours, tilde + spaced info,
+  quoted example stays, garbled target, empty, order) and five panel tests (handover carries
+  tab id + digest + text, the applied card, refusal + insert offer, the no-region path,
+  extras and empty). **Known gap, unchanged:** `apply_editor_edit` has no test — the fork has
+  no `FerriteApp` harness; both sides of its contract are pinned by panel tests, the guard
+  itself is three lines of `digest`/`replace_at` already covered in `roundtrip`.
+
+Verification: 1672 tests pass with the 3 pre-existing failures (`rag,grobid`), 1654 with `rag`
+only, 1497 with no features (the new tests are all `rag`-gated); all three feature sets
+`cargo check` clean, touched files rustfmt-clean and clippy-clean.
+
+### ✅ Phase "Editor Roundtrip" (6.0–6.4 landed) — chat ⇄ editor
 
 The RAG↔bibliography round trip works (sprints 4–5). The open gap is the *editor*: the agent
 cannot see what the author is writing, and its answers cannot land in the document. This

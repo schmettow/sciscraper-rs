@@ -634,6 +634,8 @@ notification:
   session_restored: "Session restored"
   citation_inserted: "Inserted %{text}"
   citation_no_document: "No document to insert the citation into"
+  replacement_inserted: "Replacement inserted — Ctrl+Z undoes it"
+  edit_no_document: "No document is open to insert the replacement into"
   large_file_performance: "Large file (%{size} MB). Performance may be affected."
   large_file_loading: "Loading large file (%{size} MB) in background..."
   file_loaded: "File loaded successfully (%{size} MB)"
@@ -1114,6 +1116,18 @@ agent:
     drop: "Drop the marked region"
   focus:
     hint: "Ask the agent about the marked passage"
+  edit:
+    applied: "Replacement applied to %{name}: −%{removed} / +%{added} chars — Ctrl+Z undoes it."
+    region_changed: "The marked region changed while the agent was writing — nothing was applied."
+    document_closed: "The document with the marked region is no longer open — nothing was applied."
+    no_region: "No passage was marked — the agent's replacement was not applied."
+    empty: "The answer carried an empty replacement — nothing was applied."
+    extras: "%{count} further replacement block(s) were ignored."
+    chip: "Replacement ready (%{chars} chars)"
+    chip_hint: "The agent's replacement could not be applied — insert it at the caret instead"
+    insert: "Insert"
+    insert_hint: "Insert the replacement at the caret (one undo step)"
+    drop: "Drop the replacement"
   session:
     new: "New"
     new_hint: "Start a new conversation"

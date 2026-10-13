@@ -49,7 +49,7 @@ use ragrig::types::Provider;
 use ragrig::MemoryStrategyKind;
 use rust_i18n::t;
 
-use crate::rag::roundtrip::{self, EditorBuffer, RoundtripContext};
+use crate::rag::roundtrip::{self, EditorBuffer, EditorEdit, Replacement, RoundtripContext};
 use crate::rag::status::ProbeScope;
 use crate::rag::ComponentState;
 use crate::rag::{
@@ -75,6 +75,48 @@ pub struct AgentPanelOutput {
     pub settings_changed: bool,
     /// A citation to insert into the active document (one undo step).
     pub cite: Option<CitePayload>,
+    /// An edit an agent answer asked for (sprint 6.4): a digest-guarded
+    /// replacement of the marked passage, or its insert-at-cursor fallback.
+    pub edit: Option<EditorEdit>,
+}
+
+/// A marked passage waiting for its question (sprint 6.3), with the tab it
+/// lives in (sprint 6.4): an answer arrives seconds later, and it must find
+/// the passage again even if the author switched documents meanwhile.
+#[derive(Clone, Debug)]
+struct PendingSelection {
+    tab_id: usize,
+    context: RoundtripContext,
+}
+
+/// A replacement the finished answer asked for, waiting for the next frame to
+/// hand it to the host.
+#[derive(Clone, Debug)]
+struct PendingEdit {
+    selection: PendingSelection,
+    replacement: Replacement,
+    /// Further replacement blocks in the same answer: only the first is
+    /// considered, the card reports the rest.
+    extras: usize,
+}
+
+/// The host's verdict on an [`EditorEdit::Replace`], reported back so the
+/// panel can turn it into a transcript card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditReport {
+    /// The region was replaced in the named document.
+    Applied {
+        /// Display name of the document.
+        name: String,
+        /// Characters the passage had before.
+        removed: usize,
+        /// Characters the replacement has.
+        added: usize,
+    },
+    /// The region changed since the author marked it — nothing was written.
+    RegionChanged,
+    /// The document with the marked region is no longer open.
+    DocumentClosed,
 }
 
 /// The agent dock and library pane as owned by `FerriteApp`.
@@ -82,8 +124,21 @@ pub struct AgentPanel {
     transcript: Vec<ChatMessage>,
     input: String,
     /// A marked passage waiting for the next question (sprint 6.3): set by
-    /// focus mode, cleared when the question carries it.
-    pending: Option<RoundtripContext>,
+    /// focus mode, moved to [`Self::in_flight`] when the question carries it.
+    pending: Option<PendingSelection>,
+    /// The passage the running question carries (sprint 6.4): the answer's
+    /// replacement is written back to it, digest-guarded.
+    in_flight: Option<PendingSelection>,
+    /// A replacement block lifted out of the finished answer, handed to the
+    /// host on the next `show_ui` (sprint 6.4).
+    pending_edit: Option<PendingEdit>,
+    /// The replacement handed to the host last frame, waiting for its verdict
+    /// — `push_edit_report` turns it into the transcript card (and, when
+    /// refused, into the insert offer).
+    awaiting_report: Option<PendingEdit>,
+    /// A replacement that was *not* applied — offered as insert-at-cursor
+    /// above the composer until used or dropped (sprint 6.4).
+    insert_offer: Option<String>,
     open_menu: Option<String>,
     agent_section: SectionState,
     library_section: SectionState,
@@ -125,6 +180,10 @@ impl AgentPanel {
             transcript: Vec::new(),
             input: String::new(),
             pending: None,
+            in_flight: None,
+            pending_edit: None,
+            awaiting_report: None,
+            insert_offer: None,
             open_menu: None,
             agent_section: SectionState::new(t!("agent.section.agent").to_string()),
             library_section: SectionState::new(t!("agent.section.library").to_string()),
@@ -205,9 +264,15 @@ impl AgentPanel {
 
     /// Attach a marked passage (sprint 6.3, focus mode) and move the caret to
     /// the chat prompt: the next question carries the passage alongside the
-    /// active document.
-    pub fn attach_selection(&mut self, ctx: &egui::Context, context: RoundtripContext) {
-        self.pending = Some(context);
+    /// active document. `tab_id` remembers where the passage lives, so the
+    /// answer can be written back there even after a tab switch (sprint 6.4).
+    pub fn attach_selection(
+        &mut self,
+        ctx: &egui::Context,
+        tab_id: usize,
+        context: RoundtripContext,
+    ) {
+        self.pending = Some(PendingSelection { tab_id, context });
         ctx.memory_mut(|memory| memory.request_focus(Composer::input_id()));
     }
 
@@ -271,6 +336,8 @@ impl AgentPanel {
         let buffer_attached = settings.buffer_attached;
         let buffer_toggled = Cell::new(false);
         let selection_dropped = Cell::new(false);
+        let insert_requested = Cell::new(false);
+        let insert_dropped = Cell::new(false);
         let mut menu = MenuContext {
             settings: &mut *settings,
             status: self.status.as_ref(),
@@ -420,7 +487,18 @@ impl AgentPanel {
             context_chip(&mut footer_ui, buffer, buffer_attached, &buffer_toggled);
             // The pending marked passage sits above the document chip: it was
             // attached later and is the more specific context.
-            selection_chip(&mut footer_ui, self.pending.as_ref(), &selection_dropped);
+            selection_chip(
+                &mut footer_ui,
+                self.pending.as_ref().map(|pending| &pending.context),
+                &selection_dropped,
+            );
+            // The insert offer is the most action-worthy: it sits on top.
+            insert_chip(
+                &mut footer_ui,
+                self.insert_offer.as_deref(),
+                &insert_requested,
+                &insert_dropped,
+            );
 
             // Transcript in the space above the footer.
             let transcript_bottom = (footer_ui.min_rect().top() - ui.spacing().item_spacing.y)
@@ -460,6 +538,9 @@ impl AgentPanel {
         }
         if selection_dropped.get() {
             self.pending = None;
+        }
+        if insert_dropped.get() {
+            self.insert_offer = None;
         }
         if let Some(width) = library_response.width {
             settings.library_width = width;
@@ -556,10 +637,43 @@ impl AgentPanel {
             }
         }
 
+        // The document edit this frame (sprint 6.4): a digest-guarded
+        // replacement that just arrived, or the insert chip's request.
+        let edit = self.take_edit(insert_requested.get());
+
         AgentPanelOutput {
             settings_changed,
             cite,
+            edit,
         }
+    }
+
+    /// The document edit this frame (sprint 6.4), if any.
+    ///
+    /// A replacement outranks an insert request: the offer only exists while
+    /// no replacement is pending, so the two can never be fresh in one frame.
+    /// The replacement travels as a copy — the panel keeps its own to write
+    /// the verdict card, and to keep the text alive for the insert offer when
+    /// the host refuses to write.
+    fn take_edit(&mut self, insert_requested: bool) -> Option<EditorEdit> {
+        if let Some(pending) = self.pending_edit.take() {
+            let range = pending.selection.context.range();
+            debug_assert!(range.is_some(), "pending edits come from selections");
+            let edit = range.map(|range| EditorEdit::Replace {
+                tab_id: pending.selection.tab_id,
+                range,
+                digest: pending.selection.context.digest().to_string(),
+                text: pending.replacement.body.clone(),
+            });
+            self.awaiting_report = Some(pending);
+            return edit;
+        }
+        if insert_requested {
+            if let Some(text) = self.insert_offer.take() {
+                return Some(EditorEdit::Insert { text });
+            }
+        }
+        None
     }
 
     /// Start a query with the current input buffer.
@@ -569,16 +683,114 @@ impl AgentPanel {
             return;
         }
         // The active document first, the marked passage it quotes second —
-        // each is optional and independent of the other.
+        // each is optional and independent of the other. The passage stays in
+        // `in_flight` until the answer arrives (sprint 6.4): the replacement
+        // is written back to it.
         let mut contexts = Vec::new();
         contexts.extend(buffer_context(settings, buffer));
-        contexts.extend(self.pending.take());
+        self.in_flight = self.pending.take();
+        contexts.extend(
+            self.in_flight
+                .as_ref()
+                .map(|pending| pending.context.clone()),
+        );
         self.transcript.push(ChatMessage::user(&text));
         self.transcript
             .push(ChatMessage::assistant(String::new()).streaming());
         self.input.clear();
         self.busy = true;
         self.worker.send(RagCommand::Query { text, contexts });
+    }
+
+    /// Lift a replacement block out of the finished answer (sprint 6.4).
+    ///
+    /// The block is protocol markup, not prose: it leaves the transcript
+    /// message and becomes a pending edit. With a marked passage in flight,
+    /// the host applies it on the next frame (digest-guarded); without one,
+    /// the replacement is kept as an insert offer and nothing is written —
+    /// the answer is not lost either way.
+    fn finish_answer(&mut self) {
+        let Some(last) = self.transcript.len().checked_sub(1) else {
+            self.in_flight = None;
+            return;
+        };
+        if self.transcript[last].role != ChatRole::Assistant {
+            self.in_flight = None;
+            return;
+        }
+        let Some((prose, mut blocks)) = Replacement::extract(&self.transcript[last].text) else {
+            self.in_flight = None;
+            return;
+        };
+        self.transcript[last].text = prose;
+        let replacement = blocks.remove(0);
+        let extras = blocks.len();
+        if replacement.body.trim().is_empty() {
+            self.in_flight = None;
+            let mut text = t!("agent.edit.empty").to_string();
+            if extras > 0 {
+                text.push('\n');
+                text.push_str(&t!("agent.edit.extras", count = extras));
+            }
+            self.transcript.push(edit_card(text, true));
+            return;
+        }
+        match self.in_flight.take() {
+            Some(selection) => {
+                self.pending_edit = Some(PendingEdit {
+                    selection,
+                    replacement,
+                    extras,
+                });
+            }
+            None => {
+                // Nothing was marked: the replacement stays out of the
+                // document and is offered for insert-at-cursor instead.
+                let mut text = t!("agent.edit.no_region").to_string();
+                if extras > 0 {
+                    text.push('\n');
+                    text.push_str(&t!("agent.edit.extras", count = extras));
+                }
+                self.transcript.push(edit_card(text, true));
+                self.insert_offer = Some(replacement.body);
+            }
+        }
+    }
+
+    /// Report the host's verdict on a pending replacement (sprint 6.4).
+    ///
+    /// The card lands after the answer; a refused replacement is kept as an
+    /// insert offer instead of being lost.
+    pub fn push_edit_report(&mut self, report: EditReport) {
+        let Some(pending) = self.awaiting_report.take() else {
+            return;
+        };
+        let (mut text, refused) = match report {
+            EditReport::Applied {
+                name,
+                removed,
+                added,
+            } => (
+                t!(
+                    "agent.edit.applied",
+                    name = name.as_str(),
+                    removed = removed,
+                    added = added
+                )
+                .to_string(),
+                false,
+            ),
+            EditReport::RegionChanged => (t!("agent.edit.region_changed").to_string(), true),
+            EditReport::DocumentClosed => (t!("agent.edit.document_closed").to_string(), true),
+        };
+        if pending.extras > 0 {
+            text.push('\n');
+            text.push_str(&t!("agent.edit.extras", count = pending.extras));
+        }
+        if refused {
+            self.insert_offer = Some(pending.replacement.body);
+        }
+        self.transcript.push(edit_card(text, refused));
     }
 
     /// Whether the worker is busy with a query, an index run or an ingestion.
@@ -663,9 +875,11 @@ impl AgentPanel {
                     });
                 }
                 self.busy = false;
+                self.finish_answer();
             }
             RagEvent::QueryFailed { message } => {
                 self.append_failure(message);
+                self.in_flight = None;
                 self.busy = false;
             }
             RagEvent::QueryCancelled { tokens } => {
@@ -676,6 +890,7 @@ impl AgentPanel {
                     "{} ({tokens} tokens)",
                     t!("agent.cancelled")
                 )));
+                self.in_flight = None;
                 self.busy = false;
             }
             RagEvent::QueryAttachments {
@@ -1026,6 +1241,22 @@ fn attachment_note(
     })
 }
 
+/// A transcript card for a Co-Edit outcome (sprint 6.4): what happened to an
+/// answer's replacement block. A refused replacement is tinted like an error,
+/// because that is what it is — the document was not touched.
+fn edit_card(text: String, refused: bool) -> ChatMessage {
+    ChatMessage {
+        role: ChatRole::System,
+        text,
+        state: if refused {
+            MessageState::Error
+        } else {
+            MessageState::Complete
+        },
+        meta: None,
+    }
+}
+
 /// The document attachment for the next question: on while the toggle is on
 /// and the active document has text.
 fn buffer_context(
@@ -1094,6 +1325,38 @@ fn selection_chip(ui: &mut egui::Ui, pending: Option<&RoundtripContext>, dropped
         if ui
             .small_button(X)
             .on_hover_text(t!("agent.selection.drop"))
+            .clicked()
+        {
+            dropped.set(true);
+        }
+    });
+}
+
+/// The composer's insert chip (sprint 6.4): a replacement the agent produced
+/// that was *not* written into a document — no passage was marked, or the
+/// passage changed while the answer was written. Inserting puts it at the
+/// caret; the ✕ drops it.
+fn insert_chip(ui: &mut egui::Ui, offer: Option<&str>, insert: &Cell<bool>, dropped: &Cell<bool>) {
+    use crate::ui::phosphor_icons::{PENCIL, X};
+    let Some(text) = offer else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label(format!(
+            "{PENCIL} {}",
+            t!("agent.edit.chip", chars = text.chars().count())
+        ))
+        .on_hover_text(t!("agent.edit.chip_hint"));
+        if ui
+            .small_button(t!("agent.edit.insert"))
+            .on_hover_text(t!("agent.edit.insert_hint"))
+            .clicked()
+        {
+            insert.set(true);
+        }
+        if ui
+            .small_button(X)
+            .on_hover_text(t!("agent.edit.drop"))
             .clicked()
         {
             dropped.set(true);
@@ -2233,17 +2496,7 @@ mod tests {
         let ctx = egui::Context::default();
         let settings = RagSettings::default();
         let mut panel = AgentPanel::new(&settings, None);
-        let context = RoundtripContext::selection(
-            EditorBuffer {
-                name: "draft.md",
-                path: None,
-                cursor: (0, 0),
-                content: "keep this passage",
-            },
-            0..4,
-        )
-        .expect("marked text");
-        panel.attach_selection(&ctx, context);
+        panel.attach_selection(&ctx, 7, marked_passage("keep this passage", 0..4));
         assert!(panel.pending.is_some(), "the passage waits for a question");
         assert_eq!(
             ctx.memory(|memory| memory.focused()),
@@ -2253,7 +2506,11 @@ mod tests {
 
         // The chip renders while a passage waits (and in an idle frame, too).
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            selection_chip(ui, panel.pending.as_ref(), &Cell::new(false));
+            selection_chip(
+                ui,
+                panel.pending.as_ref().map(|pending| &pending.context),
+                &Cell::new(false),
+            );
         });
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             selection_chip(ui, None, &Cell::new(false));
@@ -2265,24 +2522,206 @@ mod tests {
         let ctx = egui::Context::default();
         let settings = RagSettings::default();
         let mut panel = AgentPanel::new(&settings, None);
-        let context = RoundtripContext::selection(
+        panel.attach_selection(&ctx, 7, marked_passage("keep this passage", 0..4));
+        panel.input = "shorten this".to_string();
+        panel.submit(&settings, None);
+        assert!(
+            panel.pending.is_none() && panel.in_flight.is_some(),
+            "the passage rode along, it must not ride along twice"
+        );
+        assert!(panel.busy, "the question is running");
+    }
+
+    /// A marked passage over `content` (a selection, as focus mode attaches).
+    fn marked_passage(content: &str, range: std::ops::Range<usize>) -> RoundtripContext {
+        RoundtripContext::selection(
             EditorBuffer {
                 name: "draft.md",
                 path: None,
                 cursor: (0, 0),
-                content: "keep this passage",
+                content,
             },
-            0..4,
+            range,
         )
-        .expect("marked text");
-        panel.attach_selection(&ctx, context);
-        panel.input = "shorten this".to_string();
+        .expect("marked text")
+    }
+
+    /// Answer the running question with `answer` (finishes the placeholder the
+    /// way streaming would).
+    fn answer(panel: &mut AgentPanel, answer: &str) {
+        panel.transcript.last_mut().expect("placeholder").text = answer.to_string();
+        panel.finish_answer();
+    }
+
+    /// Run one dock frame and return what the host was asked to do (the frame
+    /// that hands a finished replacement over).
+    fn frame(
+        panel: &mut AgentPanel,
+        settings: &mut RagSettings,
+        ctx: &egui::Context,
+    ) -> AgentPanelOutput {
+        let mut output = AgentPanelOutput::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            output = panel.show_ui(ui, settings, None, &[], None);
+        });
+        output
+    }
+
+    #[test]
+    fn a_finished_answer_becomes_a_digest_guarded_edit() {
+        // Sprint 6.4 end to end, panel half: the block leaves the transcript
+        // message, and the next frame hands the host a guarded replacement.
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+        let mut panel = AgentPanel::new(&settings, None);
+        panel.attach_selection(&ctx, 7, marked_passage("keep this passage", 0..4));
+        panel.input = "rewrite it".to_string();
         panel.submit(&settings, None);
-        assert!(
-            panel.pending.is_none(),
-            "the passage rode along, it must not ride along twice"
+        answer(
+            &mut panel,
+            "```sciscraper:v1:replace target=\"0..4\"\nKept.\n```\nShort and sweet.",
         );
-        assert!(panel.busy, "the question is running");
+
+        assert_eq!(
+            panel.transcript.last().unwrap().text,
+            "Short and sweet.",
+            "the block leaves the message, the prose stays"
+        );
+        let pending = panel.pending_edit.as_ref().expect("waiting for the host");
+        assert_eq!(pending.selection.tab_id, 7);
+        assert_eq!(pending.extras, 0);
+
+        // The next frame hands the edit to the host, guarded by the digest.
+        let Some(EditorEdit::Replace {
+            tab_id,
+            range,
+            digest,
+            text,
+        }) = frame(&mut panel, &mut settings, &ctx).edit
+        else {
+            panic!("the frame hands the replacement over");
+        };
+        assert_eq!(tab_id, 7, "the passage's tab travels with the edit");
+        assert_eq!(range, 0..4);
+        assert_eq!(
+            digest,
+            roundtrip::digest("keep"),
+            "the marked version travels"
+        );
+        assert_eq!(text, "Kept.");
+        assert!(panel.pending_edit.is_none(), "handed over exactly once");
+        assert!(panel.awaiting_report.is_some(), "waiting for the verdict");
+
+        // The host applied it: a card names the document and the numbers.
+        panel.push_edit_report(EditReport::Applied {
+            name: "draft.md".to_string(),
+            removed: 4,
+            added: 5,
+        });
+        let card = panel.transcript.last().unwrap();
+        assert_eq!(card.role, ChatRole::System);
+        assert_eq!(card.state, MessageState::Complete);
+        assert!(card.text.contains("draft.md"), "{}", card.text);
+        assert!(
+            panel.insert_offer.is_none(),
+            "nothing to insert after a write"
+        );
+    }
+
+    #[test]
+    fn a_refused_replacement_is_offered_for_insert() {
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+        let mut panel = AgentPanel::new(&settings, None);
+        panel.attach_selection(&ctx, 7, marked_passage("keep this passage", 0..4));
+        panel.input = "rewrite it".to_string();
+        panel.submit(&settings, None);
+        answer(&mut panel, "```sciscraper:v1:replace\nKept.\n```");
+        assert!(panel.pending_edit.is_some());
+
+        // The host could not apply it — the passage changed meanwhile.
+        assert!(matches!(
+            frame(&mut panel, &mut settings, &ctx).edit,
+            Some(EditorEdit::Replace { .. })
+        ));
+        panel.push_edit_report(EditReport::RegionChanged);
+        let card = panel.transcript.last().unwrap();
+        assert_eq!(card.state, MessageState::Error, "the document is untouched");
+        assert_eq!(panel.insert_offer.as_deref(), Some("Kept."));
+
+        // The offer renders as a chip above the composer (and hides without
+        // one); the ✕ is the cell the caller watches for a dismissal.
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            insert_chip(
+                ui,
+                panel.insert_offer.as_deref(),
+                &Cell::new(false),
+                &Cell::new(false),
+            );
+        });
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            insert_chip(ui, None, &Cell::new(false), &Cell::new(false));
+        });
+    }
+
+    #[test]
+    fn an_answer_without_a_marked_passage_keeps_its_replacement_off_the_document() {
+        let settings = RagSettings::default();
+        let mut panel = AgentPanel::new(&settings, None);
+        panel.transcript.push(
+            ChatMessage::assistant("Here you go.\n\n```sciscraper:v1:replace\nRewritten.\n```\n")
+                .streaming(),
+        );
+        panel.finish_answer();
+        assert!(panel.pending_edit.is_none(), "nothing was marked: no write");
+        assert_eq!(
+            panel.transcript[0].text, "Here you go.",
+            "the prose stays, the block leaves"
+        );
+        assert_eq!(panel.insert_offer.as_deref(), Some("Rewritten."));
+        assert_eq!(panel.transcript.last().unwrap().state, MessageState::Error);
+    }
+
+    #[test]
+    fn extra_and_empty_blocks_are_reported_not_applied() {
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+
+        // Two blocks: the first is the edit, the second is reported.
+        let mut panel = AgentPanel::new(&settings, None);
+        panel.attach_selection(&ctx, 7, marked_passage("keep this passage", 0..4));
+        panel.input = "rewrite it".to_string();
+        panel.submit(&settings, None);
+        answer(
+            &mut panel,
+            "```sciscraper:v1:replace\none\n```\n\n```sciscraper:v1:replace\ntwo\n```\n",
+        );
+        let pending = panel.pending_edit.as_ref().expect("the first block");
+        assert_eq!(pending.replacement.body, "one");
+        assert_eq!(pending.extras, 1);
+        assert!(matches!(
+            frame(&mut panel, &mut settings, &ctx).edit,
+            Some(EditorEdit::Replace { .. })
+        ));
+        panel.push_edit_report(EditReport::Applied {
+            name: "draft.md".to_string(),
+            removed: 4,
+            added: 3,
+        });
+        assert_eq!(
+            panel.transcript.last().unwrap().state,
+            MessageState::Complete
+        );
+
+        // An empty replacement is a note, not an edit.
+        let mut panel = AgentPanel::new(&settings, None);
+        panel.attach_selection(&ctx, 7, marked_passage("keep this passage", 0..4));
+        panel.input = "rewrite it".to_string();
+        panel.submit(&settings, None);
+        answer(&mut panel, "```sciscraper:v1:replace\n```\n");
+        assert!(panel.pending_edit.is_none() && panel.insert_offer.is_none());
+        assert_eq!(panel.transcript.last().unwrap().state, MessageState::Error);
+        assert!(panel.in_flight.is_none(), "the passage is done with");
     }
 
     #[test]

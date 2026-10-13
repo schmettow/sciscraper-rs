@@ -572,6 +572,8 @@ notification:
   session_restored: "Sitzung ist wiederhergestellt"
   citation_inserted: "%{text} eingefügt"
   citation_no_document: "Kein Dokument für die Zitat-Einfügung geöffnet"
+  replacement_inserted: "Ersatz eingefügt — Strg+Z macht es rückgängig"
+  edit_no_document: "Kein Dokument für die Ersatz-Einfügung geöffnet"
   large_file_performance: "Große Datei (%{size} MB). Evtl. eingeschränkte Geschwindigkeit."
   undo: "Rückgängig (%{remaining} verbleibend)"
   nothing_to_undo: "Nichts rückgängig zu machen"
@@ -1046,6 +1048,18 @@ agent:
     drop: "Markierten Bereich verwerfen"
   focus:
     hint: "Den Agenten zu dem markierten Bereich fragen"
+  edit:
+    applied: "Ersatz übernommen in %{name}: −%{removed} / +%{added} Zeichen — Strg+Z macht es rückgängig."
+    region_changed: "Der markierte Bereich hat sich geändert, während der Agent schrieb — nichts wurde übernommen."
+    document_closed: "Das Dokument mit dem markierten Bereich ist nicht mehr geöffnet — nichts wurde übernommen."
+    no_region: "Es war kein Bereich markiert — der Ersatz des Agenten wurde nicht übernommen."
+    empty: "Die Antwort enthielt keinen Ersatztext — nichts wurde übernommen."
+    extras: "%{count} weitere Ersatzblöcke wurden ignoriert."
+    chip: "Ersatz bereit (%{chars} Zeichen)"
+    chip_hint: "Der Ersatz des Agenten konnte nicht übernommen werden — fügen Sie ihn stattdessen an der Schreibmarke ein"
+    insert: "Einfügen"
+    insert_hint: "Den Ersatz an der Schreibmarke einfügen (ein Rückgängig-Schritt)"
+    drop: "Ersatz verwerfen"
   session:
     new: "Neu"
     new_hint: "Neue Unterhaltung beginnen"

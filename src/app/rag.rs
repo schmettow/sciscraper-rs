@@ -29,19 +29,23 @@ impl FerriteApp {
         if !matches!(tab.kind, TabKind::Document) {
             return None;
         }
-        let name = tab
-            .path
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .and_then(|name| name.to_str())
-            .or(tab.untitled_display_name.as_deref())
-            .unwrap_or("Untitled");
         Some(EditorBuffer {
-            name,
+            name: Self::tab_display_name(tab),
             path: tab.path.as_deref(),
             cursor: tab.cursor_position,
             content: &tab.content,
         })
+    }
+
+    /// The document's display name: its file name, the untitled placeholder
+    /// (`Untitled-1`), or a last resort.
+    fn tab_display_name(tab: &Tab) -> &str {
+        tab.path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .or(tab.untitled_display_name.as_deref())
+            .unwrap_or("Untitled")
     }
     /// Route a dropped file set to the library (feature `grobid`); returns
     /// `true` when the drop was consumed and must not also be handled as a
@@ -149,7 +153,7 @@ impl FerriteApp {
             return;
         };
         if let Some(panel) = self.agent_panel.as_mut() {
-            panel.attach_selection(&ctx, context);
+            panel.attach_selection(&ctx, tab_id, context);
         }
     }
 
@@ -211,6 +215,105 @@ impl FerriteApp {
         if let Some(cite) = output.cite {
             self.insert_citation(&cite);
         }
+        if let Some(edit) = output.edit {
+            if let Some(report) = self.apply_editor_edit(edit) {
+                if let Some(panel) = self.agent_panel.as_mut() {
+                    panel.push_edit_report(report);
+                }
+            }
+        }
+    }
+
+    /// Apply the editor edit an agent answer asked for (sprint 6.4).
+    ///
+    /// The citation contract: one undo step through `TabState::set_content`.
+    /// A replacement is additionally digest-guarded — the region must still
+    /// hold exactly the text the author marked, or nothing is written and the
+    /// panel reports why. Returns the report for the replacement path; an
+    /// insert answers with a toast and reports nothing (the panel already
+    /// cleared its chip when it asked).
+    pub(crate) fn apply_editor_edit(
+        &mut self,
+        edit: crate::rag::roundtrip::EditorEdit,
+    ) -> Option<crate::ui::EditReport> {
+        use crate::rag::roundtrip::{digest, replace_at, EditorEdit};
+        match edit {
+            EditorEdit::Replace {
+                tab_id,
+                range,
+                digest: expected,
+                text,
+            } => {
+                let Some(tab) = self.state.tab_by_id_mut(tab_id) else {
+                    return Some(crate::ui::EditReport::DocumentClosed);
+                };
+                // The guard: the answer was written for a specific version of
+                // the passage, and only that version may be replaced.
+                let current: String = tab
+                    .content
+                    .chars()
+                    .skip(range.start)
+                    .take(range.end.saturating_sub(range.start))
+                    .collect();
+                if digest(&current) != expected {
+                    log::debug!(
+                        "Co-Edit: region {}..{} changed since it was marked — not applied",
+                        range.start,
+                        range.end
+                    );
+                    return Some(crate::ui::EditReport::RegionChanged);
+                }
+                let name = Self::tab_display_name(tab).to_string();
+                let removed = current.chars().count();
+                let added = text.chars().count();
+                let content = replace_at(&tab.content, range.clone(), &text);
+                tab.set_content(content);
+                tab.cursor_position = citation::caret_after(&tab.content, range.start + added);
+                tab.selection = None;
+                tab.needs_focus = true;
+                log::debug!("Co-Edit: replaced chars {range:?} (−{removed} / +{added})");
+                Some(crate::ui::EditReport::Applied {
+                    name,
+                    removed,
+                    added,
+                })
+            }
+            EditorEdit::Insert { text } => {
+                let time = self.get_app_time();
+                let message = if self.insert_at_caret(&text) {
+                    t!("notification.replacement_inserted").to_string()
+                } else {
+                    t!("notification.edit_no_document").to_string()
+                };
+                self.state.show_toast(message, time, 2.5);
+                None
+            }
+        }
+    }
+
+    /// Insert `text` into the active document at the caret (or over the
+    /// selection) as one undo step.
+    ///
+    /// The one splice shared by citations and the Co-Edit insert; the caller
+    /// owns the feedback (toast, card).
+    fn insert_at_caret(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let Some(tab) = self.state.active_tab_mut() else {
+            return false;
+        };
+        // The splice itself is the roundtrip module's `replace_at` — the same
+        // char-indexed primitive the Co-Edit replacement uses.
+        let (start, end) =
+            citation::citation_range(&tab.content, tab.selection, tab.cursor_position);
+        let content = crate::rag::roundtrip::replace_at(&tab.content, start..end, text);
+        tab.set_content(content);
+        tab.cursor_position = citation::caret_after(&tab.content, start + text.chars().count());
+        tab.selection = None;
+        tab.needs_focus = true;
+        log::debug!("Inserted text at chars {start}..{end}");
+        true
     }
 
     /// Insert a citation into the active document as one undo step.
@@ -225,32 +328,21 @@ impl FerriteApp {
             return false;
         }
         let time = self.get_app_time();
-        let Some(tab) = self.state.active_tab_mut() else {
+        if self.insert_at_caret(&text) {
+            self.state.show_toast(
+                t!("notification.citation_inserted", text = text.as_str()).to_string(),
+                time,
+                1.5,
+            );
+            true
+        } else {
             self.state.show_toast(
                 t!("notification.citation_no_document").to_string(),
                 time,
                 2.5,
             );
-            return false;
-        };
-
-        // Insertion range: the selection when there is one, else the caret.
-        // The splice itself is the roundtrip module's `replace_at` — the same
-        // char-indexed primitive the in-place edit of the Co-Edit sprint uses.
-        let (start, end) =
-            citation::citation_range(&tab.content, tab.selection, tab.cursor_position);
-        let content = crate::rag::roundtrip::replace_at(&tab.content, start..end, &text);
-        tab.set_content(content);
-        tab.cursor_position = citation::caret_after(&tab.content, start + text.chars().count());
-        tab.selection = None;
-        tab.needs_focus = true;
-        log::debug!("Inserted citation at chars {start}..{end}");
-        self.state.show_toast(
-            t!("notification.citation_inserted", text = text.as_str()).to_string(),
-            time,
-            1.5,
-        );
-        true
+            false
+        }
     }
 }
 

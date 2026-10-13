@@ -68,7 +68,10 @@ exactly one replacement block:
 ```
 ````
 
-- One block per answer, at the end, and only for a marked `selection`.
+- One block per answer, **after** your prose (never before it), and only for a marked
+  `selection`. The client lifts the block out of the chat before the author reads it, so your
+  prose has to read on its own.
+- `target` repeats the `range` of the marked selection exactly as you were shown it.
 - The block contains the finished replacement for the whole passage — no diffs, no ellipses,
   no commentary inside it, nothing the author did not ask you to change.
 - Everything else stays prose: never echo the container tags of your input back, and never

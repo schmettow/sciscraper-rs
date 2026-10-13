@@ -184,6 +184,22 @@ shorter" right away.
 - The button stays out of the way: it hides while a question runs, in rendered-only view
   (mark in the raw editor), while nothing is marked, and when the panes are closed.
 
+### Co-edit — let the agent rewrite a marked passage
+
+Mark the passage, click the corner button and ask for the change (*"make this shorter"*,
+*"turn this into a bullet list"*). The agent answers with prose plus one replacement block;
+Sciscraper lifts the block out of the chat, checks that the passage still holds exactly what
+you marked (a digest), and replaces it **in place** — one `Ctrl+Z` restores the original.
+
+- The transcript card reports the outcome: *"Replacement applied to draft.md: −412 / +508
+  chars — Ctrl+Z undoes it."* The replacement lands in the document the passage came from,
+  even if you switched tabs while the agent was writing.
+- If the passage changed meanwhile or nothing was marked, **nothing is written**: the
+  replacement is offered above the composer instead (*"Replacement ready (508 chars) ·
+  Insert · ✕"*), and *Insert* puts it at the caret of the open document as one undo step.
+- An empty replacement is only a note, and only the first replacement block of an answer is
+  applied; further blocks are reported and ignored.
+
 ### The component bars
 
 One icon per RAG component sits at the bottom of each pane, grouped by the work

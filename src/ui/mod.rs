@@ -34,7 +34,7 @@ mod window;
 
 pub use about::AboutPanel;
 #[cfg(feature = "rag")]
-pub use agent_panel::{AgentPanel, AgentPanelOutput};
+pub use agent_panel::{AgentPanel, AgentPanelOutput, EditReport};
 pub use backlinks_panel::BacklinksPanel;
 pub use command_palette::CommandPalette;
 pub use dialogs::{FileOperationDialog, FileOperationResult, GoToLineDialog, GoToLineResult};
