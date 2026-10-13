@@ -2240,12 +2240,15 @@ impl FerriteApp {
         self.render_agent_dock(ui);
 
         // Central panel for editor content
-
-        // Central panel for editor content
         let central_deferred = self.render_central_panel(ui, is_dark);
         if central_deferred.is_some() {
             deferred_format_action = central_deferred;
         }
+
+        // Focus-mode button (feature `rag`) — above the editor, so it draws
+        // after the central panel (sprint 6.3).
+        #[cfg(feature = "rag")]
+        self.render_focus_overlay(ui);
 
         deferred_format_action
     }

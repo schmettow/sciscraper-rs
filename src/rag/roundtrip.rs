@@ -11,6 +11,9 @@
 //! <sciscraper:v1:document name="paper.md" path="docs/paper.md" cursor="42:7" chars="12345">
 //! …source…
 //! </sciscraper:v1:document>
+//! <sciscraper:v1:selection name="paper.md" range="120..480" chars="360" digest="b3:…">
+//! …the marked passage…
+//! </sciscraper:v1:selection>
 //! </sciscraper:v1:context>
 //!
 //! <sciscraper:v1:context source="corpus">
@@ -24,11 +27,11 @@
 //! here, and the result half of the protocol (`sciscraper:v1:replace`) is
 //! parsed by this module as well.
 //!
-//! **Scope.** This sprint ships the input half plus the editor-edit primitive
-//! that the citation insertion already needs. `RoundtripContext` (the buffer
-//! and selection containers) and the result parser land in the sprints whose
-//! features first call them (6.2/6.4) — a foundation without a caller would
-//! only be dead code.
+//! **Scope.** 6.0 shipped the protocol, the writers and the attachment
+//! strategy; 6.2 added [`RoundtripContext::document`] (the active buffer) and
+//! 6.3 adds [`RoundtripContext::selection`] (a marked passage). The result
+//! parser lands in the sprint whose feature first calls it (6.4, Co-Edit) —
+//! a foundation without a caller would only be dead code.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -123,14 +126,21 @@ impl EditorBuffer<'_> {
 
 /// One region of the editor attached to a query.
 ///
-/// Sprint 6.2 ships the document flavour (the active buffer). A marked
-/// selection (6.3) is the same shape with a `range` and a `digest` instead of
-/// a `path` and a `cursor`; fields grow with their first reader.
+/// The document flavour (the active buffer) and the selection flavour (a
+/// passage the author marked) differ in which attributes they carry: a
+/// selection adds the char `range` it occupies in the document and a `digest`
+/// that identifies the version the author marked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoundtripContext {
+    kind: RoundtripKind,
     name: String,
     path: Option<PathBuf>,
     cursor: Option<(usize, usize)>,
+    /// Char range inside the document (selections only).
+    range: Option<Range<usize>>,
+    /// Identity of the *full* text — what the Co-Edit sprint checks before an
+    /// answer is written back.
+    digest: String,
     /// Characters in the full text — before truncation.
     chars: usize,
     /// Whether [`MAX_CONTEXT_CHARS`] cut the text short.
@@ -139,10 +149,32 @@ pub struct RoundtripContext {
     text: String,
 }
 
+/// Which region of the editor a context came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoundtripKind {
+    /// The active document (the buffer).
+    Document,
+    /// A passage the author marked.
+    Selection,
+}
+
+impl RoundtripKind {
+    /// The container marker for this kind.
+    #[must_use]
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Document => MARKER_DOCUMENT,
+            Self::Selection => MARKER_SELECTION,
+        }
+    }
+}
+
 /// What the transcript needs to note an attached context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextNote {
-    /// Display name of the attached document.
+    /// Which region was attached.
+    pub kind: RoundtripKind,
+    /// Display name of the document the region came from.
     pub name: String,
     /// Characters in the full text (before truncation).
     pub chars: usize,
@@ -161,19 +193,50 @@ impl RoundtripContext {
         if !buffer.has_text() {
             return None;
         }
-        let mut text = String::new();
-        let mut chars = 0usize;
-        for character in buffer.content.chars() {
-            chars += 1;
-            if chars <= MAX_CONTEXT_CHARS {
-                text.push(character);
-            }
-        }
-        let truncated = chars > MAX_CONTEXT_CHARS;
+        let (text, chars, truncated) = excerpt(buffer.content);
         Some(Self {
+            kind: RoundtripKind::Document,
             name: buffer.name.to_string(),
             path: buffer.path.map(Path::to_path_buf),
             cursor: Some(buffer.cursor),
+            range: None,
+            digest: digest(buffer.content),
+            chars,
+            truncated,
+            text,
+        })
+    }
+
+    /// A passage the author marked, or `None` when the marked text is blank.
+    ///
+    /// `range` is char-indexed and doc-relative, like every editor edit in the
+    /// roundtrip (see [`replace_at`]); it is clamped to the document length and
+    /// stored in the container so sprint 6.4 can find the passage again. The
+    /// digest covers the *full* marked text, so an answer stays checkable even
+    /// when the model only saw a truncated excerpt.
+    #[must_use]
+    pub fn selection(buffer: EditorBuffer<'_>, range: Range<usize>) -> Option<Self> {
+        debug_assert!(range.start <= range.end, "range must be ordered: {range:?}");
+        let total = buffer.content.chars().count();
+        let start = range.start.min(total);
+        let end = range.end.min(total).max(start);
+        let marked: String = buffer
+            .content
+            .chars()
+            .skip(start)
+            .take(end - start)
+            .collect();
+        if marked.trim().is_empty() {
+            return None;
+        }
+        let (text, chars, truncated) = excerpt(&marked);
+        Some(Self {
+            kind: RoundtripKind::Selection,
+            name: buffer.name.to_string(),
+            path: buffer.path.map(Path::to_path_buf),
+            cursor: None,
+            range: Some(start..end),
+            digest: digest(&marked),
             chars,
             truncated,
             text,
@@ -183,8 +246,9 @@ impl RoundtripContext {
     /// The container as the model sees it.
     #[must_use]
     pub fn container(&self) -> String {
+        let marker = self.kind.marker();
         let mut out = format!(
-            "<{MARKER_DOCUMENT}{}>\n{}\n",
+            "<{marker}{}>\n{}\n",
             self.attributes(),
             self.text.trim_end()
         );
@@ -194,7 +258,7 @@ impl RoundtripContext {
                 self.chars
             ));
         }
-        out.push_str(&format!("</{MARKER_DOCUMENT}>"));
+        out.push_str(&format!("</{marker}>"));
         out
     }
 
@@ -211,13 +275,26 @@ impl RoundtripContext {
     #[must_use]
     pub fn note(&self) -> ContextNote {
         ContextNote {
+            kind: self.kind,
             name: self.name.clone(),
             chars: self.chars,
             truncated: self.truncated,
         }
     }
 
+    /// Characters in the full text (before truncation) — what the pending-chip
+    /// label shows without cloning the note.
+    #[must_use]
+    pub fn chars(&self) -> usize {
+        self.chars
+    }
+
     /// The container's attributes, in a fixed order.
+    ///
+    /// `digest` is written for selections only: it exists for the Co-Edit
+    /// sprint, which refuses to write an answer back into a passage that
+    /// changed underneath it, and the co-writer prompt documents it only
+    /// where it has a meaning.
     fn attributes(&self) -> String {
         let mut out = format!(" name=\"{}\"", attribute(&self.name));
         if let Some(path) = &self.path {
@@ -229,9 +306,41 @@ impl RoundtripContext {
         if let Some((line, column)) = self.cursor {
             out.push_str(&format!(" cursor=\"{line}:{column}\""));
         }
+        if let Some(range) = &self.range {
+            out.push_str(&format!(" range=\"{}..{}\"", range.start, range.end));
+        }
         out.push_str(&format!(" chars=\"{}\"", self.chars));
+        if self.kind == RoundtripKind::Selection {
+            out.push_str(&format!(" digest=\"{}\"", self.digest));
+        }
         out
     }
+}
+
+/// Cut `text` to [`MAX_CONTEXT_CHARS`], with its full length and whether the
+/// cut happened — char-counted, so multi-byte text never splits a codepoint.
+fn excerpt(text: &str) -> (String, usize, bool) {
+    let mut out = String::new();
+    let mut chars = 0usize;
+    for character in text.chars() {
+        chars += 1;
+        if chars <= MAX_CONTEXT_CHARS {
+            out.push(character);
+        }
+    }
+    (out, chars, chars > MAX_CONTEXT_CHARS)
+}
+
+/// A short, stable identity for one version of a text: `b3:` plus the first
+/// 16 hex digits (64 bits) of its BLAKE3 hash.
+///
+/// 64 bits make an accidental collision between two versions of a passage
+/// practically impossible, and the value stays short enough to sit in a
+/// container attribute the model reads.
+#[must_use]
+pub fn digest(text: &str) -> String {
+    let hash = blake3::hash(text.as_bytes()).to_hex();
+    format!("b3:{}", &hash.as_str()[..16])
 }
 
 /// Whether `text` already is one of our containers.
@@ -494,11 +603,103 @@ mod tests {
         assert_eq!(
             context.note(),
             ContextNote {
+                kind: RoundtripKind::Document,
                 name: "draft.md".to_string(),
                 chars: 18,
                 truncated: false,
             }
         );
+    }
+
+    #[test]
+    fn a_selection_container_carries_range_and_digest() {
+        let content = "first line\nsecond line\nthird line\n";
+        let context = RoundtripContext::selection(buffer(content), 11..22).expect("marked text");
+        assert_eq!(
+            context.container(),
+            format!(
+                "<sciscraper:v1:selection name=\"draft.md\" path=\"chapters/draft.md\" \
+                 range=\"11..22\" chars=\"11\" digest=\"{}\">\n\
+                 second line\n\
+                 </sciscraper:v1:selection>",
+                digest("second line")
+            )
+        );
+        assert_eq!(
+            context.note(),
+            ContextNote {
+                kind: RoundtripKind::Selection,
+                name: "draft.md".to_string(),
+                chars: 11,
+                truncated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn selections_are_char_indexed_and_multibyte_safe() {
+        // "Grüße" is 5 chars but 7 bytes; selecting the last four chars must
+        // not slice the multi-byte ones apart.
+        let content = "Grüße @Alt";
+        let context = RoundtripContext::selection(buffer(content), 1..5).expect("marked text");
+        assert!(
+            context.container().contains("\nrüße\n"),
+            "{}",
+            context.container()
+        );
+        assert_eq!(context.chars, 4);
+        assert_eq!(context.digest, digest("rüße"));
+    }
+
+    #[test]
+    fn selection_ranges_clamp_to_the_document() {
+        let context = RoundtripContext::selection(buffer("abc"), 1..9).expect("marked text");
+        assert!(
+            context.container().contains(" range=\"1..3\""),
+            "{}",
+            context.container()
+        );
+        assert!(
+            context.container().contains("\nbc\n"),
+            "{}",
+            context.container()
+        );
+    }
+
+    #[test]
+    fn a_blank_selection_attaches_nothing() {
+        assert!(RoundtripContext::selection(buffer("abc\n\ndef"), 4..5).is_none());
+        assert!(RoundtripContext::selection(buffer("abc"), 1..1).is_none());
+        assert!(RoundtripContext::selection(buffer("abc"), 9..12).is_none());
+    }
+
+    #[test]
+    fn a_truncated_selection_keeps_the_full_text_digest() {
+        let marked: String = std::iter::repeat_n('ü', MAX_CONTEXT_CHARS + 5).collect();
+        let context = RoundtripContext::selection(buffer(&marked), 0..marked.chars().count())
+            .expect("marked text");
+        assert!(context.truncated);
+        assert_eq!(context.note().chars, MAX_CONTEXT_CHARS + 5);
+        assert_eq!(
+            context.digest,
+            digest(&marked),
+            "the digest identifies the whole passage, not the excerpt"
+        );
+    }
+
+    #[test]
+    fn digests_are_stable_and_distinguish_versions() {
+        assert_eq!(digest("the passage"), digest("the passage"));
+        assert_ne!(digest("the passage"), digest("the passage."));
+        assert!(
+            digest("anything").starts_with("b3:"),
+            "the digest has a version prefix"
+        );
+        // The same marked text at another position digests the same — the range
+        // locates it, the digest identifies its content.
+        let one = RoundtripContext::selection(buffer("ab"), 0..2).expect("a");
+        let two = RoundtripContext::selection(buffer("zab"), 1..3).expect("b");
+        assert_eq!(one.digest, two.digest);
     }
 
     #[test]

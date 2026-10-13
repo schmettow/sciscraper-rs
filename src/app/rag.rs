@@ -11,7 +11,11 @@ use eframe::egui;
 use rust_i18n::t;
 
 #[cfg(feature = "rag")]
-use crate::rag::roundtrip::EditorBuffer;
+use crate::config::ViewMode;
+#[cfg(feature = "rag")]
+use crate::editor::get_ferrite_editor_mut;
+#[cfg(feature = "rag")]
+use crate::rag::roundtrip::{EditorBuffer, RoundtripContext};
 #[cfg(feature = "rag")]
 use crate::state::{Tab, TabKind};
 
@@ -72,6 +76,81 @@ impl FerriteApp {
         };
         panel.start_ingest(sources);
         true
+    }
+
+    /// Focus mode (sprint 6.3): a small button beside the passage the author
+    /// marked in the raw editor. Clicking it attaches the passage to the next
+    /// question and moves the caret to the chat prompt.
+    ///
+    /// Painted after the central panel from `render_ui`, so it sits above the
+    /// editor. Hidden while the panes are closed or a query runs, in
+    /// rendered-only mode (there is no raw editor to mark in), without a
+    /// document, and while the mark is blank.
+    pub(crate) fn render_focus_overlay(&mut self, ui: &mut egui::Ui) {
+        if !self.state.settings.rag.enabled {
+            return;
+        }
+        let Some(tab) = self.state.active_tab() else {
+            return;
+        };
+        let tab_id = tab.id;
+        if !matches!(tab.kind, TabKind::Document) || tab.view_mode == ViewMode::Rendered {
+            return;
+        }
+
+        self.ensure_agent_panel();
+        let Some(panel) = &self.agent_panel else {
+            return;
+        };
+        if panel.is_working() {
+            return;
+        }
+
+        // The button needs the editor's selection box and the marked char
+        // range; the range also decides visibility — a blank mark sends
+        // nothing, so it gets no button.
+        let ctx = ui.ctx().clone();
+        let Some(selection) =
+            get_ferrite_editor_mut(&ctx, tab_id, |editor| editor.selection_rect()).flatten()
+        else {
+            return;
+        };
+        let Some((start, end)) =
+            get_ferrite_editor_mut(&ctx, tab_id, |editor| editor.selection_char_range()).flatten()
+        else {
+            return;
+        };
+        let Some(buffer) = self.state.active_tab().and_then(Self::document_buffer) else {
+            return;
+        };
+        let has_text = buffer
+            .content
+            .chars()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .any(|character| !character.is_whitespace());
+        if !has_text {
+            return;
+        }
+
+        let button = crate::ui::focus_button::button_rect(selection, ui.clip_rect());
+        if !crate::ui::focus_button::show(ui, button) {
+            return;
+        }
+        // Click: capture the passage for the next question. The context is
+        // built here (the visibility pass only borrowed the buffer), complete
+        // with range and digest for the Co-Edit sprint.
+        let Some(context) = self
+            .state
+            .active_tab()
+            .and_then(Self::document_buffer)
+            .and_then(|buffer| RoundtripContext::selection(buffer, start..end))
+        else {
+            return;
+        };
+        if let Some(panel) = self.agent_panel.as_mut() {
+            panel.attach_selection(&ctx, context);
+        }
     }
 
     /// Toggle the agent dock (ribbon button, command palette, shortcut).

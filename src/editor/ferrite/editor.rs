@@ -93,6 +93,9 @@ pub struct FerriteEditor {
     pub(crate) selections: Vec<Selection>,
     /// Index of the primary selection (for status bar display, scroll anchoring).
     pub(crate) primary_selection_index: usize,
+    /// Screen-space box of the primary selection, recorded by the last
+    /// render — generic geometry for host overlays (see [`Self::selection_rect`]).
+    pub(crate) last_selection_rect: Option<egui::Rect>,
     /// Font size for rendering.
     pub(crate) font_size: f32,
     /// Font family for rendering (from Settings).
@@ -234,6 +237,7 @@ impl FerriteEditor {
             // Multi-cursor: start with single cursor at position 0
             selections: vec![Selection::start()],
             primary_selection_index: 0,
+            last_selection_rect: None,
             font_size: DEFAULT_FONT_SIZE,
             font_family: EditorFont::default(),
             content_dirty: false,
@@ -305,6 +309,7 @@ impl FerriteEditor {
             // Multi-cursor: start with single cursor at position 0
             selections: vec![Selection::start()],
             primary_selection_index: 0,
+            last_selection_rect: None,
             font_size: DEFAULT_FONT_SIZE,
             font_family: EditorFont::default(),
             content_dirty: true, // Mark dirty to ensure initial cache population
@@ -1890,6 +1895,18 @@ impl FerriteEditor {
             }
         }
 
+        // Record the primary selection's screen-space box for host overlays
+        // (the sciscraper focus button is the first consumer); `None` when
+        // there is no selection or nothing of it is visible.
+        self.last_selection_rect = self.primary_selection_box(
+            start_line,
+            end_line,
+            &line_y_positions,
+            text_start_x,
+            &font_id,
+            &painter,
+        );
+
         // Primary cursor reference for IME preedit
         let cursor = primary_cursor;
 
@@ -3065,6 +3082,76 @@ impl FerriteEditor {
     // IME/CJK Support Helpers (Phase 3)
     // ─────────────────────────────────────────────────────────────────────────────
 
+    /// Screen-space bounding box of the primary selection, clamped to the
+    /// lines rendered by the current frame.
+    ///
+    /// Boxed at line granularity: the first and last visible endpoints of the
+    /// selection, so a multi-line selection yields the box that contains it.
+    /// Coordinates are the widget's own (the same space as the response rect),
+    /// which is what a host overlay needs to sit beside the marked passage.
+    fn primary_selection_box(
+        &self,
+        start_line: usize,
+        end_line: usize,
+        line_y_positions: &[f32],
+        text_start_x: f32,
+        font_id: &FontId,
+        painter: &egui::Painter,
+    ) -> Option<egui::Rect> {
+        let (start, end) = self.primary_selection().ordered();
+        if start == end || line_y_positions.is_empty() {
+            return None;
+        }
+        // Only the visible part of the selection can be boxed.
+        let last_visible = end_line.saturating_sub(1).max(start_line);
+        let mut first = start;
+        first.line = first.line.clamp(start_line, last_visible);
+        let mut last = end;
+        last.line = last.line.clamp(start_line, last_visible);
+        let endpoint = |cursor: &Cursor| {
+            let y = line_y_positions[cursor.line - start_line];
+            let x = self.calculate_cursor_x(cursor, font_id, text_start_x, painter);
+            egui::Rect::from_min_size(
+                egui::Pos2::new(x, y),
+                egui::Vec2::new(0.0, self.view.get_line_height(cursor.line)),
+            )
+        };
+        Some(endpoint(&first).union(endpoint(&last)))
+    }
+
+    /// Screen-space bounding box of the primary selection, as of the last
+    /// [`Self::ui`] call — the same coordinate space as the widget's response
+    /// rect.
+    ///
+    /// Generic host geometry, no editor knowledge required: the sciscraper
+    /// focus button draws itself at a corner of this box. `None` when there is
+    /// no selection, when none of it is visible, or before the first render.
+    #[must_use]
+    pub fn selection_rect(&self) -> Option<egui::Rect> {
+        self.last_selection_rect
+    }
+
+    /// The primary selection as a char range of the buffer, or `None` while
+    /// nothing is marked.
+    ///
+    /// Char-indexed and ordered, so host code can slice the document text with
+    /// it — the sciscraper focus mode reads it together with
+    /// [`Self::selection_rect`]. A collapsed selection (a plain caret) yields
+    /// `None`.
+    #[must_use]
+    pub fn selection_char_range(&self) -> Option<(usize, usize)> {
+        let (start, end) = self.primary_selection().ordered();
+        if start == end {
+            return None;
+        }
+        let line_count = self.buffer.line_count();
+        let start_line = start.line.min(line_count.saturating_sub(1));
+        let end_line = end.line.min(line_count.saturating_sub(1));
+        let start_char = self.buffer.try_line_to_char(start_line).unwrap_or(0) + start.column;
+        let end_char = self.buffer.try_line_to_char(end_line).unwrap_or(0) + end.column;
+        Some((start_char.min(end_char), start_char.max(end_char)))
+    }
+
     /// Calculates the X coordinate of the cursor position.
     ///
     /// This is used for IME preedit rendering and candidate window positioning.
@@ -3693,6 +3780,54 @@ impl FerriteEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_rect_follows_the_primary_selection() {
+        // Host overlays depend on this: a screen-space box for the marked
+        // passage, `None` while nothing is marked.
+        let ctx = egui::Context::default();
+        let mut editor = FerriteEditor::from_string("first line\nsecond line\nthird line");
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            editor.ui(&ctx, ui);
+        });
+        assert!(editor.selection_rect().is_none(), "no selection, no box");
+
+        editor.selections = vec![Selection::new(Cursor::new(1, 2), Cursor::new(2, 4))];
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            editor.ui(&ctx, ui);
+        });
+        let rect = editor
+            .selection_rect()
+            .expect("the marked passage is boxed");
+        assert!(rect.height() > 0.0, "{rect:?}");
+        assert!(rect.width() > 0.0, "the two lines are apart: {rect:?}");
+
+        // A collapsed selection is no marked region.
+        editor.selections = vec![Selection::collapsed(Cursor::new(1, 2))];
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            editor.ui(&ctx, ui);
+        });
+        assert!(editor.selection_rect().is_none());
+    }
+
+    #[test]
+    fn the_selection_range_is_expressed_in_chars() {
+        // Host code (the format toolbar today, the sciscraper overlay) slices
+        // the document text with this; an off-by-one here would attach, format
+        // or replace the wrong text.
+        let mut editor = FerriteEditor::from_string("first line\nsecond line\nthird line");
+        assert_eq!(editor.selection_char_range(), None, "nothing marked");
+
+        editor.selections = vec![Selection::new(Cursor::new(1, 2), Cursor::new(2, 4))];
+        assert_eq!(editor.selection_char_range(), Some((13, 27)));
+
+        // The range is ordered, whichever way the selection was dragged.
+        editor.selections = vec![Selection::new(Cursor::new(2, 4), Cursor::new(1, 2))];
+        assert_eq!(editor.selection_char_range(), Some((13, 27)));
+
+        editor.selections = vec![Selection::collapsed(Cursor::new(1, 2))];
+        assert_eq!(editor.selection_char_range(), None, "a caret is no region");
+    }
 
     #[test]
     fn test_new_editor() {

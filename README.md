@@ -168,6 +168,22 @@ this fit the argument above?" work without pasting anything.
 - The buffer never counts against the three-paper `@Key` limit, and with the chip off the
   document never leaves the editor.
 
+### Focus mode — ask about a marked passage
+
+Mark a passage in the raw editor (single or split view) and a small round button appears at
+its corner. Click it and the passage travels with the next question — a
+`<sciscraper:v1:selection …>` container carrying its position (`range`) and a `digest` of the
+version you marked — while your caret jumps to the chat prompt, so you can type "make this
+shorter" right away.
+
+- The **chip above the composer** shows the waiting passage ("Marked region (312 chars)");
+  the ✕ drops it. The next question consumes it — a passage never rides along twice.
+- The passage is sent *alongside* the document buffer, not instead of it: the agent sees the
+  full context and the part you are working on. With the buffer chip off, only the marked
+  passage travels.
+- The button stays out of the way: it hides while a question runs, in rendered-only view
+  (mark in the raw editor), while nothing is marked, and when the panes are closed.
+
 ### The component bars
 
 One icon per RAG component sits at the bottom of each pane, grouped by the work

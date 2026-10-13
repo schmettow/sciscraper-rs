@@ -631,7 +631,62 @@ Verification: 1637 tests pass with the 3 pre-existing failures (`rag,grobid`), 1
 Verification: 1645 tests pass with the 3 pre-existing failures (`rag,grobid`), 1627 with
 `rag` only.
 
-### 🚧 Phase "Editor Roundtrip" (planned) — chat ⇄ editor
+### ✅ Sprint 6.3 — Focus mode (feature 3)
+
+- **Protocol.** `RoundtripContext` gained its second flavour: a `kind` (`RoundtripKind::Document
+  | Selection`) that picks the container marker, an optional char `range` and a `digest`.
+  `selection(buffer, range)` slices the buffer by **char** index (clamped, ordered, multi-byte
+  safe), sends the same container shape as the buffer (`name`, optional `path`, `chars`) plus
+  `range="a..b"` and — selections only — `digest="b3:…"`. The digest is `blake3` of the *full*
+  passage (16 hex digits, `b3:` prefix) so 6.4 can check the region even when the model only saw
+  a truncated excerpt; the document container carries no digest (nothing writes back into it,
+  and the prompt documents it only for selections). Blank marks attach nothing, mirroring
+  `has_text()` on the buffer. The `document()`/`selection()` truncation logic is one `excerpt()`
+  helper now. The prompt's example block and prose were updated to the emitted attribute set.
+- **Transport.** `RagCommand::Query.context: Option<…>` became `contexts: Vec<…>`, and
+  `QueryAttachments.document: Option<ContextNote>` became `contexts: Vec<ContextNote>` — two
+  hard-coded slots would have been the wrong shape for a list that grows with the phase. The
+  panel builds the Vec as *buffer first, marked passage second* (the passage quotes the buffer),
+  so the model reads them in the natural order; the transcript note renders one line per
+  context (`agent.attached_selection` / `_truncated`, en/de).
+- **Editor geometry (the phase's only fork touch, feature-free).** `FerriteEditor::selection_rect()`
+  (6.3, uncommitted from the last session) plus `FerriteEditor::selection_char_range()` — both
+  generic accessors beside the existing cursor API, with doc comments written for an upstream
+  MR. `selection_char_range` is the `(line, column) → char` conversion the format toolbar
+  duplicates inline; adopting it there is a possible cleanup, not done here.
+- **Host overlay.** `src/ui/focus_button.rs`: pure geometry (`button_rect` — bottom-right of the
+  box, per-axis flip at the window edge, clamped) plus `show()`; no RAG knowledge, testable
+  headless. `FerriteApp::render_focus_overlay` (in `app/rag.rs`) runs after the central panel
+  and gates on: panes open, `TabKind::Document`, view mode ≠ `Rendered` (the *mode* is the
+  freshness gate — the raw editor's recorded rect would be stale otherwise), no run in flight
+  (`AgentPanel::is_working` widened to `pub(crate)`), a non-collapsed selection, and a non-blank
+  marked text. A click builds the context from the same editor state the button sat beside and
+  hands it to `AgentPanel::attach_selection`, which stores it as `pending` and requests focus on
+  `Composer::input_id()` — the caret lands in the chat prompt.
+- **Pending state.** The panel's `pending: Option<RoundtripContext>` is shown as a second chip
+  above the composer (SELECTION icon, `marked region (N chars)`, ✕ to drop — en/de), sits above
+  the buffer chip, and is `.take()`n by the next question: a passage never rides along twice and
+  never outlives the attachment it announced.
+- **Known coverage gap.** The overlay *glue* (`render_focus_overlay`) has no test: the fork has
+  no `FerriteApp` harness, and seeding the editor registry needs the private
+  `FerriteEditorStorage`. Both halves it coordinates — the editor accessors and the overlay
+  geometry/click — are tested; the gates are compile-checked per feature set and verified by
+  hand in the running app.
+- Pinned by `a_selection_container_carries_range_and_digest`,
+  `selections_are_char_indexed_and_multibyte_safe`, `selection_ranges_clamp_to_the_document`,
+  `a_blank_selection_attaches_nothing`, `a_truncated_selection_keeps_the_full_text_digest`,
+  `digests_are_stable_and_distinguish_versions`, `the_selection_range_is_expressed_in_chars`
+  (editor side, ordered + collapsed), the four `focus_button` tests (placement, flip, tiny
+  viewport, headless click), `attaching_a_passage_focuses_the_composer`,
+  `a_question_consumes_the_marked_passage` and `editor_contexts_reach_the_model_as_containers`
+  (document + selection in order in the wire prompt).
+
+Verification: 1659 tests pass with the 3 pre-existing failures (`rag,grobid`), 1641 with `rag`
+only; 1496 with no features — all three feature sets `cargo check` clean, touched files
+rustfmt-clean, clippy reports nothing in the new code. A headless click test needs two frames
+(egui hit-tests against the previous frame's layout) — noted in `focus_button`'s test.
+
+### 🚧 Phase "Editor Roundtrip" (6.0–6.3 landed, 6.4 open) — chat ⇄ editor
 
 The RAG↔bibliography round trip works (sprints 4–5). The open gap is the *editor*: the agent
 cannot see what the author is writing, and its answers cannot land in the document. This

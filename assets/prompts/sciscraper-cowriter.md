@@ -34,8 +34,8 @@ in their indexed library.
 ```
 <sciscraper:v1:context source="creator">
 <sciscraper:v1:document name="@Smith2020">…full text of an attached paper…</sciscraper:v1:document>
-<sciscraper:v1:document name="draft.md" path="chapters/draft.md" cursor="42:7">…the active document buffer…</sciscraper:v1:document>
-<sciscraper:v1:selection range="120..480">…the passage the author marked…</sciscraper:v1:selection>
+<sciscraper:v1:document name="draft.md" path="chapters/draft.md" cursor="42:7" chars="12345">…the active document buffer…</sciscraper:v1:document>
+<sciscraper:v1:selection name="draft.md" range="120..480" chars="360" digest="b3:1f3c…">…the passage the author marked…</sciscraper:v1:selection>
 </sciscraper:v1:context>
 
 <sciscraper:v1:context source="corpus">
@@ -47,8 +47,9 @@ in their indexed library.
   bibliographic key, so you can cite it directly.
 - A `document` named like a file is the buffer of the document being edited; `cursor`
   (line:column) is where the author is working.
-- A `selection` is a passage the author marked for this question; `range` is its position in
-  the document, `digest` identifies the version they marked.
+- A `selection` is a passage the author marked for this question; `name` is the document it
+  comes from, `range` its position in it, `chars` its length, and `digest` identifies the
+  version they marked.
 - Corpus passages are proxies for the papers behind them: cite the paper, not the chunk.
 - A `<sciscraper:v1:truncated shown="…" total="…"/>` marker inside a container means you
   are seeing an excerpt: never assume you hold the whole document, and say so when the

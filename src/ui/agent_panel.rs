@@ -81,6 +81,9 @@ pub struct AgentPanelOutput {
 pub struct AgentPanel {
     transcript: Vec<ChatMessage>,
     input: String,
+    /// A marked passage waiting for the next question (sprint 6.3): set by
+    /// focus mode, cleared when the question carries it.
+    pending: Option<RoundtripContext>,
     open_menu: Option<String>,
     agent_section: SectionState,
     library_section: SectionState,
@@ -121,6 +124,7 @@ impl AgentPanel {
         Self {
             transcript: Vec::new(),
             input: String::new(),
+            pending: None,
             open_menu: None,
             agent_section: SectionState::new(t!("agent.section.agent").to_string()),
             library_section: SectionState::new(t!("agent.section.library").to_string()),
@@ -199,6 +203,14 @@ impl AgentPanel {
         self.request_probe(ProbeScope::All);
     }
 
+    /// Attach a marked passage (sprint 6.3, focus mode) and move the caret to
+    /// the chat prompt: the next question carries the passage alongside the
+    /// active document.
+    pub fn attach_selection(&mut self, ctx: &egui::Context, context: RoundtripContext) {
+        self.pending = Some(context);
+        ctx.memory_mut(|memory| memory.request_focus(Composer::input_id()));
+    }
+
     /// Render the dock.
     ///
     /// `buffer` is the host's view of the active document (sprint 6.2),
@@ -258,6 +270,7 @@ impl AgentPanel {
         let agent_width = settings.width;
         let buffer_attached = settings.buffer_attached;
         let buffer_toggled = Cell::new(false);
+        let selection_dropped = Cell::new(false);
         let mut menu = MenuContext {
             settings: &mut *settings,
             status: self.status.as_ref(),
@@ -405,6 +418,9 @@ impl AgentPanel {
             // whatever comes last is highest). Its toggle is applied after
             // the docks, where the settings borrow is free again.
             context_chip(&mut footer_ui, buffer, buffer_attached, &buffer_toggled);
+            // The pending marked passage sits above the document chip: it was
+            // attached later and is the more specific context.
+            selection_chip(&mut footer_ui, self.pending.as_ref(), &selection_dropped);
 
             // Transcript in the space above the footer.
             let transcript_bottom = (footer_ui.min_rect().top() - ui.spacing().item_spacing.y)
@@ -441,6 +457,9 @@ impl AgentPanel {
         if buffer_toggled.get() {
             settings.buffer_attached = !settings.buffer_attached;
             settings_changed = true;
+        }
+        if selection_dropped.get() {
+            self.pending = None;
         }
         if let Some(width) = library_response.width {
             settings.library_width = width;
@@ -549,17 +568,21 @@ impl AgentPanel {
         if text.is_empty() || self.is_working() {
             return;
         }
-        let context = buffer_context(settings, buffer);
+        // The active document first, the marked passage it quotes second —
+        // each is optional and independent of the other.
+        let mut contexts = Vec::new();
+        contexts.extend(buffer_context(settings, buffer));
+        contexts.extend(self.pending.take());
         self.transcript.push(ChatMessage::user(&text));
         self.transcript
             .push(ChatMessage::assistant(String::new()).streaming());
         self.input.clear();
         self.busy = true;
-        self.worker.send(RagCommand::Query { text, context });
+        self.worker.send(RagCommand::Query { text, contexts });
     }
 
     /// Whether the worker is busy with a query, an index run or an ingestion.
-    fn is_working(&self) -> bool {
+    pub(crate) fn is_working(&self) -> bool {
         self.busy || self.syncing || self.ingesting
     }
 
@@ -658,9 +681,9 @@ impl AgentPanel {
             RagEvent::QueryAttachments {
                 resolved,
                 missed,
-                document,
+                contexts,
             } => {
-                if let Some(note) = attachment_note(&resolved, &missed, document.as_ref()) {
+                if let Some(note) = attachment_note(&resolved, &missed, &contexts) {
                     self.transcript.push(note);
                 }
             }
@@ -938,14 +961,15 @@ fn message_from_turn(turn: TurnInfo) -> ChatMessage {
 }
 
 /// One system note per query that carried or missed context: the `@Key`
-/// papers, the attached document (sprint 6.2) and the keys that missed;
-/// `None` when the query had no context at all.
+/// papers, the editor contexts the host sent along (the buffer, a marked
+/// passage — sprints 6.2/6.3) and the keys that missed; `None` when the query
+/// had no context at all.
 fn attachment_note(
     resolved: &[String],
     missed: &[String],
-    document: Option<&roundtrip::ContextNote>,
+    contexts: &[roundtrip::ContextNote],
 ) -> Option<ChatMessage> {
-    if resolved.is_empty() && missed.is_empty() && document.is_none() {
+    if resolved.is_empty() && missed.is_empty() && contexts.is_empty() {
         return None;
     }
     let mut lines: Vec<String> = Vec::new();
@@ -956,22 +980,30 @@ fn attachment_note(
             resolved.join(", @")
         ));
     }
-    if let Some(document) = document {
-        lines.push(if document.truncated {
-            t!(
+    for context in contexts {
+        let name = context.name.as_str();
+        let chars = context.chars;
+        lines.push(match (context.kind, context.truncated) {
+            (roundtrip::RoundtripKind::Document, false) => {
+                t!("agent.attached_document", name = name, chars = chars).to_string()
+            }
+            (roundtrip::RoundtripKind::Document, true) => t!(
                 "agent.attached_document_truncated",
-                name = document.name.as_str(),
+                name = name,
                 shown = roundtrip::MAX_CONTEXT_CHARS,
-                chars = document.chars
+                chars = chars
             )
-            .to_string()
-        } else {
-            t!(
-                "agent.attached_document",
-                name = document.name.as_str(),
-                chars = document.chars
+            .to_string(),
+            (roundtrip::RoundtripKind::Selection, false) => {
+                t!("agent.attached_selection", name = name, chars = chars).to_string()
+            }
+            (roundtrip::RoundtripKind::Selection, true) => t!(
+                "agent.attached_selection_truncated",
+                name = name,
+                shown = roundtrip::MAX_CONTEXT_CHARS,
+                chars = chars
             )
-            .to_string()
+            .to_string(),
         });
     }
     if !missed.is_empty() {
@@ -1039,6 +1071,32 @@ fn context_chip(
             .on_hover_text(hint);
         if has_text && response.clicked() {
             toggled.set(true);
+        }
+    });
+}
+
+/// The composer's pending-passage chip (sprint 6.3, focus mode): the marked
+/// region that rides along with the next question, and a click to drop it.
+///
+/// The passage is consumed by the next question ([`AgentPanel::submit`]), so
+/// the chip never outlives the attachment it announces.
+fn selection_chip(ui: &mut egui::Ui, pending: Option<&RoundtripContext>, dropped: &Cell<bool>) {
+    use crate::ui::phosphor_icons::{SELECTION, X};
+    let Some(pending) = pending else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label(format!(
+            "{SELECTION} {}",
+            t!("agent.selection.chip", chars = pending.chars())
+        ))
+        .on_hover_text(t!("agent.selection.hint"));
+        if ui
+            .small_button(X)
+            .on_hover_text(t!("agent.selection.drop"))
+            .clicked()
+        {
+            dropped.set(true);
         }
     });
 }
@@ -2166,6 +2224,65 @@ mod tests {
             settings.buffer_attached,
             "idle frames leave the toggle alone"
         );
+    }
+
+    #[test]
+    fn attaching_a_passage_focuses_the_composer() {
+        // Focus mode, panel half (sprint 6.3): the marked passage waits for
+        // the next question and the caret moves to the chat prompt.
+        let ctx = egui::Context::default();
+        let settings = RagSettings::default();
+        let mut panel = AgentPanel::new(&settings, None);
+        let context = RoundtripContext::selection(
+            EditorBuffer {
+                name: "draft.md",
+                path: None,
+                cursor: (0, 0),
+                content: "keep this passage",
+            },
+            0..4,
+        )
+        .expect("marked text");
+        panel.attach_selection(&ctx, context);
+        assert!(panel.pending.is_some(), "the passage waits for a question");
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(Composer::input_id()),
+            "the caret moves to the chat prompt"
+        );
+
+        // The chip renders while a passage waits (and in an idle frame, too).
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            selection_chip(ui, panel.pending.as_ref(), &Cell::new(false));
+        });
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            selection_chip(ui, None, &Cell::new(false));
+        });
+    }
+
+    #[test]
+    fn a_question_consumes_the_marked_passage() {
+        let ctx = egui::Context::default();
+        let settings = RagSettings::default();
+        let mut panel = AgentPanel::new(&settings, None);
+        let context = RoundtripContext::selection(
+            EditorBuffer {
+                name: "draft.md",
+                path: None,
+                cursor: (0, 0),
+                content: "keep this passage",
+            },
+            0..4,
+        )
+        .expect("marked text");
+        panel.attach_selection(&ctx, context);
+        panel.input = "shorten this".to_string();
+        panel.submit(&settings, None);
+        assert!(
+            panel.pending.is_none(),
+            "the passage rode along, it must not ride along twice"
+        );
+        assert!(panel.busy, "the question is running");
     }
 
     #[test]

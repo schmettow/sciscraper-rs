@@ -1034,10 +1034,18 @@ agent:
   attach_missed: "Konnte nicht anhängen"
   attached_document: "Dokument angehängt: %{name} (%{chars} Zeichen)"
   attached_document_truncated: "Dokument angehängt: %{name} (erste %{shown} von %{chars} Zeichen)"
+  attached_selection: "Markierter Bereich angehängt: %{name} (%{chars} Zeichen)"
+  attached_selection_truncated: "Markierter Bereich angehängt: %{name} (erste %{shown} von %{chars} Zeichen)"
   buffer:
     empty: "Dieses Dokument hat keinen Text zum Anhängen"
     on: "Das aktive Dokument wird an jede Frage angehängt — klicken zum Abwählen"
     off: "Das aktive Dokument an Fragen anhängen"
+  selection:
+    chip: "Markierter Bereich (%{chars} Zeichen)"
+    hint: "Der markierte Bereich wird an die nächste Frage angehängt"
+    drop: "Markierten Bereich verwerfen"
+  focus:
+    hint: "Den Agenten zu dem markierten Bereich fragen"
   session:
     new: "Neu"
     new_hint: "Neue Unterhaltung beginnen"

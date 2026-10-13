@@ -11,6 +11,8 @@ mod dialogs;
 mod docked_sidebar;
 mod file_index_progress;
 mod file_tree;
+#[cfg(feature = "rag")]
+pub(crate) mod focus_button;
 pub mod format_toolbar;
 mod frontmatter_panel;
 mod icons;
