@@ -285,12 +285,16 @@ every entry is filed and closed.
     and egui's `modifiers` are only refreshed by key events, which go to the focus window
     (the drag source). Consequence: **no host can implement a pane-targeted drop, on any
     platform**, and no modifier can disambiguate it at drop time.
-- **Workaround in sciscraper (Sprint 5.2).** The routing is position-free: while the panes
-  are open and a workspace exists, a drop that contains a PDF (or a URL-looking path) is an
-  ingest of the whole drop; everything else keeps the editor's drop behaviour. The ingest
-  only copies (never moves), and a hover banner announces the action *before* the button is
-  released. URLs have their own path: the Library pane's add-from-URL row, plus
-  `IngestSource::Url` in case a backend ever forwards them.
+- **Workaround in sciscraper (Sprint 5.2, extended in 5.3).** The routing is position-free:
+  while the panes are open and a workspace exists, a drop that contains a PDF (or a
+  URL-looking path) is an ingest of the whole drop; everything else keeps the editor's drop
+  behaviour. The ingest only copies (never moves), and a hover banner announces the action
+  *before* the button is released. URLs have their own path: the Library pane's add-from-URL
+  row, plus `IngestSource::Url` in case a backend ever forwards them. Because a desktop file
+  manager may not deliver drops at all (and because a build without the `grobid` feature has
+  no ingest path whatsoever), the *dependable* path is the explicit **Add PDFs…** button in
+  the Library toolbar, which opens the system file browser (`rfd`) and feeds the same
+  pipeline; the GROBID component reports a missing feature instead of staying silent.
 - **Suggested fix / follow-up.** Track `egui` support for drag positions and text drops;
   when that lands, the pane hit test (and only that) needs to come back — the pipeline behind
   it is already position-independent.

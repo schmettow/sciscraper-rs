@@ -53,7 +53,7 @@ sciscraper-rs  (feature `rag`, off by default)
   src/rag/ingest.rs              GROBID pre-pass re-orchestration + URL download
                                  (feature `grobid`)
   src/ui/agent_panel.rs          dock composition, menus, transcript↔worker glue
-  src/ui/library_panel.rs        bibliography rows, drag-to-cite, drop target, URL row
+  src/ui/library_panel.rs        bibliography rows, drag-to-cite, add-PDFs/URL toolbar
   src/app/rag.rs                 FerriteApp glue: toggle, lazy init, polling, rendering
   hooks                          settings field, ribbon button, Ctrl+Shift+A, palette,
                                  locales (en/de); all `#[cfg(feature = "rag")]`
@@ -72,6 +72,9 @@ sciscraper-rs  (feature `rag`, off by default)
 | 0.3 | `form` module: `setting_row` (label + widget, truncated label column), `note`/`warning` lines — used by the sciscraper component menus. 31 unit tests + 6 doctests. | ✅ Sprint 3 |
 | 0.4 | Message actions (copy feedback, retry), clickable links, draggable splitter between dock sections. | next |
 | 0.5 | Tabbed dock mode; theme presets; publish on crates.io. | planned |
+
+Sprint 5.3 needed **no** `egui_chat` change: `SectionDock` already takes a `DockSide`, and the
+agent bar is simply instantiated twice with different component lists — the split contract held.
 
 Crate inquiry (Sprint 2): `egui_commonmark` was the candidate for editor-side
 Markdown rendering, but 0.24 requires **egui 0.35** (sciscraper pins 0.34) and
@@ -399,6 +402,51 @@ opened as a document tab instead).
 
 Verification: 1614 tests pass with the 3 pre-existing failures (`rag,grobid`); `rag` and the
 feature-less build still compile; the drop-routing tests and the hover render are green.
+
+### ✅ Sprint 5.3 — Add control, corpus controls on the library bar, GROBID component
+
+Triggered by user feedback: the drop from Dolphin still did nothing; the user asked for an
+explicit *Add* control with a file browser, for the Parser/Chunker/Corpus controls to move to
+the Library pane, and for a GROBID control showing Active/Inactive with a URL field.
+
+- **Why the drop "still did nothing".** The binary the report was filed against was built with
+  `rag` only: the ingest path is compiled out without the `grobid` feature, so drops fall
+  through to the editor and the app behaves like plain Ferrite — with nothing in the UI saying
+  why. Two changes make that state visible: the GROBID component is now rendered in *every*
+  `rag` build (grey, detail *not in this build (Cargo feature `grobid`)*, and the menu carries
+  the rebuild hint), and the README's build instructions now say `--features rag,grobid` where
+  they said `--features rag` before (the documentation was the actual trap).
+- **Two bars instead of one.** `bar_components` now takes the component list:
+  `AGENT_BAR_COMPONENTS` = chat · memory · embed · store (bottom of the agent pane),
+  `LIBRARY_BAR_COMPONENTS` = grobid · parser · chunker · corpus (bottom of the library pane,
+  same bottom-anchored footer recipe as the agent pane). Both read the same status snapshot
+  and share one `open_menu`, so a menu opened on one bar closes when the other is used.
+- **GROBID component.** New `RagComponent::Grobid` with probe and status: `probes.grobid` is
+  filled by `probe::probe_grobid` (`GET {url}/api/isalive`) on the worker's probe pass — only a
+  *success* counts as reachable, because a booting GROBID answers `503` and another service on
+  the port answers something else entirely. States: *active · url*, *not reachable…*, *not
+  checked yet — use Test connection*, *no server configured*. Its menu owns the URL field, a
+  hint and the shared *Test connection*; the URL row moved out of the Corpus menu, which now
+  covers the bibliography and corpus folder only.
+- **Add control.** The library toolbar now holds *Add PDFs…* (rfd file browser, `.pdf` filter,
+  multi-select) beside the URL link icon. Both feed `AgentPanel::start_ingest` through
+  `LibraryAction` (`ingest_files`, `ingest_urls`) — the same command a drop uses. In a
+  `rag`-only build the button is disabled and its tooltip names the missing feature.
+- **Layout.** The two docks are now built *and shown* sequentially (library first, agent
+  second): each dock's closure borrows `settings`, so their lifetimes must not overlap — which
+  matches the panel order (the first panel shown is outermost). No `scope_builder` workaround
+  was needed: `Panel::show_inside` restricts the parent cursor (`min.x` for left, `max.x` for
+  right) and `available_rect_before_wrap` intersects with the cursor, so the editor keeps the
+  middle region — pinned by `each_pane_gets_its_own_width_and_hosts_its_bar` (1280 px window:
+  editor spans 320…900, both widths persist unchanged).
+- Pinned by `the_two_bars_cover_every_component_exactly_once` (union of both bars = all
+  components, each once), `grobid_reports_the_url_and_the_probe` (incl. the `rag`-only branch),
+  the geometry test above, and `every_component_menu_renders_headless`, which now also renders
+  the GROBID menu.
+
+Verification: 1619 tests pass with the 3 pre-existing failures (`--features rag,grobid`); the
+`rag`-only build compiles and its tests pass (45 in the touched modules); the feature-less
+build compiles; rustfmt clean; clippy reports nothing new in the touched files.
 
 ## 5. Baseline health (found during Sprint 1)
 

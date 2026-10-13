@@ -12,8 +12,9 @@ use ragrig::types::{MemoryStrategyKind, Provider};
 
 use super::RagSettings;
 
-/// One RAG component of the agent pipeline (the agent bar shows one icon
-/// each).
+/// One RAG component of the agent pipeline (the two component bars show one
+/// icon each: conversation and models in the agent pane, ingestion and corpus
+/// in the library pane).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RagComponent {
     /// The chat / generation model.
@@ -24,6 +25,8 @@ pub enum RagComponent {
     Embed,
     /// The vector store.
     Store,
+    /// The GROBID server used by drop-to-ingest (feature `grobid`).
+    Grobid,
     /// Document parsers.
     Parser,
     /// The chunker.
@@ -40,6 +43,7 @@ impl RagComponent {
             Self::Memory => "memory",
             Self::Embed => "embed",
             Self::Store => "store",
+            Self::Grobid => "grobid",
             Self::Parser => "parser",
             Self::Chunker => "chunker",
             Self::Corpus => "corpus",
@@ -53,19 +57,21 @@ impl RagComponent {
             Self::Memory => "Memory",
             Self::Embed => "Embeddings",
             Self::Store => "Vector store",
+            Self::Grobid => "GROBID",
             Self::Parser => "Parsers",
             Self::Chunker => "Chunker",
             Self::Corpus => "Corpus",
         }
     }
 
-    /// All components in agent-bar order.
+    /// All components, in the order the two bars lay them out.
     pub fn all() -> &'static [RagComponent] {
         &[
             Self::Chat,
             Self::Memory,
             Self::Embed,
             Self::Store,
+            Self::Grobid,
             Self::Parser,
             Self::Chunker,
             Self::Corpus,
@@ -111,6 +117,8 @@ pub struct ProbeResults {
     pub ollama: Reachability,
     /// DeepSeek API (only probed when a key is configured).
     pub deepseek: Reachability,
+    /// GROBID server (only probed with the `grobid` feature).
+    pub grobid: Reachability,
 }
 
 /// What the worker is currently doing with the RAG agent.
@@ -347,6 +355,7 @@ impl RagStatus {
             memory_status(input),
             embed_status(input),
             store_status(input),
+            grobid_status(input),
             parser_status(input),
             ComponentStatus::new(
                 RagComponent::Chunker,
@@ -575,6 +584,51 @@ fn parser_status(input: StatusInput<'_>) -> ComponentStatus {
         ComponentState::Ready,
         "pdf · epub · docx · html · md",
     )
+}
+
+/// GROBID status: active when the server answers its liveness endpoint.
+///
+/// A `rag`-only build has no ingestion at all, so the component is inactive
+/// and says why; a configured-but-silent server is an error (the menu offers
+/// the URL field and a connection test).
+fn grobid_status(input: StatusInput<'_>) -> ComponentStatus {
+    if !cfg!(feature = "grobid") {
+        return ComponentStatus::new(
+            RagComponent::Grobid,
+            ComponentState::Inactive,
+            "not in this build (Cargo feature `grobid`)",
+        );
+    }
+    let url = input.settings.grobid.url.trim();
+    if url.is_empty() {
+        return ComponentStatus::new(
+            RagComponent::Grobid,
+            ComponentState::Inactive,
+            "no server configured — set the URL in the menu",
+        );
+    }
+    match input.probes.grobid {
+        Reachability::Probing => ComponentStatus::new(
+            RagComponent::Grobid,
+            ComponentState::Busy,
+            format!("checking {url}…"),
+        ),
+        Reachability::Unreachable => ComponentStatus::new(
+            RagComponent::Grobid,
+            ComponentState::Error,
+            format!("{url} · not reachable — start the server or change the URL"),
+        ),
+        Reachability::Reachable => ComponentStatus::new(
+            RagComponent::Grobid,
+            ComponentState::Ready,
+            format!("active · {url}"),
+        ),
+        Reachability::Unknown => ComponentStatus::new(
+            RagComponent::Grobid,
+            ComponentState::Inactive,
+            format!("{url} · not checked yet — use Test connection"),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -927,6 +981,80 @@ mod tests {
             };
             assert_eq!(progress.detail(), expected);
         }
+    }
+
+    #[test]
+    fn grobid_reports_the_url_and_the_probe() {
+        let mut settings = RagSettings::default();
+        let workspace = std::path::PathBuf::from("/tmp/ws");
+
+        // A `rag`-only build has no ingestion; the component says so instead
+        // of hiding (the library bar always shows all four icons).
+        if !cfg!(feature = "grobid") {
+            let status = derive(&settings, Some(&workspace));
+            let grobid = status.component(RagComponent::Grobid).unwrap();
+            assert_eq!(grobid.state, ComponentState::Inactive);
+            assert!(grobid.detail.contains("grobid"), "{}", grobid.detail);
+            return;
+        }
+
+        // Configured (the default URL) but no probe yet: not an error.
+        let status = derive(&settings, Some(&workspace));
+        let grobid = status.component(RagComponent::Grobid).unwrap();
+        assert_eq!(grobid.state, ComponentState::Inactive);
+        assert!(
+            grobid.detail.contains("not checked yet"),
+            "{}",
+            grobid.detail
+        );
+
+        let probing = ProbeResults {
+            grobid: Reachability::Probing,
+            ..ProbeResults::default()
+        };
+        let status = RagStatus::derive(StatusInput {
+            probes: probing,
+            ..input(&settings, Some(&workspace))
+        });
+        assert_eq!(
+            status.component(RagComponent::Grobid).unwrap().state,
+            ComponentState::Busy
+        );
+
+        let reachable = ProbeResults {
+            grobid: Reachability::Reachable,
+            ..ProbeResults::default()
+        };
+        let status = RagStatus::derive(StatusInput {
+            probes: reachable,
+            ..input(&settings, Some(&workspace))
+        });
+        let grobid = status.component(RagComponent::Grobid).unwrap();
+        assert_eq!(grobid.state, ComponentState::Ready);
+        assert!(grobid.detail.starts_with("active · "), "{}", grobid.detail);
+
+        let unreachable = ProbeResults {
+            grobid: Reachability::Unreachable,
+            ..ProbeResults::default()
+        };
+        let status = RagStatus::derive(StatusInput {
+            probes: unreachable,
+            ..input(&settings, Some(&workspace))
+        });
+        let grobid = status.component(RagComponent::Grobid).unwrap();
+        assert_eq!(grobid.state, ComponentState::Error);
+        assert!(grobid.detail.contains("not reachable"), "{}", grobid.detail);
+
+        // An empty URL means "no server" — the menu offers the field.
+        settings.grobid.url = String::new();
+        let status = derive(&settings, Some(&workspace));
+        let grobid = status.component(RagComponent::Grobid).unwrap();
+        assert_eq!(grobid.state, ComponentState::Inactive);
+        assert!(
+            grobid.detail.contains("no server configured"),
+            "{}",
+            grobid.detail
+        );
     }
 
     #[test]

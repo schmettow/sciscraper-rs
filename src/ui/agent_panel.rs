@@ -9,15 +9,21 @@
 //! Layout: two side panes facing the editor. The **Agent** chat dock is on the
 //! right (session row, transcript, composer, agent bar); the **Library** is a
 //! dedicated pane on the left — a working pane next to the document for
-//! drag-to-cite and drop-to-ingest, not a chat accessory (Sprint 5.1 moved it
-//! out of the right dock, which had become over-crowded). Both panes are
-//! collapsible and remember their width and state; one toggle shows or hides
-//! both.
+//! drag-to-cite, add-from-disk and drop-to-ingest, not a chat accessory
+//! (Sprint 5.1 moved it out of the right dock, which had become over-crowded).
+//! Both panes are collapsible and remember their width and state; one toggle
+//! shows or hides both.
 //!
-//! The agent bar with one icon per RAG component sits at the bottom of the
-//! agent pane; clicking an icon slides up its control menu: backend settings,
-//! *Test connection* probes, and — for the Corpus and Store components — the
-//! index housekeeping (*Update* incrementally, *Rebuild* from scratch).
+//! Each pane carries the component bar for the tools it hosts (Sprint 5.3):
+//! the agent bar (*Chat · Memory · Embed · Store*) sits at the bottom of the
+//! agent pane, the library bar (*GROBID · Parser · Chunker · Corpus*) at the
+//! bottom of the library pane — the parsers and the bibliography belong with
+//! the corpus they build, next to the *Add* control. Clicking an icon slides
+//! up its control menu: backend settings, *Test connection* probes, and — for
+//! the Corpus and Store components — the index housekeeping (*Update*
+//! incrementally, *Rebuild* from scratch). The GROBID menu carries the server
+//! URL and a liveness test; in a build without the `grobid` feature the icon
+//! is grey and the menu says so, instead of silently doing nothing.
 //!
 //! Menu edits mark the settings dirty; the caller hands the new snapshot to the
 //! worker, which applies it to the live session in place (the conversation
@@ -196,22 +202,77 @@ impl AgentPanel {
         // them would borrow all of `self` and clash with their field borrows.
         let working = self.is_working();
 
-        // ── Left pane: the library ──────────────────────────────────────────
+        // One menu context for both component bars. The docks are built and
+        // shown in turn, so the library closure is gone before the agent one
+        // takes this mutable borrow of the settings.
+        let library_width = settings.library_width;
+        let agent_width = settings.width;
+        let mut menu = MenuContext {
+            settings: &mut *settings,
+            status: self.status.as_ref(),
+            editor_workspace,
+            recent_workspaces,
+            actions: &actions,
+            commands: &commands,
+            dirty: &settings_dirty,
+        };
+
+        // ── Left pane: the library ────────────────────────────────────────
         //
         // A dedicated pane instead of a section of the agent dock: the
         // bibliography is a working pane next to the document (drag-to-cite,
-        // drop-to-ingest), not a chat accessory. It renders after the
-        // navigation panels, so it sits directly left of the editor.
+        // add-from-disk, drop-to-ingest), not a chat accessory. It renders
+        // first, so it sits directly left of the editor and outermost of the
+        // two docks. Its component bar (GROBID · Parser · Chunker · Corpus)
+        // is bottom-anchored with the same recipe as the agent pane's: the
+        // list gets everything above the footer, whatever the list's length.
         let library_action: RefCell<LibraryAction> = RefCell::new(LibraryAction::default());
-        let library_dock = SectionDock::new(
-            "sciscraper_library_dock",
-            DockSide::Left,
-            settings.library_width,
-        )
-        .width_range(240.0, 560.0)
-        .section(&mut self.library_section, |ui| {
-            self.library.show(ui, &mut library_action.borrow_mut());
-        });
+        let library_dock =
+            SectionDock::new("sciscraper_library_dock", DockSide::Left, library_width)
+                .width_range(240.0, 560.0)
+                .section(&mut self.library_section, |ui| {
+                    let top = ui.cursor().min.y;
+                    let bounds = ui.available_rect_before_wrap();
+                    let section_bottom = ui
+                        .max_rect()
+                        .bottom()
+                        .max(top + MIN_LIBRARY_HEIGHT + min_library_footer_height(ui));
+
+                    let footer_rect = egui::Rect::from_min_max(
+                        egui::pos2(
+                            bounds.left(),
+                            (top + MIN_LIBRARY_HEIGHT).min(section_bottom),
+                        ),
+                        egui::pos2(bounds.right(), section_bottom),
+                    );
+                    let mut footer_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(footer_rect)
+                            .layout(egui::Layout::bottom_up(egui::Align::Min)),
+                    );
+                    let components = bar_components(LIBRARY_BAR_COMPONENTS, self.status.as_ref());
+                    AgentBar::new(&components, &mut self.open_menu)
+                        .show(&mut footer_ui, |ui, id| component_menu(ui, id, &mut menu));
+
+                    let list_bottom = (footer_ui.min_rect().top() - ui.spacing().item_spacing.y)
+                        .max(top + MIN_LIBRARY_HEIGHT);
+                    let list_rect = egui::Rect::from_min_max(
+                        egui::pos2(bounds.left(), top),
+                        egui::pos2(bounds.right(), list_bottom),
+                    );
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(list_rect), |ui| {
+                        self.library.show(ui, &mut library_action.borrow_mut());
+                    });
+
+                    ui.allocate_rect(
+                        egui::Rect::from_min_max(
+                            egui::pos2(bounds.left(), top),
+                            egui::pos2(bounds.right(), section_bottom),
+                        ),
+                        egui::Sense::hover(),
+                    );
+                });
+        let library_response = library_dock.show(ui);
 
         // ── Right pane: the agent ───────────────────────────────────────────
         //
@@ -219,8 +280,10 @@ impl AgentPanel {
         // footer is anchored to the bottom of the section and the transcript
         // is placed *above* it, so a multi-line prompt grows upward instead of
         // pushing the agent bar out of the pane. Explicit rects keep every
-        // height bounded: the session row, the transcript, the footer.
-        let dock = SectionDock::new("sciscraper_agent_dock", DockSide::Right, settings.width)
+        // height bounded: the session row, the transcript, the footer. The
+        // dock is built (and shown) after the library one, so its closure
+        // re-borrows `menu` only once the library closure is gone.
+        let dock = SectionDock::new("sciscraper_agent_dock", DockSide::Right, agent_width)
             .width_range(300.0, 720.0);
         let dock = dock.section(&mut self.agent_section, |ui| {
             session_row(
@@ -254,22 +317,9 @@ impl AgentPanel {
                     .max_rect(footer_rect)
                     .layout(egui::Layout::bottom_up(egui::Align::Min)),
             );
-            let components = bar_components(self.status.as_ref());
-            AgentBar::new(&components, &mut self.open_menu).show(&mut footer_ui, |ui, id| {
-                component_menu(
-                    ui,
-                    id,
-                    &mut MenuContext {
-                        settings: &mut *settings,
-                        status: self.status.as_ref(),
-                        editor_workspace,
-                        recent_workspaces,
-                        actions: &actions,
-                        commands: &commands,
-                        dirty: &settings_dirty,
-                    },
-                )
-            });
+            let components = bar_components(AGENT_BAR_COMPONENTS, self.status.as_ref());
+            AgentBar::new(&components, &mut self.open_menu)
+                .show(&mut footer_ui, |ui, id| component_menu(ui, id, &mut menu));
             let composer = Composer::new(&mut self.input)
                 .busy(working)
                 .placeholder(&t!("agent.placeholder"))
@@ -307,7 +357,6 @@ impl AgentPanel {
             );
         });
 
-        let library_response = library_dock.show(ui);
         let response = dock.show(ui);
 
         // Announce a pending ingest while files hover over the window
@@ -390,9 +439,25 @@ impl AgentPanel {
         for command in library_action.commands {
             self.worker.send(command);
         }
+        // Adding sources (file browser and URL row) feeds the same ingestion
+        // pipeline as a drop (feature `grobid`); a `rag`-only build has no
+        // pipeline, and its Add control is disabled.
         #[cfg(feature = "grobid")]
-        for url in library_action.ingest_urls {
-            self.start_ingest(vec![IngestSource::Url(url)]);
+        {
+            let mut sources: Vec<IngestSource> = library_action
+                .ingest_files
+                .into_iter()
+                .map(IngestSource::File)
+                .collect();
+            sources.extend(
+                library_action
+                    .ingest_urls
+                    .into_iter()
+                    .map(IngestSource::Url),
+            );
+            if !sources.is_empty() {
+                self.start_ingest(sources);
+            }
         }
 
         AgentPanelOutput {
@@ -820,9 +885,9 @@ fn attachment_note(resolved: &[String], missed: &[String]) -> Option<ChatMessage
     })
 }
 
-/// Build the agent-bar items from the latest status snapshot.
-fn bar_components(status: Option<&RagStatus>) -> Vec<Component<'static>> {
-    RagComponent::all()
+/// Build one bar's items from the latest status snapshot.
+fn bar_components(listed: &[RagComponent], status: Option<&RagStatus>) -> Vec<Component<'static>> {
+    listed
         .iter()
         .map(|component| {
             let info = status.and_then(|status| status.component(*component));
@@ -852,16 +917,33 @@ fn bar_status(state: ComponentState) -> BarStatus {
     }
 }
 
+/// Components of the agent bar: the chat session and its retrieval stack.
+const AGENT_BAR_COMPONENTS: &[RagComponent] = &[
+    RagComponent::Chat,
+    RagComponent::Memory,
+    RagComponent::Embed,
+    RagComponent::Store,
+];
+
+/// Components of the library bar: the corpus-building pipeline.
+const LIBRARY_BAR_COMPONENTS: &[RagComponent] = &[
+    RagComponent::Grobid,
+    RagComponent::Parser,
+    RagComponent::Chunker,
+    RagComponent::Corpus,
+];
+
 /// Phosphor glyph per RAG component.
 fn component_glyph(component: RagComponent) -> &'static str {
     use crate::ui::phosphor_icons::{
-        BOOKS, BRAIN, CHAT_CIRCLE, DATABASE, FILE_TEXT, MAGNET, SCISSORS,
+        BOOKS, BRAIN, CHAT_CIRCLE, DATABASE, FILE_TEXT, MAGNET, PLUGS_CONNECTED, SCISSORS,
     };
     match component {
         RagComponent::Chat => CHAT_CIRCLE,
         RagComponent::Memory => BRAIN,
         RagComponent::Embed => MAGNET,
         RagComponent::Store => DATABASE,
+        RagComponent::Grobid => PLUGS_CONNECTED,
         RagComponent::Parser => FILE_TEXT,
         RagComponent::Chunker => SCISSORS,
         RagComponent::Corpus => BOOKS,
@@ -947,6 +1029,10 @@ fn sync_summary(indexed: usize, documents: Option<usize>) -> ChatMessage {
 /// Smallest height the transcript keeps, whatever else the section needs.
 const MIN_TRANSCRIPT_HEIGHT: f32 = 120.0;
 
+/// Smallest height the bibliography list keeps; the pane gives it up before
+/// the component bar is clipped.
+const MIN_LIBRARY_HEIGHT: f32 = 160.0;
+
 /// Smallest footer that still shows the capped composer and the agent bar.
 ///
 /// The footer is bottom-anchored, so this is the space it can never exceed;
@@ -956,6 +1042,11 @@ fn min_footer_height(ui: &egui::Ui) -> f32 {
         + AgentBarStyle::default().height
         + 8.0
         + 3.0 * ui.spacing().item_spacing.y
+}
+
+/// Smallest footer of the library pane: its component bar, nothing else.
+fn min_library_footer_height(ui: &egui::Ui) -> f32 {
+    AgentBarStyle::default().height + 8.0 + 2.0 * ui.spacing().item_spacing.y
 }
 
 /// Everything a component menu reads or changes.
@@ -1022,6 +1113,7 @@ fn component_menu(ui: &mut egui::Ui, id: &str, ctx: &mut MenuContext<'_>) -> boo
             ui.separator();
             return index_section(ui, ctx);
         }
+        RagComponent::Grobid => grobid_menu(ui, ctx),
         RagComponent::Corpus => {
             if workspace_menu(
                 ui,
@@ -1035,11 +1127,6 @@ fn component_menu(ui: &mut egui::Ui, id: &str, ctx: &mut MenuContext<'_>) -> boo
             }
             ui.separator();
             library_menu(ui, ctx);
-            #[cfg(feature = "grobid")]
-            {
-                ui.separator();
-                grobid_url_row(ui, ctx.settings, ctx.dirty);
-            }
             ui.separator();
             return index_section(ui, ctx);
         }
@@ -1048,7 +1135,7 @@ fn component_menu(ui: &mut egui::Ui, id: &str, ctx: &mut MenuContext<'_>) -> boo
             render_index_note(ui, ctx);
         }
         RagComponent::Parser => {
-            ui.weak("Default parser set: pdf · epub · docx · html · md");
+            ui.weak(t!("agent.menu.parser_formats"));
         }
     }
     false
@@ -1381,18 +1468,28 @@ fn workspace_menu(
     false
 }
 
-/// GROBID server used by drop-to-ingest (feature `grobid`).
-#[cfg(feature = "grobid")]
-fn grobid_url_row(ui: &mut egui::Ui, settings: &mut RagSettings, dirty: &Cell<bool>) {
+/// GROBID server menu: state, URL and a liveness test.
+///
+/// The URL field is shown in every build — a `rag`-only binary shows the
+/// component as inactive and says which Cargo feature unlocks ingestion,
+/// rather than hiding the control that explains the missing drop behaviour.
+fn grobid_menu(ui: &mut egui::Ui, ctx: &mut MenuContext<'_>) {
+    if !cfg!(feature = "grobid") {
+        note(ui, &t!("agent.menu.grobid_needs_feature"));
+        return;
+    }
     setting_row(ui, &t!("agent.menu.grobid_url"), |ui| {
         if ui
-            .text_edit_singleline(&mut settings.grobid.url)
+            .text_edit_singleline(&mut ctx.settings.grobid.url)
             .on_hover_text(t!("agent.menu.grobid_url_hint"))
             .changed()
         {
-            dirty.set(true);
+            ctx.dirty.set(true);
         }
     });
+    note(ui, &t!("agent.menu.grobid_hint"));
+    ui.separator();
+    probe_button(ui, ctx);
 }
 
 /// Bibliography and corpus folder of the library (the Corpus component).
@@ -1490,10 +1587,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bar_components_cover_all_rag_components() {
-        let components = bar_components(None);
-        assert_eq!(components.len(), RagComponent::all().len());
+    fn the_two_bars_cover_every_component_exactly_once() {
+        // Sprint 5.3: the agent pane keeps the chat stack, the library pane
+        // hosts the corpus pipeline; together they show every component.
+        let mut seen: Vec<&str> = AGENT_BAR_COMPONENTS
+            .iter()
+            .chain(LIBRARY_BAR_COMPONENTS)
+            .map(|component| component.id())
+            .collect();
+        assert_eq!(seen.len(), RagComponent::all().len());
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), RagComponent::all().len());
+
+        assert!(AGENT_BAR_COMPONENTS.contains(&RagComponent::Chat));
+        for component in [
+            RagComponent::Grobid,
+            RagComponent::Parser,
+            RagComponent::Chunker,
+            RagComponent::Corpus,
+        ] {
+            assert!(
+                LIBRARY_BAR_COMPONENTS.contains(&component),
+                "{component:?} builds the corpus, so it belongs to the library bar"
+            );
+        }
+
         // Without a status snapshot every component is inactive.
+        let components = bar_components(LIBRARY_BAR_COMPONENTS, None);
+        assert_eq!(components.len(), LIBRARY_BAR_COMPONENTS.len());
         assert!(components.iter().all(|c| c.status == BarStatus::Inactive));
     }
 
@@ -1515,7 +1637,7 @@ mod tests {
             ingest: None,
             index: None,
         });
-        let components = bar_components(Some(&status));
+        let components = bar_components(AGENT_BAR_COMPONENTS, Some(&status));
         let chat = components
             .iter()
             .find(|c| c.id == "chat")
@@ -1604,9 +1726,12 @@ mod tests {
     }
 
     #[test]
-    fn library_pane_renders_left_of_the_agent_pane() {
-        // Sprint 5.1: the library is a pane of its own, left of the editor,
-        // instead of a section squeezed under the chat.
+    fn each_pane_gets_its_own_width_and_hosts_its_bar() {
+        // The two docks are sequential `show_inside` panels: the library
+        // (left) is drawn first and stays outermost, the agent (right) second.
+        // Both must come out at their configured width — if one were rendered
+        // in what the other left over, `DockResponse::width` would persist a
+        // degenerate width and this test would catch it.
         let dir = tempfile::tempdir().unwrap();
         let ctx = egui::Context::default();
         let mut settings = RagSettings::default();
@@ -1621,13 +1746,44 @@ mod tests {
         };
         for _ in 0..2 {
             let _ = ctx.run_ui(input.clone(), |ui| {
-                panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+                let full = ui.max_rect();
+                let _ = panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+                let editor = ui.available_rect_before_wrap();
+                assert!(
+                    editor.width() > 0.0,
+                    "the editor keeps a region: {editor:?}"
+                );
+                // The panes leave the editor its middle: 1280 − 320 − 380.
+                assert!(
+                    editor.left() >= crate::rag::DEFAULT_LIBRARY_WIDTH - 1.0,
+                    "editor starts right of the library pane: {editor:?} in {full:?}"
+                );
+                assert!(
+                    editor.right() <= full.right() - crate::rag::DEFAULT_PANEL_WIDTH + 1.0,
+                    "editor ends left of the agent pane: {editor:?} in {full:?}"
+                );
             });
         }
 
         // Both panes keep their own width (unchanged while nobody resizes).
         assert_eq!(settings.width, crate::rag::DEFAULT_PANEL_WIDTH);
         assert_eq!(settings.library_width, crate::rag::DEFAULT_LIBRARY_WIDTH);
+    }
+
+    #[test]
+    fn library_pane_renders_left_of_the_agent_pane() {
+        // Sprint 5.1: the library is a pane of its own, left of the editor,
+        // instead of a section squeezed under the chat.
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+        settings.ragrig.workspace = dir.path().to_path_buf();
+        let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
+        for _ in 0..2 {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+            });
+        }
 
         // Ingest into the library needs a workspace; the panel tracks the
         // editor's one (the host routes dropped PDFs only when it has one).

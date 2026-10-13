@@ -668,6 +668,9 @@ fn mark_probing(context: &QueryContext) {
     if context.settings.resolve_deepseek_api_key().is_some() {
         probes.deepseek = Reachability::Probing;
     }
+    if cfg!(feature = "grobid") {
+        probes.grobid = Reachability::Probing;
+    }
 }
 
 /// Read the bibliography off the executor thread and report the result.
@@ -705,17 +708,19 @@ async fn run_probe(context: QueryContext, events: Sender<RagEvent>) {
     let ollama_used = context.settings.ragrig.chat.provider == Provider::Ollama
         || context.settings.embeddings_enabled;
     let api_key = context.settings.resolve_deepseek_api_key();
+    let grobid_url = context.settings.grobid.url.clone();
     let probed = tokio::task::spawn_blocking(move || {
         let ollama = ollama_used.then(|| probe::probe_ollama(&base_url));
         let deepseek = api_key.as_deref().map(probe::probe_deepseek);
-        (ollama, deepseek)
+        let grobid = cfg!(feature = "grobid").then(|| probe::probe_grobid(&grobid_url));
+        (ollama, deepseek, grobid)
     })
     .await;
-    let (ollama, deepseek) = match probed {
+    let (ollama, deepseek, grobid) = match probed {
         Ok(results) => results,
         Err(err) => {
             log::warn!("RAG: probe task failed: {err}");
-            (None, None)
+            (None, None, None)
         }
     };
     {
@@ -725,6 +730,9 @@ async fn run_probe(context: QueryContext, events: Sender<RagEvent>) {
         }
         if let Some(deepseek) = deepseek {
             probes.deepseek = deepseek;
+        }
+        if let Some(grobid) = grobid {
+            probes.grobid = grobid;
         }
     }
     emit_status(&context, &events);

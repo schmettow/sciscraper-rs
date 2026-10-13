@@ -11,6 +11,10 @@
 //! - **DeepSeek** — `GET https://api.deepseek.com/models` with a bearer
 //!   token (the endpoint rig's own client tests use). `401`/`403` mean the
 //!   key was rejected; any other HTTP answer means the API is reachable.
+//! - **GROBID** — `GET {url}/api/isalive` (feature `grobid`), which answers
+//!   `true` once the models are loaded. Unlike the other two, a non-success
+//!   answer counts as unreachable: a booting GROBID answers `503`, and
+//!   something else on the port is not a GROBID server.
 //!
 //! Probes are blocking calls (the editor's `ureq` client) with short
 //! timeouts; the worker runs them on a blocking thread. The classification
@@ -51,6 +55,17 @@ pub fn probe_ollama(base_url: &str) -> Reachability {
 pub fn probe_deepseek(api_key: &str) -> Reachability {
     let url = format!("{DEEPSEEK_BASE_URL}/models");
     classify_deepseek(http_get(&url, Some(api_key)))
+}
+
+/// Probe a GROBID server's liveness endpoint (feature `grobid`).
+///
+/// Uses `GET {base}/api/isalive`, the same endpoint the ingest pipeline waits
+/// for — but with a single short timeout, because a status dot must not stall
+/// the worker while a cold container preloads (the pipeline retries for tens
+/// of seconds on its own).
+pub fn probe_grobid(base_url: &str) -> Reachability {
+    let url = format!("{}/api/isalive", base_url.trim_end_matches('/'));
+    classify_grobid(http_get(&url, None))
 }
 
 /// Raw outcome of one HTTP GET, split out so classification is pure.
@@ -94,6 +109,16 @@ fn classify_deepseek(outcome: HttpOutcome) -> Reachability {
         HttpOutcome::Status(401 | 403) => Reachability::Unreachable,
         HttpOutcome::Status(_) => Reachability::Reachable,
         HttpOutcome::Transport => Reachability::Unreachable,
+    }
+}
+
+/// Only a successful `/api/isalive` proves a GROBID server is ready: the
+/// models load for tens of seconds after the port opens, and an error status
+/// means the endpoint is not (yet) GROBID.
+fn classify_grobid(outcome: HttpOutcome) -> Reachability {
+    match outcome {
+        HttpOutcome::Success => Reachability::Reachable,
+        HttpOutcome::Status(_) | HttpOutcome::Transport => Reachability::Unreachable,
     }
 }
 
@@ -157,6 +182,43 @@ mod tests {
         // Port 1 on localhost refuses immediately on every mainstream OS.
         assert_eq!(
             probe_ollama("http://127.0.0.1:1"),
+            Reachability::Unreachable
+        );
+    }
+
+    #[test]
+    fn grobid_needs_a_successful_liveness_answer() {
+        assert_eq!(
+            classify_grobid(HttpOutcome::Success),
+            Reachability::Reachable
+        );
+        assert_eq!(
+            classify_grobid(HttpOutcome::Status(503)),
+            Reachability::Unreachable,
+            "a booting GROBID answers 503 until its models are loaded"
+        );
+        assert_eq!(
+            classify_grobid(HttpOutcome::Status(404)),
+            Reachability::Unreachable,
+            "another HTTP service on that port is not GROBID"
+        );
+        assert_eq!(
+            classify_grobid(HttpOutcome::Transport),
+            Reachability::Unreachable
+        );
+    }
+
+    #[test]
+    fn a_live_grobid_server_is_reachable() {
+        let (base, handle) = one_shot_server();
+        assert_eq!(probe_grobid(&base), Reachability::Reachable);
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn refused_grobid_connection_is_unreachable() {
+        assert_eq!(
+            probe_grobid("http://127.0.0.1:1"),
             Reachability::Unreachable
         );
     }

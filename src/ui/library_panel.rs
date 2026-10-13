@@ -24,7 +24,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rust_i18n::t;
 
 use crate::rag::{CitePayload, LibraryEntry, LibraryState, LibraryView, RagCommand};
-use crate::ui::phosphor_icons::{ARROWS_CLOCKWISE, COPY, LINK, MAGNIFYING_GLASS, PLUS, X};
+use crate::ui::phosphor_icons::{ARROWS_CLOCKWISE, COPY, MAGNIFYING_GLASS, PLUS, UPLOAD_SIMPLE, X};
 
 /// What one frame of the library section produced.
 #[derive(Default)]
@@ -35,7 +35,11 @@ pub struct LibraryAction {
     pub choose_bib: Option<PathBuf>,
     /// Worker commands (reload; the panel forwards them).
     pub commands: Vec<RagCommand>,
+    /// PDFs picked in the file browser (feature `grobid`).
+    #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
+    pub ingest_files: Vec<PathBuf>,
     /// URLs typed into the add-from-URL row (feature `grobid`).
+    #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
     pub ingest_urls: Vec<String>,
 }
 
@@ -72,21 +76,60 @@ impl LibrarySection {
             LibraryState::Ready { path, .. } | LibraryState::Corrupt { path, .. } => Some(path),
             _ => None,
         };
-        self.loaded_mtime = path.and_then(|path| mtime_of(path));
+        self.loaded_mtime = path.and_then(mtime_of);
         self.watch(path);
         self.state = Some(state);
     }
 
-    /// The add-from-URL row (feature `grobid`): a link icon that opens a
+    /// Toolbar row: add sources to the corpus.
+    ///
+    /// *Add PDFs…* opens the system file browser (`rfd`) — the dependable
+    /// path onto the ingestion pipeline, independent of drag-and-drop support
+    /// in the window backend or the file manager. In a `rag`-only build the
+    /// button stays visible but disabled; the hover text names the missing
+    /// Cargo feature instead of leaving the user with a dead control.
+    fn show_toolbar(&mut self, ui: &mut egui::Ui, action: &mut LibraryAction) {
+        ui.horizontal(|ui| {
+            let ingest = cfg!(feature = "grobid");
+            let button = ui.add_enabled(
+                ingest,
+                egui::Button::new(format!(
+                    "{} {}",
+                    UPLOAD_SIMPLE,
+                    t!("agent.library.add_files")
+                )),
+            );
+            if ingest {
+                if button
+                    .on_hover_text(t!("agent.library.add_files_hint"))
+                    .clicked()
+                {
+                    if let Some(files) = rfd::FileDialog::new()
+                        .add_filter("PDF", &["pdf"])
+                        .pick_files()
+                    {
+                        action.ingest_files.extend(files);
+                    }
+                }
+            } else {
+                button.on_disabled_hover_text(t!("agent.library.add_files_needs_grobid"));
+            }
+            #[cfg(feature = "grobid")]
+            self.show_url_control(ui, action);
+        });
+    }
+
+    /// The add-from-URL control (feature `grobid`): a link icon that opens a
     /// one-line input. Browsers deliver URL drags as text, which native
     /// window backends do not forward as file drops, so typing is the
     /// dependable path (see `UPSTREAM.md`, US-13).
     #[cfg(feature = "grobid")]
-    fn show_url_row(&mut self, ui: &mut egui::Ui, action: &mut LibraryAction) {
+    fn show_url_control(&mut self, ui: &mut egui::Ui, action: &mut LibraryAction) {
+        use crate::ui::phosphor_icons::LINK;
         let mut open = false;
         let mut submit = false;
         let mut cancel = false;
-        ui.horizontal(|ui| match &mut self.url_input {
+        match &mut self.url_input {
             None => {
                 if ui
                     .small_button(LINK)
@@ -97,7 +140,7 @@ impl LibrarySection {
                 }
             }
             Some(url) => {
-                let width = (ui.available_width() - 96.0).max(80.0);
+                let width = (ui.available_width() - 90.0).max(60.0);
                 let response = ui.add(
                     egui::TextEdit::singleline(url)
                         .desired_width(width)
@@ -105,14 +148,14 @@ impl LibrarySection {
                 );
                 let entered =
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                if entered || ui.button(t!("agent.library.url_add")).clicked() {
+                if entered || ui.small_button(t!("agent.library.url_add")).clicked() {
                     submit = true;
                 }
                 if ui.small_button(X).clicked() {
                     cancel = true;
                 }
             }
-        });
+        }
         if open {
             self.url_input = Some(String::new());
         }
@@ -166,8 +209,7 @@ impl LibrarySection {
     /// Render the section.
     pub fn show(&mut self, ui: &mut egui::Ui, action: &mut LibraryAction) {
         ui.add_space(2.0);
-        #[cfg(feature = "grobid")]
-        self.show_url_row(ui, action);
+        self.show_toolbar(ui, action);
         match self.state.as_ref() {
             None => note(ui, &t!("agent.library.loading")),
             Some(LibraryState::Missing { reason }) => {
@@ -652,6 +694,21 @@ mod tests {
 
         let inserted = t!("notification.citation_inserted", text = "@X").to_string();
         assert!(inserted.contains("@X"), "{inserted}");
+
+        // The toolbar strings carry no placeholders; a missing key would show
+        // up as the key itself (Sprint 5.3).
+        let toolbar_strings = [
+            t!("agent.library.add_files").to_string(),
+            t!("agent.library.add_files_hint").to_string(),
+            t!("agent.library.add_files_needs_grobid").to_string(),
+            t!("agent.menu.grobid_hint").to_string(),
+            t!("agent.menu.grobid_needs_feature").to_string(),
+            t!("agent.menu.parser_formats").to_string(),
+        ];
+        for text in toolbar_strings {
+            assert!(!text.contains("%{"), "unresolved placeholder: {text}");
+            assert!(!text.contains("agent."), "missing key: {text}");
+        }
     }
 
     #[test]

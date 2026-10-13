@@ -67,10 +67,12 @@ You need:
    ```
 
 Build the integrated editor (`rag` is **not** in the default feature set, so a
-plain build stays compatible with upstream Ferrite):
+plain build stays compatible with upstream Ferrite). **Add `grobid` as well if
+you want to add PDFs from inside the editor** — the *Add PDFs…* button and
+drop-to-ingest only exist with both features:
 
 ```bash
-cargo build --release --features rag
+cargo build --release --features rag,grobid
 ./target/release/sciscraper               # editor only
 ./target/release/sciscraper ~/my-project  # open a folder as workspace
 ```
@@ -78,7 +80,7 @@ cargo build --release --features rag
 For a quick run during development:
 
 ```bash
-cargo run --features rag -- ~/my-project
+cargo run --features rag,grobid -- ~/my-project
 ```
 
 Packaging metadata (`cargo deb`, `cargo generate-rpm`, `cargo wix`,
@@ -87,8 +89,12 @@ Packaging metadata (`cargo deb`, `cargo generate-rpm`, `cargo wix`,
 
 | Cargo feature | Default | What it enables |
 |---|---|---|
-| `rag` | off | Agent pane, component bar, Library pane, `@Key` citations |
-| `grobid` | off | Drop-to-ingest: PDFs dropped on the window (URLs via the link button) are parsed by GROBID, renamed and merged into the bibliography |
+| `rag` | off | Agent pane, component bars, Library pane, `@Key` citations |
+| `grobid` | off | Adding PDFs: the *Add PDFs…* browser, the URL row, and drop-to-ingest are parsed by GROBID, renamed and merged into the bibliography |
+
+A `rag`-only build still shows the GROBID component, greyed out, and its menu
+says *Not in this build* — so a missing `grobid` feature is visible in the UI
+rather than a button that silently does nothing.
 
 ## Using the agent
 
@@ -120,10 +126,13 @@ The first question opens (or restores) a conversation and loads the corpus from
 the workspace. The **index itself is never built automatically** — you decide
 when to index, from the component bar (see below).
 
-### The component bar
+### The component bars
 
-At the very bottom of the Agent pane sits one icon per RAG component. Each
-icon shows a status dot:
+One icon per RAG component sits at the bottom of each pane, grouped by the work
+it belongs to: the **agent bar** (*Chat · Memory · Embed · Store*) at the bottom
+of the Agent pane, the **library bar** (*GROBID · Parser · Chunker · Corpus*) at
+the bottom of the Library pane, next to the sources they build. Each icon shows
+a status dot:
 
 | Dot | Meaning |
 |---|---|
@@ -151,14 +160,24 @@ actions:
   (300 by default) and *Similarity threshold* (0.03), plus *Test connection*.
 - **Vector store** — workspace picker plus the index state, with *Update
   index* and *Rebuild index*.
+
+In the **library bar**:
+
+- **GROBID** — the parsing server for added PDFs: state, URL (default
+  `http://localhost:8070`) and *Test connection*, which calls the server's
+  `/api/isalive`. Grey *not in this build* means the binary was compiled
+  without the `grobid` feature.
 - **Parsers** — the fixed parser set for corpus files
   (pdf · epub · docx · html · md).
 - **Chunker** — *Markdown* (heading- and paragraph-aware) or *Token* chunking,
   chunk size (tokens) and overlap, plus a note about whether the index matches
   the current chunker settings.
-- **Corpus** — workspace picker, the bibliography and corpus folder of the
-  Library pane, the GROBID server used by drop-to-ingest, and the same index
-  actions.
+- **Corpus** — workspace picker and the bibliography and corpus folder of the
+  Library pane, plus the same index actions.
+
+The *Update index* / *Rebuild index* pair is offered wherever the store is at
+hand: in the **Vector store** menu of the agent bar and in the **Corpus** menu
+of the library bar.
 
 ### Workspace and corpus
 
@@ -255,6 +274,11 @@ The Library pane lists the entries of your BibTeX file. Each row shows a
 meta line `Author · Year — Source` above the title, followed by the citation
 key on hover.
 
+- **Add PDFs…** — the toolbar button opens the system file browser; the chosen
+  PDFs go through the same pipeline as a drop (copy → GROBID → rename → merge →
+  index). The link icon next to it adds a PDF from a URL. Both need a build
+  with the `grobid` feature; without it the button is disabled and its tooltip
+  says so.
 - **Filter** — the box above the list fuzzy-filters by any of those fields;
   the count line shows `shown of total`.
 - **Select** — click a row; **Ctrl+click** extends the selection; clicking the
@@ -306,16 +330,27 @@ The corpus folder falls back to the bibliography's directory when the
 conventional folder does not exist — that is where `--bibtex-merge` workspaces
 keep their renamed PDFs.
 
-### Adding documents: drop a PDF or a URL
+### Adding documents: Add PDFs, a URL, or drop them
 
-With the `grobid` feature, dropping **PDFs** on the window while the panes are
-open adds them to the library — wherever in the window they land. No window
-backend reports *where* a drag is (see `UPSTREAM.md`, US-13), so a pane hit test
-cannot work; instead the drop target is the whole window and a banner appears
-while the files hover — *Drop: add N PDF(s) to the library* — so releasing is
-never a surprise.
+Three ways onto the ingestion pipeline, all of them running the same steps:
 
-The rule is position-free and predictable:
+- *Add PDFs…* in the Library toolbar — pick one or more PDFs in the system file
+  browser. This is the dependable path; it works regardless of how (or whether)
+  your desktop passes drag-and-drop to the application.
+- the link icon next to it — paste `https://…/paper.pdf` and press *Add*: the
+  PDF is downloaded into the library folder (50 MiB cap, and the response has
+  to be a PDF rather than a landing page).
+- **dropping** PDFs on the window while the panes are open — wherever in the
+  window they land. No window backend reports *where* a drag is (see
+  `UPSTREAM.md`, US-13), so a pane hit test cannot work; instead the drop
+  target is the whole window and a banner appears while the files hover —
+  *Drop: add N PDF(s) to the library* — so releasing is never a surprise.
+
+Both the browser and the URL row need a build with the `grobid` feature; the
+GROBID component on the library bar is grey with *Not in this build* when it is
+missing (see [Building and running](#building-and-running)).
+
+The drop rule is position-free and predictable:
 
 - while the panes are open **and** a workspace is chosen, a drop that contains
   at least one PDF (or URL) is an ingest — folders and other files in the same
@@ -349,22 +384,20 @@ renaming and merging. **Stop** in the composer cancels the run, and the
 transcript reports the outcome, skips and failures — a document that is already
 in the library answers with *"Nothing new"*.
 
-**URLs** are added with the link icon above the list: paste
-`https://…/paper.pdf` and press *Add*. The PDF is downloaded into the library
-folder (50 MiB cap, and the response has to be a PDF rather than a landing
-page), then goes through the same pipeline. Dragging a URL from a browser onto
-the window does not work on any current platform — the window backends drop
-non-file URIs (see `UPSTREAM.md`, US-13) — so the input row is the dependable
-path; URL-looking dropped paths are still accepted for future backends.
+Dragging a URL from a browser onto the window does not work on any current
+platform — the window backends drop non-file URIs (see `UPSTREAM.md`, US-13) —
+so the URL input is the dependable path; URL-looking dropped paths are still
+accepted for future backends.
 
 Only PDFs can be ingested this way (that is what GROBID parses). Other dropped
 files are reported as skipped; put them into the corpus folder and press
 *Update index* to index them without a bibliography entry, or open them in the
 editor. Folders are skipped as well — open them as a workspace instead.
 
-The **Corpus** component menu configures the *GROBID server* (default
-`http://localhost:8070`); it has to be running when a drop arrives, and the
-error message names a ready-to-run `docker run` command when it is not.
+The **GROBID** component on the library bar configures the server (default
+`http://localhost:8070`) and shows whether it answers; it has to be running
+when a drop arrives, and the error message names a ready-to-run `docker run`
+command when it is not.
 
 ### Building the bibliography with GROBID
 
@@ -493,9 +526,23 @@ pane) — the error message lists the bibliographies that were found.
 ### A drop says the GROBID server is not ready
 
 Start one of the containers from [GROBID prerequisites](#grobid-prerequisites)
-(or point *GROBID server* in the Corpus menu at your instance) and drop the file
+(or point *GROBID server* in the GROBID menu at your instance) and drop the file
 again. GROBID preloads its models on start, so the first `/api/isalive` can take
-tens of seconds — the check waits for it before giving up.
+tens of seconds — the check waits for it before giving up. The GROBID icon on
+the library bar shows the state: use its *Test connection* to re-check without
+adding a document.
+
+### Dropping a PDF does nothing, and *Add PDFs…* is greyed out
+
+The binary was built without the `grobid` feature. The GROBID component on the
+library bar shows *not in this build (Cargo feature `grobid`)*; rebuild with
+
+```bash
+cargo build --release --features rag,grobid
+```
+
+A `rag`-only build deliberately keeps plain-Ferrite drop behaviour: a dropped
+file opens as a document instead of being ingested.
 
 ## Where Sciscraper keeps its state
 
