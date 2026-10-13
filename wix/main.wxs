@@ -1,13 +1,13 @@
 <?xml version='1.0' encoding='windows-1252'?>
 <!--
-  Ferrite MSI Installer
+  Sciscraper MSI Installer
   Built with WiX Toolset via cargo-wix
 
   To build: cargo wix
   To customize: edit this file and run cargo wix again
 
   Feature tree (user can toggle during install):
-    [x] Ferrite Editor          (required)
+    [x] Sciscraper Editor          (required)
         [x] Start Menu Shortcut (default on)
         [ ] Desktop Shortcut    (default off)
     [x] File Associations       (default on, per-extension toggles)
@@ -18,7 +18,7 @@
 
     <Product
         Id='*'
-        Name='Ferrite'
+        Name='Sciscraper'
         UpgradeCode='F3BB1E73-ED17-4000-A000-000000000001'
         Manufacturer='OlaProeis'
         Language='1033'
@@ -28,7 +28,7 @@
         <Package
             Id='*'
             Keywords='Installer'
-            Description='Ferrite - A fast, lightweight text editor for Markdown, JSON, and more'
+            Description='Sciscraper - A scientific Markdown editor with reference management and RAG assistance'
             Manufacturer='OlaProeis'
             InstallerVersion='450'
             Languages='1033'
@@ -41,22 +41,22 @@
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
-        <Property Id='DiskPrompt' Value='Ferrite Installation'/>
+        <Property Id='DiskPrompt' Value='Sciscraper Installation'/>
 
         <!-- ================================================================
              Directory Structure
              ================================================================ -->
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='ProgramFiles64Folder' Name='PFiles'>
-                <Directory Id='APPLICATIONFOLDER' Name='Ferrite'>
+                <Directory Id='APPLICATIONFOLDER' Name='Sciscraper'>
 
                     <!-- Main executable -->
-                    <Component Id='ferrite.exe' Guid='*'>
+                    <Component Id='sciscraper.exe' Guid='*'>
                         <File
-                            Id='ferrite.exe'
-                            Name='ferrite.exe'
+                            Id='sciscraper.exe'
+                            Name='sciscraper.exe'
                             DiskId='1'
-                            Source='target\release\ferrite.exe'
+                            Source='target\release\sciscraper.exe'
                             KeyPath='yes'/>
                     </Component>
 
@@ -65,7 +65,7 @@
                          ================================================ -->
                     <Component Id='PathEntry' Guid='*'>
                         <Environment
-                            Id='FerritePath'
+                            Id='SciscraperPath'
                             Name='PATH'
                             Value='[APPLICATIONFOLDER]'
                             Permanent='no'
@@ -74,7 +74,7 @@
                             System='yes'/>
                         <RegistryValue
                             Root='HKLM'
-                            Key='Software\OlaProeis\Ferrite'
+                            Key='Software\OlaProeis\Sciscraper'
                             Name='PathAdded'
                             Type='integer'
                             Value='1'
@@ -89,93 +89,93 @@
 
                     <!-- Markdown (.md, .markdown) -->
                     <Component Id='FileAssocMarkdown' Guid='*'>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.md' Type='string' Value='Markdown Document'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.md\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]ferrite.exe,0'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.md\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]ferrite.exe&quot; &quot;%1&quot;'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\.md\OpenWithProgids' Name='Ferrite.md' Type='string' Value='' KeyPath='yes'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\.markdown\OpenWithProgids' Name='Ferrite.md' Type='string' Value=''/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.md' Type='string' Value='Markdown Document'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.md\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]sciscraper.exe,0'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.md\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]sciscraper.exe&quot; &quot;%1&quot;'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\.md\OpenWithProgids' Name='Sciscraper.md' Type='string' Value='' KeyPath='yes'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\.markdown\OpenWithProgids' Name='Sciscraper.md' Type='string' Value=''/>
                     </Component>
 
                     <!-- Plain Text (.txt) -->
                     <Component Id='FileAssocText' Guid='*'>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.txt' Type='string' Value='Text Document'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.txt\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]ferrite.exe,0'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.txt\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]ferrite.exe&quot; &quot;%1&quot;'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\.txt\OpenWithProgids' Name='Ferrite.txt' Type='string' Value='' KeyPath='yes'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.txt' Type='string' Value='Text Document'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.txt\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]sciscraper.exe,0'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.txt\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]sciscraper.exe&quot; &quot;%1&quot;'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\.txt\OpenWithProgids' Name='Sciscraper.txt' Type='string' Value='' KeyPath='yes'/>
                     </Component>
 
                     <!-- JSON (.json) -->
                     <Component Id='FileAssocJson' Guid='*'>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.json' Type='string' Value='JSON Document'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.json\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]ferrite.exe,0'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.json\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]ferrite.exe&quot; &quot;%1&quot;'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\.json\OpenWithProgids' Name='Ferrite.json' Type='string' Value='' KeyPath='yes'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.json' Type='string' Value='JSON Document'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.json\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]sciscraper.exe,0'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.json\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]sciscraper.exe&quot; &quot;%1&quot;'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\.json\OpenWithProgids' Name='Sciscraper.json' Type='string' Value='' KeyPath='yes'/>
                     </Component>
 
                     <!-- YAML (.yaml, .yml) -->
                     <Component Id='FileAssocYaml' Guid='*'>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.yaml' Type='string' Value='YAML Document'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.yaml\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]ferrite.exe,0'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.yaml\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]ferrite.exe&quot; &quot;%1&quot;'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\.yaml\OpenWithProgids' Name='Ferrite.yaml' Type='string' Value='' KeyPath='yes'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\.yml\OpenWithProgids' Name='Ferrite.yaml' Type='string' Value=''/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.yaml' Type='string' Value='YAML Document'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.yaml\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]sciscraper.exe,0'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.yaml\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]sciscraper.exe&quot; &quot;%1&quot;'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\.yaml\OpenWithProgids' Name='Sciscraper.yaml' Type='string' Value='' KeyPath='yes'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\.yml\OpenWithProgids' Name='Sciscraper.yaml' Type='string' Value=''/>
                     </Component>
 
                     <!-- TOML (.toml) -->
                     <Component Id='FileAssocToml' Guid='*'>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.toml' Type='string' Value='TOML Document'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.toml\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]ferrite.exe,0'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.toml\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]ferrite.exe&quot; &quot;%1&quot;'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\.toml\OpenWithProgids' Name='Ferrite.toml' Type='string' Value='' KeyPath='yes'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.toml' Type='string' Value='TOML Document'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.toml\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]sciscraper.exe,0'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.toml\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]sciscraper.exe&quot; &quot;%1&quot;'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\.toml\OpenWithProgids' Name='Sciscraper.toml' Type='string' Value='' KeyPath='yes'/>
                     </Component>
 
                     <!-- CSV (.csv, .tsv) -->
                     <Component Id='FileAssocCsv' Guid='*'>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.csv' Type='string' Value='CSV Document'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.csv\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]ferrite.exe,0'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Ferrite.csv\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]ferrite.exe&quot; &quot;%1&quot;'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\.csv\OpenWithProgids' Name='Ferrite.csv' Type='string' Value='' KeyPath='yes'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\.tsv\OpenWithProgids' Name='Ferrite.csv' Type='string' Value=''/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.csv' Type='string' Value='CSV Document'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.csv\DefaultIcon' Type='string' Value='[APPLICATIONFOLDER]sciscraper.exe,0'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Sciscraper.csv\shell\open\command' Type='string' Value='&quot;[APPLICATIONFOLDER]sciscraper.exe&quot; &quot;%1&quot;'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\.csv\OpenWithProgids' Name='Sciscraper.csv' Type='string' Value='' KeyPath='yes'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\.tsv\OpenWithProgids' Name='Sciscraper.csv' Type='string' Value=''/>
                     </Component>
 
                     <!-- ================================================
                          Windows Default Apps Registration
-                         Makes Ferrite appear in Settings > Default Apps
+                         Makes Sciscraper appear in Settings > Default Apps
                          ================================================ -->
                     <Component Id='DefaultAppsRegistration' Guid='*'>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities' Name='ApplicationDescription' Type='string' Value='A fast, lightweight text editor for Markdown, JSON, and more'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities' Name='ApplicationName' Type='string' Value='Ferrite'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities\FileAssociations' Name='.md' Type='string' Value='Ferrite.md'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities\FileAssociations' Name='.markdown' Type='string' Value='Ferrite.md'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities\FileAssociations' Name='.txt' Type='string' Value='Ferrite.txt'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities\FileAssociations' Name='.json' Type='string' Value='Ferrite.json'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities\FileAssociations' Name='.yaml' Type='string' Value='Ferrite.yaml'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities\FileAssociations' Name='.yml' Type='string' Value='Ferrite.yaml'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities\FileAssociations' Name='.toml' Type='string' Value='Ferrite.toml'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities\FileAssociations' Name='.csv' Type='string' Value='Ferrite.csv'/>
-                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Ferrite\Capabilities\FileAssociations' Name='.tsv' Type='string' Value='Ferrite.csv'/>
-                        <RegistryValue Root='HKLM' Key='Software\RegisteredApplications' Name='Ferrite' Type='string' Value='Software\OlaProeis\Ferrite\Capabilities' KeyPath='yes'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities' Name='ApplicationDescription' Type='string' Value='A scientific Markdown editor with reference management and RAG assistance'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities' Name='ApplicationName' Type='string' Value='Sciscraper'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities\FileAssociations' Name='.md' Type='string' Value='Sciscraper.md'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities\FileAssociations' Name='.markdown' Type='string' Value='Sciscraper.md'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities\FileAssociations' Name='.txt' Type='string' Value='Sciscraper.txt'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities\FileAssociations' Name='.json' Type='string' Value='Sciscraper.json'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities\FileAssociations' Name='.yaml' Type='string' Value='Sciscraper.yaml'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities\FileAssociations' Name='.yml' Type='string' Value='Sciscraper.yaml'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities\FileAssociations' Name='.toml' Type='string' Value='Sciscraper.toml'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities\FileAssociations' Name='.csv' Type='string' Value='Sciscraper.csv'/>
+                        <RegistryValue Root='HKLM' Key='Software\OlaProeis\Sciscraper\Capabilities\FileAssociations' Name='.tsv' Type='string' Value='Sciscraper.csv'/>
+                        <RegistryValue Root='HKLM' Key='Software\RegisteredApplications' Name='Sciscraper' Type='string' Value='Software\OlaProeis\Sciscraper\Capabilities' KeyPath='yes'/>
                     </Component>
 
                     <!-- ================================================
                          Explorer Context Menu (optional)
                          ================================================ -->
 
-                    <!-- "Open with Ferrite" on any file -->
+                    <!-- "Open with Sciscraper" on any file -->
                     <Component Id='ContextMenuFiles' Guid='*'>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\*\shell\OpenWithFerrite' Type='string' Value='Open with Ferrite'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\*\shell\OpenWithFerrite' Name='Icon' Type='string' Value='[APPLICATIONFOLDER]ferrite.exe,0'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\*\shell\OpenWithFerrite\command' Type='string' Value='&quot;[APPLICATIONFOLDER]ferrite.exe&quot; &quot;%1&quot;' KeyPath='yes'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\*\shell\OpenWithSciscraper' Type='string' Value='Open with Sciscraper'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\*\shell\OpenWithSciscraper' Name='Icon' Type='string' Value='[APPLICATIONFOLDER]sciscraper.exe,0'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\*\shell\OpenWithSciscraper\command' Type='string' Value='&quot;[APPLICATIONFOLDER]sciscraper.exe&quot; &quot;%1&quot;' KeyPath='yes'/>
                     </Component>
 
-                    <!-- "Open Folder with Ferrite" on directories + background -->
+                    <!-- "Open Folder with Sciscraper" on directories + background -->
                     <Component Id='ContextMenuFolders' Guid='*'>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\shell\OpenWithFerrite' Type='string' Value='Open Folder with Ferrite'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\shell\OpenWithFerrite' Name='Icon' Type='string' Value='[APPLICATIONFOLDER]ferrite.exe,0'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\shell\OpenWithFerrite\command' Type='string' Value='&quot;[APPLICATIONFOLDER]ferrite.exe&quot; &quot;%1&quot;'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\Background\shell\OpenWithFerrite' Type='string' Value='Open Folder with Ferrite'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\Background\shell\OpenWithFerrite' Name='Icon' Type='string' Value='[APPLICATIONFOLDER]ferrite.exe,0'/>
-                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\Background\shell\OpenWithFerrite\command' Type='string' Value='&quot;[APPLICATIONFOLDER]ferrite.exe&quot; &quot;%V&quot;' KeyPath='yes'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\shell\OpenWithSciscraper' Type='string' Value='Open Folder with Sciscraper'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\shell\OpenWithSciscraper' Name='Icon' Type='string' Value='[APPLICATIONFOLDER]sciscraper.exe,0'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\shell\OpenWithSciscraper\command' Type='string' Value='&quot;[APPLICATIONFOLDER]sciscraper.exe&quot; &quot;%1&quot;'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\Background\shell\OpenWithSciscraper' Type='string' Value='Open Folder with Sciscraper'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\Background\shell\OpenWithSciscraper' Name='Icon' Type='string' Value='[APPLICATIONFOLDER]sciscraper.exe,0'/>
+                        <RegistryValue Root='HKLM' Key='Software\Classes\Directory\Background\shell\OpenWithSciscraper\command' Type='string' Value='&quot;[APPLICATIONFOLDER]sciscraper.exe&quot; &quot;%V&quot;' KeyPath='yes'/>
                     </Component>
 
                 </Directory>
@@ -183,19 +183,19 @@
 
             <!-- Start Menu Shortcuts -->
             <Directory Id='ProgramMenuFolder' Name='Programs'>
-                <Directory Id='ApplicationProgramsFolder' Name='Ferrite'>
+                <Directory Id='ApplicationProgramsFolder' Name='Sciscraper'>
                     <Component Id='ApplicationShortcut' Guid='*'>
                         <Shortcut
                             Id='ApplicationStartMenuShortcut'
-                            Name='Ferrite'
+                            Name='Sciscraper'
                             Description='A fast, lightweight text editor'
-                            Target='[APPLICATIONFOLDER]ferrite.exe'
+                            Target='[APPLICATIONFOLDER]sciscraper.exe'
                             WorkingDirectory='APPLICATIONFOLDER'
                             Icon='ProductICO'/>
                         <RemoveFolder Id='CleanUpShortCut' Directory='ApplicationProgramsFolder' On='uninstall'/>
                         <RegistryValue
                             Root='HKCU'
-                            Key='Software\OlaProeis\Ferrite'
+                            Key='Software\OlaProeis\Sciscraper'
                             Name='installed'
                             Type='integer'
                             Value='1'
@@ -209,14 +209,14 @@
                 <Component Id='DesktopShortcut' Guid='*'>
                     <Shortcut
                         Id='DesktopShortcutLink'
-                        Name='Ferrite'
+                        Name='Sciscraper'
                         Description='A fast, lightweight text editor'
-                        Target='[APPLICATIONFOLDER]ferrite.exe'
+                        Target='[APPLICATIONFOLDER]sciscraper.exe'
                         WorkingDirectory='APPLICATIONFOLDER'
                         Icon='ProductICO'/>
                     <RegistryValue
                         Root='HKCU'
-                        Key='Software\OlaProeis\Ferrite'
+                        Key='Software\OlaProeis\Sciscraper'
                         Name='DesktopShortcut'
                         Type='integer'
                         Value='1'
@@ -235,19 +235,19 @@
         <!-- Core application (required, cannot be deselected) -->
         <Feature
             Id='Complete'
-            Title='Ferrite Editor'
-            Description='Core Ferrite text editor application.'
+            Title='Sciscraper Editor'
+            Description='Core Sciscraper text editor application.'
             Level='1'
             ConfigurableDirectory='APPLICATIONFOLDER'
             AllowAdvertise='no'
             Absent='disallow'>
 
-            <ComponentRef Id='ferrite.exe'/>
+            <ComponentRef Id='sciscraper.exe'/>
 
             <Feature
                 Id='StartMenuShortcut'
                 Title='Start Menu Shortcut'
-                Description='Add Ferrite shortcut to the Start Menu.'
+                Description='Add Sciscraper shortcut to the Start Menu.'
                 Level='1'
                 AllowAdvertise='no'>
                 <ComponentRef Id='ApplicationShortcut'/>
@@ -256,7 +256,7 @@
             <Feature
                 Id='DesktopShortcutFeature'
                 Title='Desktop Shortcut'
-                Description='Add Ferrite shortcut to the Desktop.'
+                Description='Add Sciscraper shortcut to the Desktop.'
                 Level='2'
                 AllowAdvertise='no'>
                 <ComponentRef Id='DesktopShortcut'/>
@@ -267,33 +267,33 @@
         <Feature
             Id='FileAssociations'
             Title='File Associations'
-            Description='Register Ferrite in the "Open With" menu and Windows Default Apps settings for supported file types.'
+            Description='Register Sciscraper in the "Open With" menu and Windows Default Apps settings for supported file types.'
             Level='1'
             AllowAdvertise='no'>
 
             <ComponentRef Id='DefaultAppsRegistration'/>
 
-            <Feature Id='FileAssocMarkdownFeature' Title='Markdown (.md, .markdown)' Description='Associate Markdown files with Ferrite.' Level='1' AllowAdvertise='no'>
+            <Feature Id='FileAssocMarkdownFeature' Title='Markdown (.md, .markdown)' Description='Associate Markdown files with Sciscraper.' Level='1' AllowAdvertise='no'>
                 <ComponentRef Id='FileAssocMarkdown'/>
             </Feature>
 
-            <Feature Id='FileAssocTextFeature' Title='Plain Text (.txt)' Description='Associate plain text files with Ferrite.' Level='1' AllowAdvertise='no'>
+            <Feature Id='FileAssocTextFeature' Title='Plain Text (.txt)' Description='Associate plain text files with Sciscraper.' Level='1' AllowAdvertise='no'>
                 <ComponentRef Id='FileAssocText'/>
             </Feature>
 
-            <Feature Id='FileAssocJsonFeature' Title='JSON (.json)' Description='Associate JSON files with Ferrite.' Level='1' AllowAdvertise='no'>
+            <Feature Id='FileAssocJsonFeature' Title='JSON (.json)' Description='Associate JSON files with Sciscraper.' Level='1' AllowAdvertise='no'>
                 <ComponentRef Id='FileAssocJson'/>
             </Feature>
 
-            <Feature Id='FileAssocYamlFeature' Title='YAML (.yaml, .yml)' Description='Associate YAML files with Ferrite.' Level='1' AllowAdvertise='no'>
+            <Feature Id='FileAssocYamlFeature' Title='YAML (.yaml, .yml)' Description='Associate YAML files with Sciscraper.' Level='1' AllowAdvertise='no'>
                 <ComponentRef Id='FileAssocYaml'/>
             </Feature>
 
-            <Feature Id='FileAssocTomlFeature' Title='TOML (.toml)' Description='Associate TOML files with Ferrite.' Level='1' AllowAdvertise='no'>
+            <Feature Id='FileAssocTomlFeature' Title='TOML (.toml)' Description='Associate TOML files with Sciscraper.' Level='1' AllowAdvertise='no'>
                 <ComponentRef Id='FileAssocToml'/>
             </Feature>
 
-            <Feature Id='FileAssocCsvFeature' Title='CSV (.csv, .tsv)' Description='Associate CSV and TSV files with Ferrite.' Level='1' AllowAdvertise='no'>
+            <Feature Id='FileAssocCsvFeature' Title='CSV (.csv, .tsv)' Description='Associate CSV and TSV files with Sciscraper.' Level='1' AllowAdvertise='no'>
                 <ComponentRef Id='FileAssocCsv'/>
             </Feature>
         </Feature>
@@ -302,15 +302,15 @@
         <Feature
             Id='ContextMenu'
             Title='Explorer Context Menu'
-            Description='Add "Open with Ferrite" to the Windows Explorer right-click menu.'
+            Description='Add "Open with Sciscraper" to the Windows Explorer right-click menu.'
             Level='2'
             AllowAdvertise='no'>
 
-            <Feature Id='ContextMenuFilesFeature' Title='Open with Ferrite (files)' Description='Right-click any file to open it with Ferrite.' Level='2' AllowAdvertise='no'>
+            <Feature Id='ContextMenuFilesFeature' Title='Open with Sciscraper (files)' Description='Right-click any file to open it with Sciscraper.' Level='2' AllowAdvertise='no'>
                 <ComponentRef Id='ContextMenuFiles'/>
             </Feature>
 
-            <Feature Id='ContextMenuFoldersFeature' Title='Open Folder with Ferrite (directories)' Description='Right-click a folder to open it as a Ferrite workspace.' Level='2' AllowAdvertise='no'>
+            <Feature Id='ContextMenuFoldersFeature' Title='Open Folder with Sciscraper (directories)' Description='Right-click a folder to open it as a Sciscraper workspace.' Level='2' AllowAdvertise='no'>
                 <ComponentRef Id='ContextMenuFolders'/>
             </Feature>
         </Feature>
@@ -319,7 +319,7 @@
         <Feature
             Id='AddToPath'
             Title='Add to System PATH'
-            Description='Add Ferrite to the system PATH so you can run "ferrite" from any terminal.'
+            Description='Add Sciscraper to the system PATH so you can run "sciscraper" from any terminal.'
             Level='2'
             AllowAdvertise='no'>
             <ComponentRef Id='PathEntry'/>
@@ -336,10 +336,10 @@
         <Property Id='ARPHELPLINK' Value='https://github.com/OlaProeis/Ferrite'/>
 
         <!-- Launch after install: checkbox on the exit dialog (checked by default) -->
-        <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT' Value='Launch Ferrite'/>
+        <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT' Value='Launch Sciscraper'/>
         <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOX' Value='1'/>
 
-        <CustomAction Id='LaunchApplication' FileKey='ferrite.exe' ExeCommand='' Return='asyncNoWait'/>
+        <CustomAction Id='LaunchApplication' FileKey='sciscraper.exe' ExeCommand='' Return='asyncNoWait'/>
 
         <!-- ================================================================
              Installer UI
@@ -355,7 +355,7 @@
             <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='5'>1</Publish>
             <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='5'>1</Publish>
 
-            <!-- Launch Ferrite when user clicks Finish with checkbox checked -->
+            <!-- Launch Sciscraper when user clicks Finish with checkbox checked -->
             <Publish Dialog='ExitDialog' Control='Finish' Event='DoAction' Value='LaunchApplication'>
                 WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed
             </Publish>

@@ -14,7 +14,11 @@ use std::path::PathBuf;
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Application name used for the config directory
+/// Application name used for the config directory.
+///
+/// Deliberately still "ferrite": the directory carries the user's settings,
+/// session and recovery data (`~/.config/ferrite` on Linux). Renaming it with
+/// the binary to "sciscraper" would silently orphan that data.
 const APP_NAME: &str = "ferrite";
 
 /// Configuration file name
@@ -28,6 +32,7 @@ const PORTABLE_DIR_NAME: &str = "portable";
 
 /// Environment variable for overriding the data directory.
 /// Used by PortableApps.com launcher and custom portable setups.
+/// Kept as `FERRITE_DATA_DIR` for compatibility with existing launchers.
 const DATA_DIR_ENV_VAR: &str = "FERRITE_DATA_DIR";
 
 // ─────────────────────────────────────────────────────────────────────────────

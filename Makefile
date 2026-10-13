@@ -1,4 +1,4 @@
-# Ferrite Build Makefile
+# Sciscraper Build Makefile
 # Simple build automation for local development
 
 .PHONY: build release run clean check fmt clippy test all
@@ -52,14 +52,14 @@ precommit: fmt clippy test build
 # Show binary size after release build
 size: release
 ifeq ($(OS),Windows_NT)
-	@dir /s target\release\ferrite.exe 2>nul || echo "Binary not found"
+	@dir /s target\release\sciscraper.exe 2>nul || echo "Binary not found"
 else
-	@ls -lh target/release/ferrite 2>/dev/null || echo "Binary not found"
+	@ls -lh target/release/sciscraper 2>/dev/null || echo "Binary not found"
 endif
 
 # Help
 help:
-	@echo "Ferrite Build Targets:"
+	@echo "Sciscraper Build Targets:"
 	@echo "  make build      - Debug build"
 	@echo "  make release    - Release build (optimized)"
 	@echo "  make run        - Run debug build"

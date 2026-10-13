@@ -155,9 +155,9 @@ pub fn log_memory(label: &str) {
     );
 }
 
-/// Ferrite - A fast, lightweight text editor for Markdown, JSON, and more.
+/// Sciscraper - A scientific Markdown editor with reference management and RAG assistance.
 #[derive(Parser, Debug)]
-#[command(name = "ferrite", version, about, long_about = None)]
+#[command(name = "sciscraper", version, about, long_about = None)]
 struct Cli {
     /// Files or directory to open on startup.
     ///
@@ -193,7 +193,7 @@ fn parse_log_level(s: &str) -> Result<LogLevel, String> {
 // This provides consistent appearance across all platforms (Windows, macOS, Linux).
 
 /// Application name constant.
-const APP_NAME: &str = "Ferrite";
+const APP_NAME: &str = "Sciscraper";
 
 fn main() -> eframe::Result<()> {
     // Trace file works in release (no console on Windows). Check %TEMP%\ferrite_startup_trace.log
@@ -303,7 +303,7 @@ fn main() -> eframe::Result<()> {
     // The window still appears opaque because eframe paints an opaque background each frame.
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_title(APP_NAME)
-        .with_app_id("ferrite")
+        .with_app_id("sciscraper")
         .with_decorations(false)
         .with_transparent(true)
         .with_inner_size([window_size.width, window_size.height])

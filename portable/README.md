@@ -4,7 +4,7 @@ This directory contains the [PortableApps.com Format (PAF)](https://portableapps
 
 ## How It Works
 
-The PAF launcher (`FerriteMDPortable.exe`) sets the `FERRITE_DATA_DIR` environment variable to `Data\settings\` before launching `ferrite.exe`. Ferrite detects this variable and stores all configuration (settings, session, snippets) in that directory instead of `%APPDATA%`.
+The PAF launcher (`FerriteMDPortable.exe`) sets the `FERRITE_DATA_DIR` environment variable to `Data\settings\` before launching `sciscraper.exe`. Ferrite detects this variable and stores all configuration (settings, session, snippets) in that directory instead of `%APPDATA%`.
 
 This means:
 - **No files are written to the host system** (no registry, no AppData writes)

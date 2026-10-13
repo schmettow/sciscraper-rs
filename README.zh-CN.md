@@ -1,5 +1,7 @@
 # Ferrite
 
+> ⚠️ **翻译说明：** 本文是 Ferrite 编辑器原始 README 的简体中文翻译，对应 Sciscraper 分叉之前的版本。分叉后新增的 **Agent 面板**（RAG 对话）与 **Library 面板**（BibTeX 文献管理）尚未翻译，请参阅 [English README](README.md) 以及上游项目 [Ferrite](https://github.com/OlaProeis/Ferrite#readme)。
+
 **简体中文** | [English](README.md)
 
 <div align="center">

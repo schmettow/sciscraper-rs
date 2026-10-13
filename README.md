@@ -1,715 +1,458 @@
-# Ferrite
+# Sciscraper
 
-**English** | [简体中文](README.zh-CN.md)
+**Sciscraper** is a scientific Markdown editor with integrated reference
+management and RAG writing assistance. It is a fork of
+[Ferrite](https://github.com/OlaProeis/Ferrite), a fast, lightweight editor for
+Markdown, JSON and more, built in Rust with egui.
 
-<div align="center">
+On top of the inherited editor, Sciscraper adds two panes on the right:
 
-[![Website](https://img.shields.io/badge/website-getferrite.dev-blue?style=flat-square)](https://getferrite.dev)
-[![Latest Release](https://img.shields.io/github/v/release/OlaProeis/Ferrite?style=flat-square)](https://github.com/OlaProeis/Ferrite/releases)
-[![License](https://img.shields.io/github/license/OlaProeis/Ferrite?style=flat-square)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/OlaProeis/Ferrite?style=flat-square)](https://github.com/OlaProeis/Ferrite/stargazers)
-[![GitHub Issues](https://img.shields.io/github/issues/OlaProeis/Ferrite?style=flat-square)](https://github.com/OlaProeis/Ferrite/issues)
-[![Translation Status](https://hosted.weblate.org/widget/ferrite/ferrite-ui/svg-badge.svg)](https://hosted.weblate.org/engage/ferrite/)
+- **Agent** — a chat pane backed by the [`ragrig`](https://crates.io/crates/ragrig)
+  framework. It answers questions against your document corpus with hybrid
+  (BM25 + vector) retrieval, streams the answer, keeps conversations across
+  restarts, and lets you hot-swap the chat model, embeddings, memory and
+  chunking from a component bar.
+- **Library** — your BibTeX bibliography, one row per reference. Drag a row
+  into the document (or use its context menu) to cite it as `@key` or
+  `[@key]`, and mention `@Key` in a question to attach the full paper to that
+  query.
 
-**[getferrite.dev](https://getferrite.dev)** — Official website with downloads, features, and documentation
+Both panes are behind the Cargo feature `rag` (see
+[Building and running](#building-and-running)); a build without it is the
+plain Ferrite editor.
 
-</div>
+## Contents
 
-A fast, lightweight text editor for Markdown, JSON, YAML, and TOML files. Built with Rust and egui for a native, responsive experience.
+- [The inherited editor](#the-inherited-editor)
+- [Building and running](#building-and-running)
+- [Using the agent](#using-the-agent)
+- [Reference management](#reference-management)
+- [Troubleshooting](#troubleshooting)
+- [Where Sciscraper keeps its state](#where-sciscraper-keeps-its-state)
+- [Credits and license](#credits-and-license)
 
-> ⚠️ **Platform Note:** Ferrite is developed and tested on **Windows** and **Linux**. macOS support is experimental. If you encounter issues, please [report them](https://github.com/OlaProeis/Ferrite/issues).
+## The inherited editor
 
-<details>
-<summary><strong>🛡️ Code Signing & Antivirus</strong></summary>
+Everything documented in the **Ferrite README** is still in the box — see
+<https://github.com/OlaProeis/Ferrite#readme>. In brief:
 
-Starting with v0.2.6.1, **all Windows releases are digitally signed** with a certificate from [SignPath Foundation](https://signpath.org). This means:
+- **Editing:** raw / rendered / split view, live preview, syntax highlighting
+  (syntect + two-face), rope-backed buffer for large files, Vim mode, folding,
+  find & replace with regex, multiple tabs, session restore, auto-save.
+- **Views:** Mermaid diagram rendering, CSV/TSV table viewer, JSON/YAML/TOML
+  tree viewer, PDF and image preview, an outline/statistics panel and backlinks.
+- **Workspace:** file tree with `notify`-based watching, Git status indicators,
+  integrated terminal, productivity hub (notes/snippets), command palette.
+- **Output:** HTML export, PDF generation (pure Rust).
 
-- **Windows SmartScreen** recognizes the publisher — no more "Unknown publisher" warnings
-- **Antivirus false positives** are significantly reduced thanks to the trusted code signature
-- **Integrity verification** — you can verify that the binary hasn't been tampered with
+The Sciscraper dock is additive: on builds without the `rag` feature the
+editor behaves exactly like the Ferrite revision it forked from.
 
-### Previous False Positives
-Older unsigned builds may still trigger antivirus detections. This was caused by:
-- **Live Pipeline feature**: Uses `cmd.exe /C` on Windows for shell commands, which ML-based detection can misidentify
-- **Rust compilation patterns**: Rust binaries can trigger heuristic detections due to unique characteristics
+## Building and running
 
-We've addressed this through code signing, build profile adjustments (disabled symbol stripping, speed optimization), and reporting to Microsoft's Security Intelligence portal.
+You need:
 
-### If You're Still Affected
-If Windows Defender quarantines Ferrite:
-1. **Upgrade**: Download the latest signed release from [GitHub Releases](https://github.com/OlaProeis/Ferrite/releases)
-2. **Verify the signature**: Right-click `ferrite.exe` → Properties → Digital Signatures → should show "SignPath Foundation"
-3. **Check VirusTotal**: Upload the file to [VirusTotal](https://www.virustotal.com) — signed builds should show clean results
+1. **Rust** — <https://rustup.rs> (the crate pins its MSRV in
+   `rust-toolchain.toml`).
+2. **Ollama** — <https://ollama.com/download>, for local chat models and for
+   embeddings. Only needed if you use local models; a pure DeepSeek setup with
+   retrieval switched off works without it.
+3. **Models, once** (with Ollama):
 
-Ferrite does **NOT** access passwords, browser data, or make unsolicited network connections. The only network access is the manual "Check for Updates" button (Settings → About), which contacts the GitHub Releases API when you click it. The application only accesses files you explicitly open.
+   ```bash
+   ollama pull qwen3.5:9b        # local chat model (the Ollama default)
+   ollama pull nomic-embed-text  # embeddings (retrieval)
+   ollama pull qwen2.5:1.5b      # memory / query rewriting (optional)
+   ```
 
-</details>
-
-<details>
-<summary><strong>🍎 macOS Installation & Gatekeeper</strong></summary>
-
-**GitHub Release** `.dmg` / `.tar.gz` builds are packaged as `Ferrite.app` but are **not** signed with an Apple Developer ID and are **not** notarized (CI limitation). **Gatekeeper**, especially on **macOS 15.x (Sequoia / 15.6+)**, may block or warn on first launch—see [GitHub #130](https://github.com/OlaProeis/Ferrite/issues/130) and the workarounds below.
-
-📖 **Full troubleshooting:** [docs/install/macos.md](docs/install/macos.md)
-
-### Option 1: Homebrew (often smoothest)
+Build the integrated editor (`rag` is **not** in the default feature set, so a
+plain build stays compatible with upstream Ferrite):
 
 ```bash
-brew tap olaproeis/ferrite
-brew install --cask ferrite
+cargo build --release --features rag
+./target/release/sciscraper               # editor only
+./target/release/sciscraper ~/my-project  # open a folder as workspace
 ```
 
-Homebrew typically avoids quarantine friction compared to raw GitHub downloads.
-
-### Option 2: DMG / tar.gz from GitHub Releases + workaround
-
-1. Download from [Releases](https://github.com/OlaProeis/Ferrite/releases):
-   - **Apple Silicon:** `ferrite-macos-arm64.dmg` or `.tar.gz`
-   - **Intel:** `ferrite-macos-x64.dmg` or `.tar.gz`
-2. Copy `Ferrite.app` to **Applications** (or another folder you prefer).
-3. **First launch — pick one:**
-   - **Terminal (most reliable):** `xattr -dr com.apple.quarantine /Applications/Ferrite.app` — use the real path if the app is not under `/Applications`.
-   - **Finder:** Control-click `Ferrite.app` → **Open** → **Open** (may **not** work on every macOS 15.x configuration).
-   - **System Settings → Privacy & Security:** after a blocked launch, use **Open Anyway** if shown.
-
-### Why this happens
-
-Apple expects apps distributed outside the Mac App Store to be signed with a **Developer ID** certificate and **notarized**. Ferrite is open source—you can [audit the code](https://github.com/OlaProeis/Ferrite) and [build from source](docs/building.md)—but paid enrollment and CI wiring are still pending for GitHub-hosted macOS builds.
-
-</details>
-
-## 🤖 AI-Assisted Development
-
-This project is 100% AI-generated code. All Rust code, documentation, and configuration was written by Claude (Anthropic) via [Cursor](https://cursor.com) with MCP tools.
-
-<details>
-<summary><strong>About the AI workflow</strong></summary>
-
-### My Role
-- **Product direction** — Deciding what to build and why
-- **Testing** — Running the app, finding bugs, verifying features
-- **Review** — Reading generated code, understanding what it does
-- **Orchestration** — Managing the AI workflow effectively
-
-### The Workflow
-1. **Idea refinement** — Discuss concepts with multiple AIs (Claude, Perplexity, Gemini Pro)
-2. **PRD creation** — Generate requirements using [Task Master](https://github.com/task-master-ai/task-master)
-3. **Task execution** — Claude Opus handles implementation (preferring larger tasks over many subtasks)
-4. **Session handover** — Structured prompts maintain context between sessions
-5. **Human review** — Every handover is reviewed; direction adjustments made as needed
-
-📖 **Full details:** [AI Development Workflow](docs/ai-workflow/ai-development-workflow.md)
-
-### Open Process
-The actual prompts and documents used to build Ferrite are public:
-
-| Document | Purpose |
-|----------|---------|
-| [`current-handover-prompt.md`](docs/current-handover-prompt.md) | Active session context |
-| [`ai-workflow/`](docs/ai-workflow/) | Full workflow docs, PRDs, historical handovers |
-| [`handover/`](docs/handover/) | Reusable handover templates |
-
-This transparency is intentional — I want others to learn from (and improve upon) this approach.
-
-</details>
-
-## Screenshots
-
-![Ferrite Demo](assets/screenshots/demo.gif)
-
-| Raw Editor | Split View | Zen Mode |
-|------------|------------|----------|
-| ![Raw Editor](assets/screenshots/raw-dark.png) | ![Split View](assets/screenshots/split-dark.png) | ![Zen Mode](assets/screenshots/zen-dark.png) |
-
-> ✨ **v0.3.0 (Latest):** **eframe / egui 0.34.2** platform refresh. **PDF + themed HTML export**. **Executable code blocks** (`▶ Run`). **Rendered edit session** (one-click WYSIWYG block switching). **Split-view scroll sync**. **User accent color**. **Mermaid** insert toolbar + validation + flowchart polish. **Phosphor icons**. **Session recovery** hardening. **Quick note workflow**. See [CHANGELOG.md](CHANGELOG.md) for full details.
-
-> 🛠️ **Coming in v0.3.1:** LSP (diagnostics panel + hover/complete), YouTube embeds, Mermaid second wave, multi-window, CSV editing, and GitHub HTML parity. See [ROADMAP.md](ROADMAP.md) and [prd-v0.3.1.md](docs/ai-workflow/prds/prd-v0.3.1.md).
-
-> 📦 **v0.2.6 Highlights:** Custom Editor Engine with virtual scrolling (80MB file uses ~80MB RAM), Multi-Cursor Editing, Code Folding, IME/CJK input improvements.
-
-## Features
-
-### Core Editing
-- **WYSIWYG Markdown Editing** - Edit markdown with live preview, **one-click block switching** between headings, paragraphs, lists, and table cells in rendered mode, click-to-edit formatting, and syntax highlighting
-- **Executable Code Blocks** - Run shell or Python fenced blocks from rendered/split preview (`▶ Run`); inline ANSI output, timeout, and Stop (opt-in via Settings; first-run consent)
-- **Multi-Format Support** - Native support for Markdown, JSON, CSV, YAML, and TOML files
-- **Multi-Encoding Support** - Auto-detect and preserve file encodings (UTF-8, Latin-1, Shift-JIS, Windows-1252, GBK, and more)
-- **Tree Viewer** - Hierarchical view for JSON/YAML/TOML with inline editing, expand/collapse, and path copying
-- **Find & Replace** - Search with regex support and match highlighting
-- **Go to Line (Ctrl+G)** - Quick navigation to specific line number
-- **Undo/Redo** - Full undo/redo support per tab
-
-### View Modes
-- **Split View** - Side-by-side raw editor and rendered preview with resizable divider; both panes are fully editable; optional **live scroll sync** (minimap **Sync** / **2-way** controls)
-- **Zen Mode** - Distraction-free writing with centered text column
-
-### Editor Features
-- **Syntax Highlighting** - Full-file syntax highlighting for 100+ languages (Rust, Python, JavaScript, Go, TypeScript, PowerShell, and more)
-- **Code Folding** - Fold/unfold regions with gutter indicators (▶/▼) for headings, code blocks, and lists; collapsed content is hidden
-- **Semantic Minimap** - Navigation panel with clickable header labels, content type indicators, and text density bars (switchable to VS Code-style pixel view)
-- **Multi-Cursor Editing** - Ctrl+Click to add multiple cursors; type, delete, and navigate at all positions simultaneously
-- **Bracket Matching** - Highlight matching brackets `()[]{}<>` and emphasis pairs `**` `__`
-- **Auto-close Brackets & Quotes** - Type `(`, `[`, `{`, `"`, or `'` to get matching pair; selection wrapping supported
-- **Duplicate Line (Ctrl+Shift+D)** - Duplicate current line or selection
-- **Move Line Up/Down (Alt+↑/↓)** - Rearrange lines without cut/paste
-- **Smart Paste for Links** - Select text then paste URL to create `[text](url)` markdown link
-- **Drag & Drop Images** - Drop images into editor to auto-save to `./assets/` and insert markdown link
-- **Table of Contents** - Generate/update TOC from headings with `<!-- TOC -->` block (Ctrl+Shift+U)
-- **Snippets** - Text expansions like `;date` → current date, `;time` → current time, plus custom snippets
-- **Auto-Save** - Configurable auto-save with temp-file safety
-- **Line Numbers** - Optional line number gutter
-- **Configurable Line Width** - Limit text width for readability (80/100/120 or custom)
-- **Custom Font Selection** - Choose preferred fonts for editor and UI; important for CJK regional glyph preferences
-- **Keyboard Shortcut Customization** - Rebind shortcuts via settings panel
-
-### MermaidJS Diagrams
-Native rendering of 11 diagram types directly in the preview:
-- Flowchart, Sequence, Pie, State, Mindmap
-- Class, ER, Git Graph, Gantt, Timeline, User Journey
-- **Insert templates** - Format toolbar → **Insert → Mermaid…** for starter snippets per diagram type
-- **Inline validation** - Parse errors in preview with squiggles on broken `mermaid` blocks in the raw editor
-- **Flowchart polish** - Improved edge routing, extra shapes, `style` / classDef support; state diagrams support fork/join and history nodes
-
-> **v0.3.0 Mermaid update:** Insert toolbar, syntax help (F1), inline validation, flowchart edge-routing and layout fixes, and state-diagram pseudostates. Complex diagrams may still differ from mermaid.js. See [ROADMAP.md](ROADMAP.md) for planned parity work.
-
-### CSV/TSV Viewer
-- **Native Table View** - View CSV and TSV files in a formatted table with fixed-width column alignment
-- **Rainbow Column Coloring** - Alternating column colors for improved readability
-- **Delimiter Detection** - Auto-detect comma, tab, semicolon, and pipe separators
-- **Header Row Detection** - Intelligent detection and highlighting of header rows
-
-### Workspace Features
-- **Workspace Mode** - Open folders with file tree, quick switcher (Ctrl+P), and search-in-files (Ctrl+Shift+F)
-- **Workspace File Index** - Ctrl+P and Search in Files scan the **entire workspace** in the background (not only expanded folders in the tree)
-- **Quick Note Workflow** - Pathless scratch tabs: quit without a save dialog by default; closing a tab still prompts; unsaved notes persist via session recovery (Settings → Files)
-- **Git Integration** - Visual status indicators (modified, added, untracked, ignored) with auto-refresh on save, focus, and file changes
-- **Session Persistence** - Restore open tabs, cursor positions, and scroll offsets on restart; hardened crash recovery with identity checks and disk-conflict banner
-
-### Terminal Workspace
-- **Integrated Terminal** - Multiple instances with shell selection (PowerShell, CMD, WSL, bash)
-- **Tiling & Splitting** - Create complex 2D grids with horizontal and vertical splits
-- **Smart Maximize** - Temporarily maximize any pane to focus on work (Ctrl+Shift+M)
-- **Layout Persistence** - Save and load your favorite terminal arrangements to JSON files
-- **Theming & Transparency** - Custom color schemes (Dracula, etc.) and background opacity
-- **Drag-and-Drop Tabs** - Reorder terminals with visual feedback
-- **AI-Ready** - Visual "breathing" indicator when terminal is waiting for input (perfect for AI agents)
-
-### Additional Features
-- **Light & Dark Themes** - Beautiful themes with runtime switching; **custom Ferrite accent color** (Settings / Welcome) for headings, selection, tabs, and chrome
-- **Document Outline & Statistics** - Navigate with outline panel; tabbed statistics showing word count, reading time, heading/link/image counts
-- **Export & Print** - Export to **PDF** or **themed HTML** (options dialog, Mermaid as SVG); **print preview** opens a temp PDF in the in-app viewer; copy as HTML
-- **Formatting Toolbar** - Quick access to bold, italic, headings, lists, links, Mermaid insert, and more
-- **Phosphor Icons** - Consistent icon font across ribbon, toolbar, panels, and preview controls
-- **Live Pipeline** - Pipe JSON/YAML content through shell commands (for developers)
-- **Custom Window** - Borderless window with custom title bar and resize handles
-- **Recent Files & Folders** - Click filename in status bar to access recently opened files and workspace folders
-- **CJK Paragraph Indentation** - First-line indentation options for Chinese (2 chars) and Japanese (1 char) writing conventions
-
-## Installation
-
-### Pre-built Binaries
-
-Download the latest release for your platform from [GitHub Releases](https://github.com/OlaProeis/Ferrite/releases).
-
-| Platform | Download | Notes |
-|----------|----------|-------|
-| **Windows** | `ferrite-windows-x64.msi` | Recommended - full installer with Start Menu |
-| Windows | `ferrite-portable-windows-x64.zip` | Portable - extract anywhere, run from USB |
-| **Linux (Debian/Ubuntu)** | `ferrite-editor_amd64.deb` | For Debian, Ubuntu, Mint, Pop!_OS |
-| **Linux (Fedora/RHEL)** | `ferrite-editor.x86_64.rpm` | For Fedora, RHEL, CentOS, Rocky |
-| Linux | `ferrite-linux-x64.tar.gz` | Universal - works on any distro |
-| **macOS (Apple Silicon)** | `ferrite-macos-arm64.dmg` | Recommended - drag to Applications (M1/M2/M3) |
-| macOS (Apple Silicon) | `ferrite-macos-arm64.tar.gz` | Alternative - contains Ferrite.app bundle |
-| **macOS (Intel)** | `ferrite-macos-x64.dmg` | Recommended - drag to Applications |
-| macOS (Intel) | `ferrite-macos-x64.tar.gz` | Alternative - contains Ferrite.app bundle |
-
-<details>
-<summary><strong>Windows Installation</strong></summary>
-
-#### MSI Installer (Recommended)
-
-Download `ferrite-windows-x64.msi` and run it. This will:
-- Install Ferrite to `C:\Program Files\Ferrite`
-- Add Start Menu shortcut with icon
-- Enable easy uninstall via Windows Settings
-- Store settings in `%APPDATA%\ferrite\`
-
-#### Portable (ZIP)
-
-Download `ferrite-portable-windows-x64.zip` and extract anywhere. The zip includes:
-- `ferrite.exe` - the application
-- `portable/` - folder for all your settings
-- `README.txt` - quick start guide
-
-**True portable mode:** All configuration, sessions, and data are stored in the `portable` folder next to the executable. Nothing is written to `%APPDATA%` or the Windows registry. Perfect for USB drives or trying Ferrite without installation.
-
-</details>
-
-<details>
-<summary><strong>Linux Installation</strong></summary>
-
-#### Debian/Ubuntu/Mint (.deb)
+For a quick run during development:
 
 ```bash
-# Download the .deb file, then install with:
-sudo apt install ./ferrite-editor_amd64.deb
-
-# Or using dpkg:
-sudo dpkg -i ferrite-editor_amd64.deb
+cargo run --features rag -- ~/my-project
 ```
 
-#### Fedora/RHEL/CentOS (.rpm)
+Packaging metadata (`cargo deb`, `cargo generate-rpm`, `cargo wix`,
+`cargo bundle`) is configured for the `sciscraper` binary and ships the
+`assets/icons/linux/sciscraper.desktop` entry.
+
+| Cargo feature | Default | What it enables |
+|---|---|---|
+| `rag` | off | Agent pane, component bar, Library pane, `@Key` citations |
+| `grobid` | planned | Drag a file or URL onto the Library to ingest it via GROBID (Sprint 5) |
+
+## Using the agent
+
+### Opening the pane
+
+Toggle the agent dock with the robot button in the ribbon, the **Command
+Palette** entry *Toggle Agent Panel*, or **Ctrl+Shift+A**. The pane appears on
+the right and remembers its width, collapsed sections and visibility across
+restarts.
+
+The dock has two collapsible sections: **Agent** on top (session controls,
+transcript, composer, component bar) and **Library** below. Drag the divider
+between the dock and the editor to resize.
+
+### Asking questions
+
+Type into the composer at the bottom of the Agent section:
+
+- **Return** inserts a newline (compose multi-line prompts freely).
+- **Ctrl+Return** sends the question.
+- While an answer streams, the composer's button becomes **Stop**; it cancels
+  the running query or index update. The transcript keeps whatever arrived so
+  far.
+
+Answers stream token-by-token, render Markdown, and carry an info line with the
+number of retrieved chunks, tokens and the elapsed time. Retrieval is hybrid:
+cosine vector similarity is fused with BM25 full-text search via Reciprocal
+Rank Fusion (RRF, k=60).
+
+The first question opens (or restores) a conversation and loads the corpus from
+the workspace. The **index itself is never built automatically** — you decide
+when to index, from the component bar (see below).
+
+### The component bar
+
+At the very bottom of the Agent section sits one icon per RAG component. Each
+icon shows a status dot:
+
+| Dot | Meaning |
+|---|---|
+| grey | inactive — not configured, switched off, or no workspace |
+| green | ready — configured and reachable |
+| pulsing blue | busy — an index update or probe is running |
+| red | error — hover the icon for the detail line |
+
+Clicking an icon slides up a menu with that component's current settings and
+actions:
+
+- **Chat** — provider (`DeepSeek` by default, or `Ollama`), model
+  (`deepseek-v4-pro` / `qwen3.5:9b`), context window in tokens (409 600 by
+  default, deep enough for whole sections of a paper), and *Test connection*.
+  The DeepSeek API key is read from the `DEEPSEEK_API_KEY` environment
+  variable; the editor never writes it into the settings file.
+- **Memory** — the strategy: *Transcript* (default: the raw conversation is
+  passed through, ideal with the large DeepSeek context), *Rewrite (LLM)*
+  (a small local model rewrites follow-up questions such as "and there?" into
+  standalone queries), *Log history* / *Summary* (compact or summarised
+  cross-session history) or *Off* (one-shot questions). The memory model
+  (`qwen2.5:1.5b`) is configurable while *Rewrite* is selected.
+- **Embeddings** — *Enable retrieval* (when off, answers run without corpus
+  context), the embedding model (`nomic-embed-text:latest`), *Top-k chunks*
+  (300 by default) and *Similarity threshold* (0.03), plus *Test connection*.
+- **Vector store** — workspace picker plus the index state, with *Update
+  index* and *Rebuild index*.
+- **Parsers** — the fixed parser set for corpus files
+  (pdf · epub · docx · html · md).
+- **Chunker** — *Markdown* (heading- and paragraph-aware) or *Token* chunking,
+  chunk size (tokens) and overlap, plus a note about whether the index matches
+  the current chunker settings.
+- **Corpus** — workspace picker, the bibliography and corpus folder of the
+  Library pane, and the same index actions.
+
+### Workspace and corpus
+
+The RAG workspace is where Sciscraper keeps the vector store, sessions and the
+conventional library folder. By default it **follows the editor**: open a
+folder in the editor and the agent uses it. Choosing a folder in the Store or
+Corpus menu *pins* the workspace; *Follow the editor workspace* in the menu
+releases it. Recent folders are offered as one-click choices, and *New
+folder…* creates one on the spot.
+
+If you point ragrig-cli at the same workspace, both share one index: a corpus
+whose folder is the workspace itself is registered under the name `folder`,
+exactly as `ragrig-cli --folder` does.
+
+### Indexing the corpus
+
+Corpus files are the documents in the **corpus folder** (by default
+`<workspace>/.ragrig/library`, the folder that `ragrig-cli --bibtex-merge`
+populates with renamed PDFs).
+
+- **Update index** indexes new and changed files and drops removed ones.
+  It is the everyday action after adding a paper to the folder.
+- **Rebuild index** deletes the corpus from the store and indexes every file
+  again. Use it after changing the parser, chunker, chunk size or embedding
+  model — the menu warns (*"index built with … — rebuild to apply the current
+  settings"*) when the stored index no longer matches your settings.
+- Indexing requires retrieval to be enabled; the menu says so when it is off.
+- Progress and failures appear as notes in the transcript; a finished run
+  reports *"Index updated — N files indexed"* and the document count.
+
+The index is a *pipeline*: every stored chunk records which
+(parser, chunker, embedder) combination produced it. Changing any of them does
+not silently re-embed; the status shows *stale* until you rebuild.
+
+### Conversations
+
+Conversations are saved automatically under
+`<workspace>/.ragrig/sessions`, and the most recent one is restored when the
+agent pane opens (at startup, if the dock was left open). The row at the top
+of the Agent section shows the current conversation and offers:
+
+- a picker of saved conversations — each entry shows its number of turns,
+age, and (when available) a summary; **Refresh** inside the picker re-reads the
+list,
+- **New** to start a fresh conversation.
+
+With *Transcript* memory the restored conversation is passed to the model, so
+"what was I asking about yesterday?" keeps working across restarts.
+
+### Attaching papers to a question (`@Key`)
+
+Mention a citation key in the composer and the paper is attached to that
+question in full text, next to the retrieved chunks:
+
+```text
+Compare the sample size in @Kano2022 with @Smith2020.
+```
+
+- Keys resolve against the bibliography of the Library pane — exact spelling
+  first, then case-insensitively.
+- The PDF comes from the entry's `file` field, or — when that is missing or
+  stale — from a file named `Key - …` in the corpus folder.
+- Up to **3** documents are attached per question, capped at 60 000 characters
+  each (≈ 20 000 tokens).
+- Mentions are one-shot: every question naming a key attaches its paper again.
+- Misses (unknown key, no local file, unreadable document) are reported as a
+  **Could not attach** note in the transcript; they never fail the question.
+
+### Tuning retrieval
+
+| Parameter | Default | What it does |
+|---|---|---|
+| Top-k chunks | 300 | Maximum chunks injected into the prompt |
+| Similarity threshold | 0.03 | Cosine pre-filter — chunks below it are excluded from RRF fusion |
+
+The threshold operates on **cosine similarity** (0.0–1.0). The RRF scores you
+see in trace output are rank-based (0.0–0.03), *not* cosine scores — do not
+raise the threshold to "match the scores". A threshold of `0.0` passes
+everything; values above ~0.05 prune aggressively and suit high-quality
+embeddings with strictly semantic intent.
+
+### Hot-swapping
+
+Every component menu applies immediately and non-destructively: switching the
+chat provider, embedding model, memory strategy or chunker keeps the open
+conversation and the vector store. The model fields are plain text, so any
+model name your backend serves can be typed in.
+
+## Reference management
+
+### The Library pane
+
+The Library section lists the entries of your BibTeX file. Each row shows a
+meta line `Author · Year — Source` above the title, followed by the citation
+key on hover.
+
+- **Filter** — the box above the list fuzzy-filters by any of those fields;
+  the count line shows `shown of total`.
+- **Select** — click a row; **Ctrl+click** extends the selection; clicking the
+  only selected row clears it.
+- **Insert at the cursor** — the `+` button on a row, or a **double-click**.
+- **Context menu** (right-click):
+  - *Insert @key (inline)* — e.g. `@Kano2022`
+  - *Insert [@key] (APA)* — for a multi-selection this expands to
+    `[@Kano2022, @Smith2020]`
+  - *Copy citation key*
+- **Refresh** — the circular-arrow button re-reads the file. The list also
+  reloads automatically when the `.bib` file changes on disk.
+
+### Drag a source into the document
+
+Drag any row from the Library into the editor area: a highlighted drop zone
+shows where the citation will land, and the key is inserted at the caret (or
+over the current selection) as **one undo step** — `Ctrl+Z` restores the
+pre-citation text.
+
+- Dragging a single row inserts an inline citation: `@Kano2022`.
+- Selecting several rows (Ctrl+click) and dragging one of them inserts a
+  bracketed, APA-style citation of the whole selection in view order:
+  `[@Kano2022, @Smith2020, @Jones2019]`.
+
+In the document you can keep writing these forms by hand:
+
+```markdown
+Forced-choice paradigms are widely used [@Kano2022, @Smith2020].
+As @Hertel2018 shows, the effect interacts with task framing.
+```
+
+### Choosing the bibliography
+
+The Corpus component menu owns the bibliography and the corpus folder:
+
+- Without configuration, Sciscraper looks for the conventional
+  `<workspace>/.ragrig/library/library.bib`, then for a single `*.bib` in the
+  workspace root or its `library/` subfolder. The conventional layout is what
+  `ragrig-cli --bibtex-merge` writes.
+- Several candidates are **listed for you to pick** (in the menu and in the
+  Library pane) — never guessed.
+- *Choose bibliography…* selects any `.bib` file; *Reset to defaults* returns
+  to discovery.
+- A `.bib` that exists but cannot be parsed is reported in the Library pane
+  with the parser's error message.
+
+The corpus folder falls back to the bibliography's directory when the
+conventional folder does not exist — that is where `--bibtex-merge` workspaces
+keep their renamed PDFs.
+
+### Building the bibliography with GROBID
+
+Sciscraper reads `.bib` files; it does not (yet) create them. The companion
+tools do — and they share the same layout, so Sciscraper picks the result up
+without configuration. (Dropping a PDF or URL straight onto the Library to run
+this ingestion from inside the editor is planned as the `grobid` feature.)
+
+- **`ragrig-cli`** ([crates.io](https://crates.io/crates/ragrig-cli)) with the
+  `grobid` feature renames PDFs by their metadata and maintains the
+  bibliography:
+
+  ```bash
+  cargo install ragrig-cli --features grobid
+  ragrig-cli --folder ~/my-project \
+    --embed-rename \
+    --bibtex-merge ~/my-project/.ragrig/library/library.bib
+  ```
+
+  Run it in the same workspace as Sciscraper and both share the index and the
+  library. `--embed-rename` rewrites `paper_v2_final.pdf` to
+  `Key - Full authors - Full title - Year.pdf` before indexing;
+  `--bibtex-merge` appends every processed PDF to the `.bib` file with
+  duplicate detection (normalized field content, DOI/PMID/arXiv identifier, or
+  file name), collision-free keys (`Smith2020-2`) and a `file` field linking
+  the PDF. The file only grows: entries are never rewritten or pruned, and a
+  deleted `.bib` is rebuilt offline from the local metadata cache.
+- **`grobid-bibtex`** ([crates.io](https://crates.io/crates/grobid-bibtex))
+  provides the same machinery as standalone binaries: `pdf2bibtex` parses
+  whole documents, `refs2bibtex` collects the references inside a document.
+
+  ```bash
+  cargo install grobid-bibtex --features openalex
+  pdf2bibtex  ~/my-project/.ragrig/library -s http://localhost:8070 --openalex \
+    --merge ~/my-project/.ragrig/library/library.bib
+  refs2bibtex ~/my-project/.ragrig/library -s http://localhost:8070 --openalex \
+    --merge ~/my-project/.ragrig/library/library.bib
+  ```
+
+  `pdf2bibtex` writes one entry per PDF (its header), `refs2bibtex` one entry
+  per reference found inside the PDFs; `--merge` skips duplicates that are
+  already in the target file.
+
+#### GROBID prerequisites
+
+GROBID is a Java application; Docker is the easiest way to run it:
 
 ```bash
-# Download the .rpm file, then install with:
-sudo dnf install ./ferrite-editor.x86_64.rpm
+# CRF models (small, fast — usually a good default):
+docker run --rm --init --ulimit core=0 -p 8070:8070 grobid/grobid:0.9.1-crf
 
-# Or using rpm:
-sudo rpm -i ferrite-editor.x86_64.rpm
+# Deep-learning models (better header/reference parsing; GPU recommended):
+docker run --rm --init --ulimit core=0 -p 8070:8070 grobid/grobid:0.9.1-full
 ```
 
-Both .deb and .rpm packages will:
-- Install Ferrite to `/usr/bin/ferrite`
-- Add desktop entry (appears in your app menu)
-- Register file associations for `.md`, `.json`, `.yaml`, `.toml` files
-- Install icons for the system
-
-#### Arch Linux (AUR)
-
-[![Ferrite on AUR](https://img.shields.io/aur/version/ferrite?label=ferrite)](https://aur.archlinux.org/packages/ferrite/)
-[![Ferrite-bin on AUR](https://img.shields.io/aur/version/ferrite-bin?label=ferrite-bin)](https://aur.archlinux.org/packages/ferrite-bin/)
-
-Ferrite is available on the [AUR](https://wiki.archlinux.org/index.php/Arch_User_Repository):
-- [Ferrite](https://aur.archlinux.org/packages/ferrite/) (release package)
-- [Ferrite-bin](https://aur.archlinux.org/packages/ferrite-bin/) (binary package)
-
-```console
-# Release package
-yay -Sy ferrite
-
-# Binary package
-yay -Sy ferrite-bin
-```
-
-#### Nix / NixOS (official flake)
-
-```bash
-# Run Ferrite directly from GitHub (no install)
-nix run github:OlaProeis/Ferrite
-
-# Drop into a shell that exposes ferrite in PATH
-nix shell github:OlaProeis/Ferrite
-```
-
-From a local clone:
-
-```bash
-# Build package output
-nix build .#ferrite
-./result/bin/ferrite
-
-# Enter development shell (Rust toolchain + system deps)
-nix develop
-```
-
-#### Other Linux (tar.gz)
-
-```bash
-tar -xzf ferrite-linux-x64.tar.gz
-./ferrite
-```
-
-#### Known Issues
-
-**Keyboard not working on Ubuntu 24.04 LTS (GNOME/Wayland)**
-
-Keyboard input does not work when Ferrite is launched under GNOME on Wayland (Ubuntu 24.04 LTS and similar).
-As a workaround, launch Ferrite with `WAYLAND_DISPLAY` unset to force X11 mode:
-
-```bash
-env -u WAYLAND_DISPLAY ferrite
-```
-
-To make this permanent for your desktop launcher, create a user-level desktop entry override:
-
-```bash
-mkdir -p ~/.local/share/applications
-cp /usr/share/applications/ferrite-editor.desktop ~/.local/share/applications/ferrite-editor.desktop
-```
-
-Then edit `~/.local/share/applications/ferrite-editor.desktop` and change the `Exec` line to:
-
-```ini
-Exec=env -u WAYLAND_DISPLAY ferrite %F
-```
-
-</details>
-
-<details>
-<summary><strong>macOS Installation</strong></summary>
-
-#### DMG Installer (Recommended)
-
-Download the `.dmg` for your Mac:
-- **Apple Silicon** (M1/M2/M3/M4): `ferrite-macos-arm64.dmg`
-- **Intel**: `ferrite-macos-x64.dmg`
-
-Open the DMG and drag `Ferrite.app` to the **Applications** folder. Launch from Launchpad or Spotlight.
-
-#### From tar.gz (Alternative)
-
-```bash
-# Apple Silicon
-tar -xzf ferrite-macos-arm64.tar.gz
-cp -R Ferrite.app /Applications/
-
-# Intel
-tar -xzf ferrite-macos-x64.tar.gz
-cp -R Ferrite.app /Applications/
-```
-
-> **Gatekeeper (GitHub downloads):** Unsigned / non-notarized CI builds may be blocked on **macOS 15.x**. See **[docs/install/macos.md](docs/install/macos.md)** — quickest fix: `xattr -dr com.apple.quarantine /Applications/Ferrite.app` (adjust path). Tracked: [#130](https://github.com/OlaProeis/Ferrite/issues/130).
-
-</details>
-
-<details>
-<summary><strong>Build from Source</strong></summary>
-
-#### Prerequisites
-
-- **Rust 1.70+** - Install from [rustup.rs](https://rustup.rs/)
-- **Platform-specific dependencies:**
-
-**Nix users:** you can skip manual dependency installation and use `nix develop` from the repository root (see `flake.nix`).
-
-**Windows:**
-- Visual Studio Build Tools 2019+ with C++ workload
-
-**Linux:**
-
-```bash
-# Ubuntu/Debian
-sudo apt install build-essential pkg-config libgtk-3-dev libxcb-shape0-dev libxcb-xfixes0-dev
-
-# Fedora
-sudo dnf install gcc pkg-config gtk3-devel libxcb-devel
-
-# Arch
-sudo pacman -S base-devel pkg-config gtk3 libxcb
-```
-
-**macOS:**
-
-```bash
-xcode-select --install
-```
-
-#### Build
-
-```bash
-# Clone the repository
-git clone https://github.com/OlaProeis/Ferrite.git
-cd Ferrite
-
-# Build release version (optimized)
-cargo build --release
-
-# The binary will be at:
-# Windows: target/release/ferrite.exe
-# Linux/macOS: target/release/ferrite
-
-# macOS: Create .app bundle (optional)
-cargo install cargo-bundle
-cargo bundle --release
-# Bundle will be at: target/release/bundle/osx/Ferrite.app
-```
-
-> **macOS "Open With" Limitation:** The app bundle includes file type associations, so Ferrite appears in Finder's "Open With" menu. However, opening files this way (or by dragging files onto the app icon) is not yet supported due to [eframe/winit limitations](https://github.com/rust-windowing/winit/issues/1751). **Workaround:** Open files via Terminal: `open -a Ferrite path/to/file.md` or use File > Open within the app.
-
-> **Development Builds:** Building from the `main` branch gives you the latest features before they're officially released. These builds are untested and may contain bugs. For stable versions, download from [GitHub Releases](https://github.com/OlaProeis/Ferrite/releases).
-
-</details>
-
-## Usage
-
-```bash
-# Open a file
-ferrite path/to/file.md
-
-# Open a folder as workspace
-ferrite path/to/folder/
-```
-
-<details>
-<summary><strong>More CLI options</strong></summary>
-
-```bash
-# Run from source
-cargo run --release
-
-# Or run the binary directly
-./target/release/ferrite
-
-# Open multiple files as tabs
-./target/release/ferrite file1.md file2.md
-
-# Show version
-./target/release/ferrite --version
-
-# Show help
-./target/release/ferrite --help
-```
-
-See [docs/cli.md](docs/cli.md) for full CLI documentation.
-
-</details>
-
-### View Modes
-
-Ferrite supports three view modes for Markdown files:
-
-- **Raw** - Plain text editing with syntax highlighting
-- **Rendered** - WYSIWYG editing with rendered markdown
-- **Split** - Side-by-side raw editor and live preview
-
-Toggle between modes using the toolbar buttons or keyboard shortcuts.
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+N` | New file |
-| `Ctrl+O` | Open file |
-| `Ctrl+S` | Save file |
-| `Ctrl+W` | Close tab |
-| `Ctrl+P` | Quick file switcher |
-| `Ctrl+F` | Find |
-| `Ctrl+G` | Go to line |
-| `Ctrl+,` | Open settings |
-
-<details>
-<summary><strong>All Keyboard Shortcuts</strong></summary>
-
-### File Operations
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+N` | New file |
-| `Ctrl+O` | Open file |
-| `Ctrl+S` | Save file |
-| `Ctrl+Shift+S` | Save as |
-| `Ctrl+W` | Close tab |
-
-### Navigation
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+Tab` | Next tab |
-| `Ctrl+Shift+Tab` | Previous tab |
-| `Ctrl+P` | Quick file switcher (workspace) |
-| `Ctrl+Shift+F` | Search in files (workspace) |
-
-### Editing
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+Z` | Undo |
-| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
-| `Ctrl+F` | Find |
-| `Ctrl+H` | Find and replace |
-| `Ctrl+G` | Go to line |
-| `Ctrl+Shift+D` | Duplicate line |
-| `Alt+↑` | Move line up |
-| `Alt+↓` | Move line down |
-| `Ctrl+B` | Bold |
-| `Ctrl+I` | Italic |
-| `Ctrl+K` | Insert link |
-
-### View
-
-| Shortcut | Action |
-|----------|--------|
-| `F11` | Toggle fullscreen |
-| `Ctrl+,` | Open settings |
-| `Ctrl+Shift+[` | Fold all |
-| `Ctrl+Shift+]` | Unfold all |
-
-### Terminal Workspace
-
-Terminal shortcuts are **context-aware**; they work when the terminal panel is focused.
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Cycle through terminal tabs |
-| `Ctrl+1-9` | Switch to specific terminal tab |
-| `Ctrl+Arrow Keys` | Move focus between split panes |
-| `Ctrl+Shift+M` | Toggle **Maximize Pane** (Zoom) |
-| `Ctrl+L` | Clear terminal screen |
-| `Ctrl+Shift+C` | Copy selection / screen |
-| `Ctrl+Shift+V` | Paste to terminal |
-| `Ctrl+W` / `Ctrl+F4` | Close focused pane (auto-collapses splits) |
-| `Double-click Tab` | Rename terminal |
-
-</details>
-
-## Configuration
-
-Access settings via `Ctrl+,` or the gear icon. Configure appearance, editor behavior, and file handling.
-
-<details>
-<summary><strong>Configuration details</strong></summary>
-
-Settings are stored in platform-specific locations:
-
-- **Windows:** `%APPDATA%\ferrite\`
-- **Windows Portable:** `portable\` folder next to `ferrite.exe`
-- **Linux:** `~/.config/ferrite/`
-- **macOS:** `~/Library/Application Support/ferrite/`
-
-**Portable Mode (Windows):** If a `portable` folder exists next to the executable, Ferrite automatically uses it for all configuration instead of `%APPDATA%`. This makes Ferrite fully self-contained - perfect for USB drives.
-
-Workspace settings are stored in `.ferrite/` within the workspace folder.
-
-### Settings Panel
-
-- **Appearance:** Theme, font family, font size, default view mode
-- **Editor:** Word wrap, line numbers, minimap, bracket matching, code folding, syntax highlighting, auto-close brackets, line width
-- **Files:** Auto-save, recent files history
-
-</details>
-
-## Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for planned features and known issues.
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Help Translate
-
-Ferrite is being translated into multiple languages with help from the community.
-
-[![Translation Status](https://hosted.weblate.org/widget/ferrite/ferrite-ui/multi-auto.svg)](https://hosted.weblate.org/engage/ferrite/)
-
-**[Help translate Ferrite on Weblate](https://hosted.weblate.org/engage/ferrite/)** - no coding required!
-
-<details>
-<summary><strong>Quick Start for Contributors</strong></summary>
-
-```bash
-# Fork and clone
-git clone https://github.com/YOUR_USERNAME/Ferrite.git
-cd Ferrite
-
-# Create a feature branch
-git checkout -b feature/your-feature
-
-# Make changes, then verify
-cargo fmt
-cargo clippy
-cargo test
-cargo build
-
-# Optional (Nix users): validate flake outputs
-nix flake check
-
-# Commit and push
-git commit -m "feat: your feature description"
-git push origin feature/your-feature
-```
-
-</details>
-
-## Tech Stack
-
-Built with Rust 1.70+, egui/eframe for GUI, comrak for Markdown parsing, ropey for rope-based text editing, and syntect for syntax highlighting.
-
-<details>
-<summary><strong>Full tech stack</strong></summary>
-
-| Component | Technology |
-|-----------|------------|
-| Language | Rust 1.70+ |
-| GUI Framework | egui 0.28 + eframe 0.28 |
-| Text Buffer | ropey 1.6 (rope data structure) |
-| Markdown Parser | comrak 0.22 |
-| Syntax Highlighting | syntect 5.1 + two-face 0.5 |
-| Git Integration | git2 0.19 |
-| Terminal PTY | portable-pty 0.8 |
-| Terminal ANSI Parser | vte 0.13 |
-| Encoding Detection | encoding_rs 0.8 + chardetng 0.1 |
-| Internationalization | rust-i18n 3 + sys-locale 0.3 |
-| CLI Parsing | clap 4 |
-| File Dialogs | rfd 0.14 |
-| Clipboard | arboard 3 |
-| File Watching | notify 6 |
-| Fuzzy Matching | fuzzy-matcher 0.3 |
-| HTTP Client | ureq 2 (update checker) |
-| Hashing | blake3 1.5 (Mermaid caching) |
-| Date/Time | chrono 0.4 |
-| CSV Parsing | csv 1.3 |
-| Color Palette | palette 0.7 |
-| Font Enumeration | font-kit 0.14 |
-| Allocator (Windows) | mimalloc 0.1 |
-| Allocator (Unix) | tikv-jemallocator 0.6 |
-
-</details>
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-### Libraries
-- [egui](https://github.com/emilk/egui) and eframe - Immediate mode GUI and native window integration
-- [ropey](https://github.com/cessen/ropey) - Rope text buffer for large-file editing
-- [comrak](https://github.com/kivikakk/comrak) - CommonMark + GFM compatible Markdown parser
-- [syntect](https://github.com/trishume/syntect) and [two-face](https://github.com/CosmicHorrorDev/two-face) - Syntax highlighting and extra language definitions
-- [harfrust](https://github.com/harfbuzz/harfrust) - OpenType text shaping for complex scripts
-- [git2](https://github.com/rust-lang/git2-rs) - libgit2 bindings for Rust
-- [portable-pty](https://github.com/wez/wezterm) and [vte](https://github.com/alacritty/vte) - Integrated terminal (PTY and ANSI parsing)
-- [image](https://github.com/image-rs/image) - Raster image decoding (markdown preview and image viewer)
-- [hayro](https://github.com/LaurenzV/hayro) - Pure Rust PDF rasterization (PDF viewer tabs)
-- [rust-i18n](https://github.com/longbridge/rust-i18n) - Internationalization
-- [Inter](https://rsms.me/inter/) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) fonts
-
-### Development Tools
-- [Claude](https://anthropic.com) (Anthropic) - AI assistant that wrote the code
-- [Cursor](https://cursor.com) - AI-powered code editor
-- [Task Master](https://github.com/eyaltoledano/claude-task-master) - AI task management for development workflows
-
-### Contributors
-- [@Star-sumi](https://github.com/Star-sumi) — Windows single-instance foreground activation when opening files from Explorer ([PR #148](https://github.com/OlaProeis/Ferrite/pull/148), fixes [#147](https://github.com/OlaProeis/Ferrite/issues/147))
-- [@moabtools](https://github.com/moabtools) — Ctrl+Home / Ctrl+End document navigation in Rendered view ([PR #137](https://github.com/OlaProeis/Ferrite/pull/137))
-- [@liuxiaopai-ai](https://github.com/liuxiaopai-ai) — Nix/NixOS flake support for reproducible builds and dev shells ([PR #92](https://github.com/OlaProeis/Ferrite/pull/92))
-- [@blizzard007dev](https://github.com/blizzard007dev) — Welcome page for first-launch configuration ([PR #80](https://github.com/OlaProeis/Ferrite/pull/80))
-- [@wolverin0](https://github.com/wolverin0) — Integrated Terminal Workspace & Productivity Hub ([PR #74](https://github.com/OlaProeis/Ferrite/pull/74))
-- [@abcd-ca](https://github.com/abcd-ca) — Delete Line, Move Line, macOS file associations ([PR #29](https://github.com/OlaProeis/Ferrite/pull/29), [#30](https://github.com/OlaProeis/Ferrite/pull/30))
-- [@SteelCrab](https://github.com/SteelCrab) — CJK character rendering ([PR #8](https://github.com/OlaProeis/Ferrite/pull/8))
-
-## Sponsors
-
-<table>
-  <tr>
-    <td>
-      <a href="https://signpath.io/?utm_source=foundation&utm_medium=github&utm_campaign=ferrite" target="_blank"><img src="https://signpath.org/assets/favicon-50x50.png" alt="SignPath" width="50" height="50" /></a>
-    </td>
-    <td>
-      Free code signing on Windows provided by <a href="https://signpath.io/?utm_source=foundation&utm_medium=github&utm_campaign=ferrite">SignPath.io</a>, certificate by <a href="https://signpath.org/?utm_source=foundation&utm_medium=github&utm_campaign=ferrite">SignPath Foundation</a>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <a href="https://weblate.org/" target="_blank"><img src="https://weblate.org/static/img/logo.svg" alt="Weblate" width="50" height="50" /></a>
-    </td>
-    <td>
-      Hosted translations provided by <a href="https://weblate.org/">Weblate</a> on <a href="https://hosted.weblate.org/">Hosted Weblate</a> (gratis libre project plan)
-    </td>
-  </tr>
-</table>
-
----
-
-<sub>If you find Ferrite useful, consider [supporting its development](https://github.com/sponsors/OlaProeis).</sub>
+- The CRF-only image runs in roughly 4 GB; the `-full` image is several GB
+  larger and benefits from a GPU.
+- The first `/api/isalive` can take tens of seconds while the models preload:
+  `curl http://localhost:8070/api/isalive` returns `true` once ready.
+- OpenAlex completion (optional) looks references up on `api.openalex.org` —
+  no API key, and lookup failures are non-fatal.
+- The server URL and concurrency are configurable: `ragrig-cli` takes
+  `--grobid-url` (default `http://localhost:8070`) and `--grobid-workers`
+  (default 4); the grobid-bibtex binaries take the server with `-s`/`--server`
+  and the worker count with `-w` (default 4).
+- `ragrig-cli` fingerprints processed PDFs in `.ragrig_grobid.json` in the
+  corpus folder, so re-runs only contact the server for new or changed files.
+- Failures degrade gracefully on both paths: unparseable documents are
+  reported and skipped (and, with ragrig-cli, kept in the index under their
+  original name); only an unreachable GROBID server aborts a run.
+
+## Troubleshooting
+
+### Ollama is unreachable
+
+Start from the component bar: open **Chat** or **Embeddings** and press
+*Test connection*. If the dot stays red, work through:
+
+1. **Ollama isn't running** — `ollama serve` (on macOS/Windows, launching the
+   Ollama app also starts the server).
+2. **Non-default port** — Sciscraper connects to `localhost:11434`. If you run
+   Ollama elsewhere, export `OLLAMA_HOST` before starting Sciscraper, e.g.
+   `export OLLAMA_HOST=127.0.0.1:11435`.
+3. **Interrupted model pull** — re-pull, or remove and pull fresh:
+   `ollama rm nomic-embed-text && ollama pull nomic-embed-text`.
+4. **Firewall/port conflict** — check that 11434 is listening
+   (`lsof -i :11434`, or `netstat -ano | findstr :11434` on Windows).
+5. **WSL → Windows networking** — when Ollama runs on Windows and Sciscraper
+   inside WSL, `localhost` does not forward; set `OLLAMA_HOST` to the Windows
+   host IP, or install Ollama inside WSL.
+
+### "Embedding model nomic-embed-text not found"
+
+You most likely run an older Ollama that requires the full model name. Use
+`nomic-embed-text:latest` in the Embeddings menu (that is the default), or
+update Ollama.
+
+### DeepSeek answers fail with a missing key
+
+Sciscraper reads the key from the `DEEPSEEK_API_KEY` environment variable
+(a key you typed into the settings file is respected, but the app never writes
+one there). Export it in the environment you launch Sciscraper from, or switch
+the Chat provider to Ollama.
+
+### Empty answers, or answers from general knowledge instead of the corpus
+
+Usually a context-window problem. Ollama caps the context at 4096 tokens on
+GPUs with less than ~24 GB VRAM, and some distilled reasoning models have a
+hard 4096-token maximum. In *Auto* mode Sciscraper detects the overflow,
+shrinks the prompt, and reports
+*"Context window auto-adjusted to N tokens — ask again."* If that still fails:
+lower the context window in the Chat menu, use a cloud model, or free VRAM.
+
+### The index seems out of date after changing settings
+
+That is what the stale warning means: the stored index was built with
+different parser/chunker/embedding settings. Open the Corpus or Vector store
+menu and press **Rebuild index**.
+
+### "Could not attach: @Key — no bibliography at …"
+
+The `@Key` attachment needs the Library pane's bibliography. Open the Corpus
+menu and pick the `.bib` (or the *Choose bibliography…* button in the Library
+pane) — the error message lists the bibliographies that were found.
+
+## Where Sciscraper keeps its state
+
+- **Editor settings, session, recovery:** `~/.config/ferrite/` (Linux). The
+  directory name is inherited from Ferrite and deliberately kept, so your
+  existing settings and sessions survive the rename; the binary is
+  `sciscraper`.
+- **Per workspace (RAG):** `<workspace>/.ragrig_store` (vector store),
+  `<workspace>/.ragrig/sessions/` (conversations),
+  `<workspace>/.ragrig/library/` (conventional corpus folder +
+  `library.bib`), plus `.ragrig_grobid.json` when the GROBID tools ran.
+
+Point `ragrig-cli` at the same workspace and both share the vector store, the
+sessions and the library.
+
+## Credits and license
+
+Sciscraper is MIT-licensed, like the projects it builds on:
+
+- [Ferrite](https://github.com/OlaProeis/Ferrite) by OlaProeis — the editor.
+- [`ragrig`](https://github.com/schmettow/ragrig) and
+  [`ragrig-cli`](https://github.com/schmettow/ragrig-cli) — the RAG framework
+  and terminal front end.
+- [`grobid-bibtex`](https://github.com/schmettow/grobid-bibtex) — BibTeX
+  extraction from GROBID metadata.
+- [`egui_chat`](https://crates.io/crates/egui_chat) — the chat and agent-bar
+  widgets.

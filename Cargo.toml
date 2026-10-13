@@ -1,9 +1,9 @@
 [package]
-name = "ferrite"
+name = "sciscraper"
 version = "0.3.0"
 edition = "2021"
 rust-version = "1.92"
-description = "A fast, lightweight text editor for Markdown, JSON, and more"
+description = "A scientific Markdown editor with integrated reference management and RAG writing assistance"
 repository = "https://github.com/OlaProeis/Ferrite"
 license = "MIT"
 authors = ["OlaProeis"]
@@ -184,12 +184,12 @@ opt-level = 2         # Optimize dependencies in dev builds
 # Build with: cargo deb
 # ============================================================================
 [package.metadata.deb]
-name = "ferrite-editor"
+name = "sciscraper"
 maintainer = "OlaProeis <olaproeis@users.noreply.github.com>"
 copyright = "2024-2026, OlaProeis"
 license-file = ["LICENSE", "0"]
-extended-description = """Ferrite is a fast, lightweight text editor built with Rust and egui.
-Features include:
+extended-description = """Sciscraper is a scientific Markdown editor with integrated reference
+management and RAG writing assistance. It builds on the Ferrite editor:
 - Markdown editing with live preview
 - Split view (raw + rendered side-by-side)
 - JSON/YAML/TOML tree viewer
@@ -197,26 +197,28 @@ Features include:
 - Git integration with file status indicators
 - Syntax highlighting for code blocks
 - Zen mode for distraction-free writing
-- Session persistence and auto-save"""
+- Session persistence and auto-save
+- Agent pane with ragrig RAG chat (Cargo feature `rag`)
+- Library pane for BibTeX references with drag-to-cite"""
 section = "editors"
 priority = "optional"
 depends = "$auto"
 assets = [
     # Binary
-    ["target/release/ferrite", "usr/bin/ferrite", "755"],
+    ["target/release/sciscraper", "usr/bin/sciscraper", "755"],
     # Desktop entry
-    ["assets/icons/linux/ferrite.desktop", "usr/share/applications/ferrite.desktop", "644"],
+    ["assets/icons/linux/sciscraper.desktop", "usr/share/applications/sciscraper.desktop", "644"],
     # Icons at various sizes
-    ["assets/icons/icon_16.png", "usr/share/icons/hicolor/16x16/apps/ferrite.png", "644"],
-    ["assets/icons/icon_32.png", "usr/share/icons/hicolor/32x32/apps/ferrite.png", "644"],
-    ["assets/icons/icon_48.png", "usr/share/icons/hicolor/48x48/apps/ferrite.png", "644"],
-    ["assets/icons/icon_64.png", "usr/share/icons/hicolor/64x64/apps/ferrite.png", "644"],
-    ["assets/icons/icon_128.png", "usr/share/icons/hicolor/128x128/apps/ferrite.png", "644"],
-    ["assets/icons/icon_256.png", "usr/share/icons/hicolor/256x256/apps/ferrite.png", "644"],
-    ["assets/icons/icon_512.png", "usr/share/icons/hicolor/512x512/apps/ferrite.png", "644"],
+    ["assets/icons/icon_16.png", "usr/share/icons/hicolor/16x16/apps/sciscraper.png", "644"],
+    ["assets/icons/icon_32.png", "usr/share/icons/hicolor/32x32/apps/sciscraper.png", "644"],
+    ["assets/icons/icon_48.png", "usr/share/icons/hicolor/48x48/apps/sciscraper.png", "644"],
+    ["assets/icons/icon_64.png", "usr/share/icons/hicolor/64x64/apps/sciscraper.png", "644"],
+    ["assets/icons/icon_128.png", "usr/share/icons/hicolor/128x128/apps/sciscraper.png", "644"],
+    ["assets/icons/icon_256.png", "usr/share/icons/hicolor/256x256/apps/sciscraper.png", "644"],
+    ["assets/icons/icon_512.png", "usr/share/icons/hicolor/512x512/apps/sciscraper.png", "644"],
     # Documentation
-    ["README.md", "usr/share/doc/ferrite-editor/README.md", "644"],
-    ["LICENSE", "usr/share/doc/ferrite-editor/LICENSE", "644"],
+    ["README.md", "usr/share/doc/sciscraper/README.md", "644"],
+    ["LICENSE", "usr/share/doc/sciscraper/LICENSE", "644"],
 ]
 
 # ============================================================================
@@ -224,26 +226,26 @@ assets = [
 # Build with: cargo generate-rpm
 # ============================================================================
 [package.metadata.generate-rpm]
-name = "ferrite-editor"
+name = "sciscraper"
 license = "MIT"
-summary = "A fast, lightweight text editor for Markdown, JSON, and more"
+summary = "A scientific Markdown editor with reference management and RAG assistance"
 url = "https://github.com/OlaProeis/Ferrite"
 assets = [
     # Binary
-    { source = "target/release/ferrite", dest = "/usr/bin/ferrite", mode = "755" },
+    { source = "target/release/sciscraper", dest = "/usr/bin/sciscraper", mode = "755" },
     # Desktop entry
-    { source = "assets/icons/linux/ferrite.desktop", dest = "/usr/share/applications/ferrite.desktop", mode = "644" },
+    { source = "assets/icons/linux/sciscraper.desktop", dest = "/usr/share/applications/sciscraper.desktop", mode = "644" },
     # Icons at various sizes
-    { source = "assets/icons/icon_16.png", dest = "/usr/share/icons/hicolor/16x16/apps/ferrite.png", mode = "644" },
-    { source = "assets/icons/icon_32.png", dest = "/usr/share/icons/hicolor/32x32/apps/ferrite.png", mode = "644" },
-    { source = "assets/icons/icon_48.png", dest = "/usr/share/icons/hicolor/48x48/apps/ferrite.png", mode = "644" },
-    { source = "assets/icons/icon_64.png", dest = "/usr/share/icons/hicolor/64x64/apps/ferrite.png", mode = "644" },
-    { source = "assets/icons/icon_128.png", dest = "/usr/share/icons/hicolor/128x128/apps/ferrite.png", mode = "644" },
-    { source = "assets/icons/icon_256.png", dest = "/usr/share/icons/hicolor/256x256/apps/ferrite.png", mode = "644" },
-    { source = "assets/icons/icon_512.png", dest = "/usr/share/icons/hicolor/512x512/apps/ferrite.png", mode = "644" },
+    { source = "assets/icons/icon_16.png", dest = "/usr/share/icons/hicolor/16x16/apps/sciscraper.png", mode = "644" },
+    { source = "assets/icons/icon_32.png", dest = "/usr/share/icons/hicolor/32x32/apps/sciscraper.png", mode = "644" },
+    { source = "assets/icons/icon_48.png", dest = "/usr/share/icons/hicolor/48x48/apps/sciscraper.png", mode = "644" },
+    { source = "assets/icons/icon_64.png", dest = "/usr/share/icons/hicolor/64x64/apps/sciscraper.png", mode = "644" },
+    { source = "assets/icons/icon_128.png", dest = "/usr/share/icons/hicolor/128x128/apps/sciscraper.png", mode = "644" },
+    { source = "assets/icons/icon_256.png", dest = "/usr/share/icons/hicolor/256x256/apps/sciscraper.png", mode = "644" },
+    { source = "assets/icons/icon_512.png", dest = "/usr/share/icons/hicolor/512x512/apps/sciscraper.png", mode = "644" },
     # Documentation
-    { source = "README.md", dest = "/usr/share/doc/ferrite-editor/README.md", mode = "644", doc = true },
-    { source = "LICENSE", dest = "/usr/share/doc/ferrite-editor/LICENSE", mode = "644", doc = true },
+    { source = "README.md", dest = "/usr/share/doc/sciscraper/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/sciscraper/LICENSE", mode = "644", doc = true },
 ]
 
 # ============================================================================
@@ -251,7 +253,7 @@ assets = [
 # Build with: cargo wix
 # ============================================================================
 [package.metadata.wix]
-name = "Ferrite"
+name = "Sciscraper"
 manufacturer = "OlaProeis"
 product-icon = "assets/icons/windows/app.ico"
 license = false
@@ -262,12 +264,13 @@ eula = false
 # Build with: cargo bundle --release
 # ============================================================================
 [package.metadata.bundle]
-name = "Ferrite"
-identifier = "com.olaproeis.ferrite"
-icon = ["assets/icons/macos/Ferrite.icns"]
-short_description = "A fast, lightweight text editor"
-long_description = """Ferrite is a fast, lightweight text editor built with Rust and egui.
-Features include Markdown editing with live preview, JSON/YAML/TOML tree viewer,
-Git integration, and syntax highlighting."""
+name = "Sciscraper"
+identifier = "com.olaproeis.sciscraper"
+icon = ["assets/icons/macos/Sciscraper.icns"]
+short_description = "A scientific Markdown editor with RAG assistance"
+long_description = """Sciscraper is a scientific Markdown editor with integrated reference
+management and RAG writing assistance, built with Rust and egui on the Ferrite
+editor. Features include Markdown editing with live preview, JSON/YAML/TOML tree
+viewer, Git integration, syntax highlighting, and an agent pane for RAG chat."""
 category = "public.app-category.developer-tools"
 osx_info_plist_exts = ["assets/macos/info_plist_ext.xml"]

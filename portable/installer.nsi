@@ -64,8 +64,8 @@ Section "Install"
     SetOutPath "$INSTDIR\App\AppInfo\Launcher"
     File "FerriteMDPortable\App\AppInfo\Launcher\FerriteMDPortable.ini"
 
-    SetOutPath "$INSTDIR\App\Ferrite"
-    File "FerriteMDPortable\App\Ferrite\ferrite.exe"
+    SetOutPath "$INSTDIR\App\Sciscraper"
+    File "FerriteMDPortable\App\Sciscraper\sciscraper.exe"
 
     SetOutPath "$INSTDIR\App\DefaultData\settings"
 

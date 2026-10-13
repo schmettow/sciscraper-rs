@@ -768,10 +768,10 @@ impl FerriteApp {
 
     /// Get the window title based on current state.
     ///
-    /// Returns a title in the format: "Filename - Ferrite"
-    /// or "Ferrite" if no file is open.
+    /// Returns a title in the format: "Filename - Sciscraper"
+    /// or "Sciscraper" if no file is open.
     fn window_title(&self) -> String {
-        const APP_NAME: &str = "Ferrite";
+        const APP_NAME: &str = "Sciscraper";
 
         if let Some(tab) = self.state.active_tab() {
             let tab_title = tab.title();

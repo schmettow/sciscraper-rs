@@ -1,5 +1,5 @@
 {
-  description = "Ferrite - a fast, lightweight text editor";
+  description = "Sciscraper - a scientific Markdown editor with RAG assistance";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -44,8 +44,8 @@
             QuartzCore
           ];
 
-          ferrite = pkgs.rustPlatform.buildRustPackage {
-            pname = "ferrite";
+          sciscraper = pkgs.rustPlatform.buildRustPackage {
+            pname = "sciscraper";
             version = cargoToml.package.version;
 
             src = ./.;
@@ -60,23 +60,23 @@
             doCheck = false;
 
             meta = with lib; {
-              description = "A fast, lightweight text editor for Markdown, JSON, and more";
+              description = "A scientific Markdown editor with integrated reference management and RAG assistance";
               homepage = "https://github.com/OlaProeis/Ferrite";
               license = licenses.mit;
-              mainProgram = "ferrite";
+              mainProgram = "sciscraper";
               platforms = platforms.linux ++ platforms.darwin;
             };
           };
         in
         {
           packages = {
-            default = ferrite;
-            ferrite = ferrite;
+            default = sciscraper;
+            sciscraper = sciscraper;
           };
 
           apps.default = {
             type = "app";
-            program = "${ferrite}/bin/ferrite";
+            program = "${sciscraper}/bin/sciscraper";
           };
 
           devShells.default = pkgs.mkShell {
@@ -92,12 +92,12 @@
             ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin darwinFrameworks;
 
             shellHook = ''
-              echo "Ferrite Nix dev shell ready."
+              echo "Sciscraper Nix dev shell ready."
               echo "Run cargo commands normally, e.g. cargo build --release"
             '';
           };
 
-          checks.default = ferrite;
+          checks.default = sciscraper;
         }
       );
 }
