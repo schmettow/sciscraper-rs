@@ -104,8 +104,11 @@ pub enum Reachability {
     Unknown,
     /// A probe is running.
     Probing,
-    /// The backend answered.
+    /// The backend answered and is ready to use.
     Reachable,
+    /// The server answered, but reports it is not ready yet: GROBID's
+    /// `/api/isalive` stays `false` while its models preload.
+    Booting,
     /// The backend did not answer (or rejected the credentials).
     Unreachable,
 }
@@ -586,7 +589,8 @@ fn parser_status(input: StatusInput<'_>) -> ComponentStatus {
     )
 }
 
-/// GROBID status: active when the server answers its liveness endpoint.
+/// GROBID status: active when the server reports readiness, booting while its
+/// models preload.
 ///
 /// A `rag`-only build has no ingestion at all, so the component is inactive
 /// and says why; a configured-but-silent server is an error (the menu offers
@@ -612,6 +616,11 @@ fn grobid_status(input: StatusInput<'_>) -> ComponentStatus {
             RagComponent::Grobid,
             ComponentState::Busy,
             format!("checking {url}…"),
+        ),
+        Reachability::Booting => ComponentStatus::new(
+            RagComponent::Grobid,
+            ComponentState::Busy,
+            format!("{url} · up, models still loading — retry in a moment"),
         ),
         Reachability::Unreachable => ComponentStatus::new(
             RagComponent::Grobid,
@@ -1019,6 +1028,24 @@ mod tests {
         assert_eq!(
             status.component(RagComponent::Grobid).unwrap().state,
             ComponentState::Busy
+        );
+
+        // A server that answers `false` (models still loading) is busy, not
+        // an error: it *is* running, just not ready.
+        let booting = ProbeResults {
+            grobid: Reachability::Booting,
+            ..ProbeResults::default()
+        };
+        let status = RagStatus::derive(StatusInput {
+            probes: booting,
+            ..input(&settings, Some(&workspace))
+        });
+        let grobid = status.component(RagComponent::Grobid).unwrap();
+        assert_eq!(grobid.state, ComponentState::Busy);
+        assert!(
+            grobid.detail.contains("models still loading"),
+            "{}",
+            grobid.detail
         );
 
         let reachable = ProbeResults {

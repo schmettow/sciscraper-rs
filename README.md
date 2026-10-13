@@ -138,8 +138,12 @@ a status dot:
 |---|---|
 | grey | inactive — not configured, switched off, or no workspace |
 | green | ready — configured and reachable |
-| pulsing blue | busy — an index update or probe is running |
+| pulsing blue | busy — an index update or probe is running, or a backend is still starting up |
 | red | error — hover the icon for the detail line |
+
+Opening a component menu re-checks the backends, so a server started *after*
+Sciscraper corrects itself as soon as you look at its icon; adding a document
+re-checks too (the ingest just proved the parser is up).
 
 Clicking an icon slides up a menu with that component's current settings and
 actions:
@@ -165,8 +169,10 @@ In the **library bar**:
 
 - **GROBID** — the parsing server for added PDFs: state, URL (default
   `http://localhost:8070`) and *Test connection*, which calls the server's
-  `/api/isalive`. Grey *not in this build* means the binary was compiled
-  without the `grobid` feature.
+  `/api/isalive`. The endpoint marks readiness in its *body*: `true` once every
+  model is loaded, `false` while the container is still preloading — the
+  latter shows as *up, models still loading*, not as an error. Grey *not in
+  this build* means the binary was compiled without the `grobid` feature.
 - **Parsers** — the fixed parser set for corpus files
   (pdf · epub · docx · html · md).
 - **Chunker** — *Markdown* (heading- and paragraph-aware) or *Token* chunking,
@@ -522,6 +528,19 @@ menu and press **Rebuild index**.
 The `@Key` attachment needs the Library pane's bibliography. Open the Corpus
 menu and pick the `.bib` (or the *Choose bibliography…* button in the Library
 pane) — the error message lists the bibliographies that were found.
+
+### The GROBID control says *not reachable*, but the server runs
+
+Check the order of events: the state dot is only as fresh as the last probe,
+and while a cold container preloads its models nothing answers `/api/isalive`
+yet (that window lasts tens of seconds). Opening the GROBID menu re-checks the
+server, as does *Test connection* — one of them flips the dot green. If the
+detail line says *up, models still loading*, the server answers but is not
+ready; wait a moment and re-check.
+
+If it never turns green, the URL is wrong (default `http://localhost:8070` —
+inside a container network the host is `host.docker.internal`, not
+`localhost`) or the server listens on another machine.
 
 ### A drop says the GROBID server is not ready
 

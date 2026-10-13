@@ -49,6 +49,7 @@ egui_chat/                       side project (own repo, own releases)
 sciscraper-rs  (feature `rag`, off by default)
   src/rag/mod.rs                 RagSettings (embeds RagrigConfig), defaults, workspace
   src/rag/status.rs              pure component status model (unit-testable)
+  src/rag/probe.rs               backend reachability probes (ollama, deepseek, grobid)
   src/rag/worker.rs              background worker: AgentSession, commands/events
   src/rag/ingest.rs              GROBID pre-pass re-orchestration + URL download
                                  (feature `grobid`)
@@ -447,6 +448,37 @@ the Library pane, and for a GROBID control showing Active/Inactive with a URL fi
 Verification: 1619 tests pass with the 3 pre-existing failures (`--features rag,grobid`); the
 `rag`-only build compiles and its tests pass (45 in the touched modules); the feature-less
 build compiles; rustfmt clean; clippy reports nothing new in the touched files.
+
+### ✅ Sprint 5.4 — probe freshness and readiness semantics (bug fix)
+
+Triggered by a user report: after *Add PDFs…* had succeeded (so GROBID demonstrably answered),
+the GROBID control still showed *not reachable*.
+
+- **Evidence.** The same request from the shell (`curl -i http://localhost:8070/api/isalive`)
+  answered `200 OK` / `true`, and a temporary test against the *live* server showed
+  `probe::probe_grobid` returning `Reachable` — so the probe code was correct and the displayed
+  state was **stale**: the pass that produced it ran while the container was not yet up (or
+  still booting), and nothing probed again. `RagCommand::Probe` was only sent on panel
+  creation, on re-opening the pane, and by the two *Test connection* buttons.
+- **Freshness.** A menu opening now requests a probe (the moment the user actually looks at
+  the state), and so does the end of an ingestion — success *and* failure — because the
+  pipeline just talked to GROBID. The worker coalesces requests with a `probing` latch, so
+  repeated opens cannot stack probe tasks or flap the dots.
+- **Honesty (latent lie, found while investigating).** `/api/isalive` marks readiness in the
+  *body*: `true` once every model is loaded, `false` while preloading (the `grobid` crate's
+  `ping()` reads it exactly that way, and its `wait_until_ready` retries on `false`). Our
+  probe only looked at the status code, so a *booting* server — which answers `200 false` —
+  was reported as **active**. `HttpOutcome::Success` now carries the body, and `Reachability`
+  gained `Booting`: `200` + `true` → *active*, `200` + anything else → *up, models still
+  loading* (pulsing, not an error), non-`200`/no answer → *not reachable*. The earlier
+  assumption that a booting GROBID answers `503` was wrong and is corrected in the module
+  docs.
+- Pinned by `grobid_reads_readiness_from_the_body`, `a_ready_grobid_server_is_reachable`,
+  `a_grobid_server_still_loading_is_booting` (mock servers answering `true`/`false`), and the
+  `Booting` branch of `grobid_reports_the_url_and_the_probe`.
+
+Verification: 1620 tests pass with the 3 pre-existing failures (`rag,grobid`); the `rag`-only
+build passes; the temporary live-server check was removed after confirming the diagnosis.
 
 ## 5. Baseline health (found during Sprint 1)
 

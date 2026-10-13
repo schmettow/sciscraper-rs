@@ -357,6 +357,8 @@ struct Shared {
     busy: AtomicBool,
     syncing: AtomicBool,
     ingesting: AtomicBool,
+    /// A probe pass is in flight (coalesces repeated probe requests).
+    probing: AtomicBool,
     probes: Mutex<ProbeResults>,
     sync_progress: Mutex<Option<SyncProgress>>,
     ingest_progress: Mutex<Option<IngestProgress>>,
@@ -630,10 +632,16 @@ async fn worker_main(
                 }
             }
             RagCommand::Probe => {
-                let context = state.query_context();
-                mark_probing(&context);
-                emit_status(&context, &events);
-                tokio::spawn(run_probe(context, events.clone()));
+                // Coalesce: while a probe is in flight its answer is the
+                // freshest available, so a second pass would only stack
+                // requests and flap the status dots (menus re-probe on every
+                // open). The latch is released when the pass reports.
+                if !state.shared.probing.swap(true, Ordering::SeqCst) {
+                    let context = state.query_context();
+                    mark_probing(&context);
+                    emit_status(&context, &events);
+                    tokio::spawn(run_probe(context, events.clone()));
+                }
             }
             RagCommand::Cancel => {
                 if let Some(token) = lock(&state.shared.cancel).as_ref() {
@@ -735,6 +743,10 @@ async fn run_probe(context: QueryContext, events: Sender<RagEvent>) {
             probes.grobid = grobid;
         }
     }
+    // Release the latch before the status goes out: a probe requested after
+    // this point starts a fresh pass (one requested *during* the pass was
+    // coalesced into it — its answer arrived right here).
+    context.shared.probing.store(false, Ordering::SeqCst);
     emit_status(&context, &events);
 }
 

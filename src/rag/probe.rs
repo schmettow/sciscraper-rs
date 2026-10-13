@@ -11,10 +11,12 @@
 //! - **DeepSeek** — `GET https://api.deepseek.com/models` with a bearer
 //!   token (the endpoint rig's own client tests use). `401`/`403` mean the
 //!   key was rejected; any other HTTP answer means the API is reachable.
-//! - **GROBID** — `GET {url}/api/isalive` (feature `grobid`), which answers
-//!   `true` once the models are loaded. Unlike the other two, a non-success
-//!   answer counts as unreachable: a booting GROBID answers `503`, and
-//!   something else on the port is not a GROBID server.
+//! - **GROBID** — `GET {url}/api/isalive` (feature `grobid`). The endpoint
+//!   answers `true` once every model is loaded and `false` before that, so the
+//!   *body* decides: a `200` that is not `true` is a server that is up but
+//!   still booting — the normal state for the first tens of seconds after the
+//!   container starts. The `grobid` crate's `ping()` reads the endpoint the
+//!   same way, and the ingest pipeline retries while it is `false`.
 //!
 //! Probes are blocking calls (the editor's `ureq` client) with short
 //! timeouts; the worker runs them on a blocking thread. The classification
@@ -59,20 +61,21 @@ pub fn probe_deepseek(api_key: &str) -> Reachability {
 
 /// Probe a GROBID server's liveness endpoint (feature `grobid`).
 ///
-/// Uses `GET {base}/api/isalive`, the same endpoint the ingest pipeline waits
-/// for — but with a single short timeout, because a status dot must not stall
-/// the worker while a cold container preloads (the pipeline retries for tens
-/// of seconds on its own).
+/// Uses `GET {base}/api/isalive`, the same endpoint and semantics as the
+/// ingest pipeline (`grobid` crate's `GrobidClient::ping`) — but with a single
+/// short timeout, because a status dot must not stall the worker while a cold
+/// container preloads (the pipeline retries for tens of seconds on its own).
 pub fn probe_grobid(base_url: &str) -> Reachability {
     let url = format!("{}/api/isalive", base_url.trim_end_matches('/'));
     classify_grobid(http_get(&url, None))
 }
 
 /// Raw outcome of one HTTP GET, split out so classification is pure.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum HttpOutcome {
-    /// The server answered with a success status.
-    Success,
+    /// The server answered with a success status; the body is kept because
+    /// GROBID's liveness endpoint marks readiness in the body, not the status.
+    Success(String),
     /// The server answered with this status code.
     Status(u16),
     /// No HTTP answer at all (connection refused, timeout, TLS, DNS).
@@ -86,7 +89,15 @@ fn http_get(url: &str, bearer: Option<&str>) -> HttpOutcome {
         request = request.set("Authorization", &format!("Bearer {token}"));
     }
     match request.call() {
-        Ok(_) => HttpOutcome::Success,
+        Ok(response) => match response.into_string() {
+            Ok(body) => HttpOutcome::Success(body),
+            Err(err) => {
+                // A success *status* already proves something answers; only
+                // the body-reading classifiers lose their signal here.
+                log::debug!("probe: unreadable body from {url}: {err}");
+                HttpOutcome::Success(String::new())
+            }
+        },
         // Any HTTP answer proves the endpoint is reachable.
         Err(ureq::Error::Status(code, _)) => HttpOutcome::Status(code),
         Err(ureq::Error::Transport(_)) => HttpOutcome::Transport,
@@ -96,7 +107,7 @@ fn http_get(url: &str, bearer: Option<&str>) -> HttpOutcome {
 /// An HTTP answer from Ollama — even an error status — proves it is up.
 fn classify_ollama(outcome: HttpOutcome) -> Reachability {
     match outcome {
-        HttpOutcome::Success | HttpOutcome::Status(_) => Reachability::Reachable,
+        HttpOutcome::Success(_) | HttpOutcome::Status(_) => Reachability::Reachable,
         HttpOutcome::Transport => Reachability::Unreachable,
     }
 }
@@ -105,19 +116,24 @@ fn classify_ollama(outcome: HttpOutcome) -> Reachability {
 /// answers (including `429`, `5xx`) means the API itself is reachable.
 fn classify_deepseek(outcome: HttpOutcome) -> Reachability {
     match outcome {
-        HttpOutcome::Success => Reachability::Reachable,
+        HttpOutcome::Success(_) => Reachability::Reachable,
         HttpOutcome::Status(401 | 403) => Reachability::Unreachable,
         HttpOutcome::Status(_) => Reachability::Reachable,
         HttpOutcome::Transport => Reachability::Unreachable,
     }
 }
 
-/// Only a successful `/api/isalive` proves a GROBID server is ready: the
-/// models load for tens of seconds after the port opens, and an error status
-/// means the endpoint is not (yet) GROBID.
+/// GROBID reports readiness in the body: `/api/isalive` answers `true` once
+/// every model is loaded and `false` while it preloads.
+///
+/// So a `200` with any other body is *booting* — the server answers, but an
+/// ingest would still be refused (the pipeline retries until `true`). A
+/// non-success status proves something answers on that port, but not a ready
+/// GROBID; no answer at all means nothing is listening.
 fn classify_grobid(outcome: HttpOutcome) -> Reachability {
     match outcome {
-        HttpOutcome::Success => Reachability::Reachable,
+        HttpOutcome::Success(body) if body.trim() == "true" => Reachability::Reachable,
+        HttpOutcome::Success(_) => Reachability::Booting,
         HttpOutcome::Status(_) | HttpOutcome::Transport => Reachability::Unreachable,
     }
 }
@@ -129,7 +145,7 @@ mod tests {
     #[test]
     fn ollama_serves_reachability_on_any_http_answer() {
         assert_eq!(
-            classify_ollama(HttpOutcome::Success),
+            classify_ollama(HttpOutcome::Success(String::new())),
             Reachability::Reachable
         );
         assert_eq!(
@@ -145,7 +161,7 @@ mod tests {
     #[test]
     fn deepseek_distinguishes_rejection_from_transport() {
         assert_eq!(
-            classify_deepseek(HttpOutcome::Success),
+            classify_deepseek(HttpOutcome::Success(String::new())),
             Reachability::Reachable
         );
         assert_eq!(
@@ -187,15 +203,25 @@ mod tests {
     }
 
     #[test]
-    fn grobid_needs_a_successful_liveness_answer() {
+    fn grobid_reads_readiness_from_the_body() {
         assert_eq!(
-            classify_grobid(HttpOutcome::Success),
+            classify_grobid(HttpOutcome::Success("true".into())),
             Reachability::Reachable
+        );
+        assert_eq!(
+            classify_grobid(HttpOutcome::Success("false\n".into())),
+            Reachability::Booting,
+            "models still loading — the server answers, an ingest would not"
+        );
+        assert_eq!(
+            classify_grobid(HttpOutcome::Success(String::new())),
+            Reachability::Booting,
+            "an empty body is not a readiness claim"
         );
         assert_eq!(
             classify_grobid(HttpOutcome::Status(503)),
             Reachability::Unreachable,
-            "a booting GROBID answers 503 until its models are loaded"
+            "an error status is not an isalive answer"
         );
         assert_eq!(
             classify_grobid(HttpOutcome::Status(404)),
@@ -209,9 +235,16 @@ mod tests {
     }
 
     #[test]
-    fn a_live_grobid_server_is_reachable() {
-        let (base, handle) = one_shot_server();
+    fn a_ready_grobid_server_is_reachable() {
+        let (base, handle) = one_shot_server("true");
         assert_eq!(probe_grobid(&base), Reachability::Reachable);
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn a_grobid_server_still_loading_is_booting() {
+        let (base, handle) = one_shot_server("false");
+        assert_eq!(probe_grobid(&base), Reachability::Booting);
         let _ = handle.join();
     }
 
@@ -223,8 +256,8 @@ mod tests {
         );
     }
 
-    /// Serve exactly one HTTP 200 answer, then stop.
-    fn one_shot_server() -> (String, std::thread::JoinHandle<()>) {
+    /// Serve exactly one HTTP 200 answer with `body`, then stop.
+    fn one_shot_server(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {
@@ -233,7 +266,11 @@ mod tests {
                 let mut buffer = [0u8; 1024];
                 let _ = stream.read(&mut buffer);
                 let _ = stream.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
                 );
             }
         });
@@ -242,7 +279,7 @@ mod tests {
 
     #[test]
     fn a_listening_server_is_reachable() {
-        let (base, handle) = one_shot_server();
+        let (base, handle) = one_shot_server("{}");
         assert_eq!(probe_ollama(&base), Reachability::Reachable);
         let _ = handle.join();
     }

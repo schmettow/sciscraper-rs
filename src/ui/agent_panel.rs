@@ -251,8 +251,15 @@ impl AgentPanel {
                             .layout(egui::Layout::bottom_up(egui::Align::Min)),
                     );
                     let components = bar_components(LIBRARY_BAR_COMPONENTS, self.status.as_ref());
-                    AgentBar::new(&components, &mut self.open_menu)
+                    let bar = AgentBar::new(&components, &mut self.open_menu)
                         .show(&mut footer_ui, |ui, id| component_menu(ui, id, &mut menu));
+                    if bar.toggled.is_some() && self.open_menu.is_some() {
+                        // The dots are only as fresh as the last probe, and a server
+                        // started after the app would otherwise keep a stale
+                        // "not reachable" until the next ingest. Opening a menu is
+                        // exactly when the user looks at the state.
+                        commands.borrow_mut().push(RagCommand::Probe);
+                    }
 
                     let list_bottom = (footer_ui.min_rect().top() - ui.spacing().item_spacing.y)
                         .max(top + MIN_LIBRARY_HEIGHT);
@@ -318,8 +325,11 @@ impl AgentPanel {
                     .layout(egui::Layout::bottom_up(egui::Align::Min)),
             );
             let components = bar_components(AGENT_BAR_COMPONENTS, self.status.as_ref());
-            AgentBar::new(&components, &mut self.open_menu)
+            let bar = AgentBar::new(&components, &mut self.open_menu)
                 .show(&mut footer_ui, |ui, id| component_menu(ui, id, &mut menu));
+            if bar.toggled.is_some() && self.open_menu.is_some() {
+                commands.borrow_mut().push(RagCommand::Probe);
+            }
             let composer = Composer::new(&mut self.input)
                 .busy(working)
                 .placeholder(&t!("agent.placeholder"))
@@ -635,6 +645,10 @@ impl AgentPanel {
                 self.ingesting = false;
                 let messages = ingest_messages(&outcome, indexed, nothing_new);
                 self.replace_ingest_note(messages);
+                // The pipeline just talked to GROBID, so the server is up:
+                // refresh the dots instead of leaving a stale "not reachable"
+                // behind a completed add.
+                self.worker.send(RagCommand::Probe);
             }
             #[cfg(feature = "grobid")]
             RagEvent::IngestCancelled => {
@@ -652,6 +666,9 @@ impl AgentPanel {
                     state: MessageState::Error,
                     meta: None,
                 }]);
+                // Tell connectivity failures apart from bad documents: the
+                // probe re-checks the server the pipeline could not use.
+                self.worker.send(RagCommand::Probe);
             }
             RagEvent::SessionFailed { message } => {
                 self.transcript.push(ChatMessage {
