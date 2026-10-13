@@ -480,6 +480,35 @@ the GROBID control still showed *not reachable*.
 Verification: 1620 tests pass with the 3 pre-existing failures (`rag,grobid`); the `rag`-only
 build passes; the temporary live-server check was removed after confirming the diagnosis.
 
+### ✅ Sprint 5.5 — automatic re-check cadence (decision)
+
+Decision (user): "the status bar should be automatic, if not real-time" — 2 s while a backend
+is down or starting up, 30 s after a successful pass.
+
+- **Cadence.** `probe_cadence(ProbeResults) -> Option<(Duration, ProbeScope)>` (pure, in
+  `status.rs`): every backend unknown → `None` (nothing configured, no timer, no wake-ups);
+  Ollama or GROBID `Unreachable` / `Booting` / `Probing` → 2 s and `ProbeScope::Local`;
+  otherwise 30 s and `ProbeScope::All`. `RagStatus` carries the `ProbeResults` it was derived
+  from, so the panel schedules from the same facts the bar renders.
+- **Scope.** `RagCommand::Probe { scope }`: `Local` skips the remote DeepSeek call, so the
+  fast retry cannot become two-second polling of an external service (its dot keeps the last
+  full pass' answer; `mark_probing` leaves it alone as well, so it does not flicker
+  "checking…" either). Explicit checks — panel start, menu opening, *Test connection*,
+  enabling retrieval, a finished ingestion, the pane toggle — are always `All`.
+- **Wiring.** `AgentPanel::poll` calls `poll_probes`: when the check is due it sends the probe
+  (restarting the cadence), then schedules the next wake-up with `ctx.request_repaint_after` —
+  an idle egui app runs no frames on its own, so a timer without that call would never be
+  observed. The worker's `probing` latch keeps 2 s re-requests from stacking while a pass is in
+  flight (worst case a pass with three 5 s timeouts).
+- Pinned by `the_recheck_cadence_follows_the_backend_states` (decision table incl. the
+  remote-only case), `the_panel_keeps_its_own_probe_cadence` (retry vs. heartbeat vs. no
+  timer, scope, and the restart after an explicit probe) and
+  `a_local_probe_leaves_the_remote_backend_alone` (`mark_probing`) — all hermetic, no backend
+  is contacted.
+
+Verification: 1623 tests pass with the 3 pre-existing failures (`rag,grobid`), 1605 with
+`rag` only; the feature-less build compiles; rustfmt and clippy clean in the touched files.
+
 ## 5. Baseline health (found during Sprint 1)
 
 - **The fork's test suite does not compile at HEAD** (43 errors in 5 files:

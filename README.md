@@ -141,9 +141,15 @@ a status dot:
 | pulsing blue | busy — an index update or probe is running, or a backend is still starting up |
 | red | error — hover the icon for the detail line |
 
-Opening a component menu re-checks the backends, so a server started *after*
-Sciscraper corrects itself as soon as you look at its icon; adding a document
-re-checks too (the ingest just proved the parser is up).
+Opening a component menu re-checks the backends immediately, so you never
+have to press *Test connection* just to see the current state. Beyond that the
+bar is **automatic**: while Ollama or GROBID is down, starting up or being
+checked, the local backends are re-checked every **2 seconds** (start a
+container and the icon turns green on its own, usually within a second of
+`isalive` answering `true`); once everything answers, a **30-second heartbeat**
+checks every backend, the remote DeepSeek API included. While a local backend
+is being retried the remote API is deliberately left alone — the fast cadence
+is for local servers, not for two-second polling of an external service.
 
 Clicking an icon slides up a menu with that component's current settings and
 actions:
@@ -531,16 +537,17 @@ pane) — the error message lists the bibliographies that were found.
 
 ### The GROBID control says *not reachable*, but the server runs
 
-Check the order of events: the state dot is only as fresh as the last probe,
-and while a cold container preloads its models nothing answers `/api/isalive`
-yet (that window lasts tens of seconds). Opening the GROBID menu re-checks the
-server, as does *Test connection* — one of them flips the dot green. If the
-detail line says *up, models still loading*, the server answers but is not
-ready; wait a moment and re-check.
+It should correct itself within two seconds now: while a backend is red the bar
+re-checks it every 2 s, so starting the container is enough — no restart, no
+menu. While a cold container preloads its models it answers `false` on
+`/api/isalive`; the control then reads *up, models still loading* (pulsing)
+rather than *not reachable*.
 
-If it never turns green, the URL is wrong (default `http://localhost:8070` —
-inside a container network the host is `host.docker.internal`, not
-`localhost`) or the server listens on another machine.
+If it stays red after a few seconds, nothing is listening at the configured
+address: check the URL (default `http://localhost:8070`; from inside a
+container network the host is `host.docker.internal`, not `localhost`) and that
+the port is published (`docker ps`). *Test connection* re-checks on demand and
+reports the same state.
 
 ### A drop says the GROBID server is not ready
 

@@ -29,10 +29,16 @@
 //! worker, which applies it to the live session in place (the conversation
 //! survives). The bar renders one status snapshot per component, so every
 //! action the menus offer has a visible state.
+//!
+//! The bar is automatic: the panel re-checks the backends on a cadence driven
+//! by the last result — every two seconds while something is down, booting or
+//! being checked, and a thirty-second heartbeat once everything answers (see
+//! [`probe_interval`]). Menu opens and finished ingestions probe immediately
+//! as well, so no state depends on the user pressing a button.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui_chat::agent_bar::{AgentBar, AgentBarStyle, Component, ComponentStatus as BarStatus};
 use egui_chat::chat_view::{ChatMessage, ChatRole, ChatView, MessageMeta, MessageState};
@@ -43,10 +49,11 @@ use ragrig::types::Provider;
 use ragrig::MemoryStrategyKind;
 use rust_i18n::t;
 
+use crate::rag::status::ProbeScope;
 use crate::rag::ComponentState;
 use crate::rag::{
-    ChunkerKind, CitePayload, LibrarySettings, RagCommand, RagComponent, RagEvent, RagFactories,
-    RagSettings, RagStatus, RagrigWorker, SessionInfo, SyncMode, TurnInfo,
+    probe_cadence, ChunkerKind, CitePayload, LibrarySettings, RagCommand, RagComponent, RagEvent,
+    RagFactories, RagSettings, RagStatus, RagrigWorker, SessionInfo, SyncMode, TurnInfo,
 };
 #[cfg(feature = "grobid")]
 use crate::rag::{IngestOutcome, IngestSource};
@@ -89,6 +96,8 @@ pub struct AgentPanel {
     #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
     ingest_note: Option<usize>,
     last_workspace: Option<PathBuf>,
+    /// When the last probe pass was requested (drives the automatic cadence).
+    last_probe: Instant,
     sessions: Vec<SessionInfo>,
     session: Option<String>,
 }
@@ -105,7 +114,9 @@ impl AgentPanel {
         worker.send(RagCommand::RestoreLatest);
         // Read the bibliography and probe the backends for the first frame.
         worker.send(RagCommand::LoadLibrary);
-        worker.send(RagCommand::Probe);
+        worker.send(RagCommand::Probe {
+            scope: ProbeScope::All,
+        });
         Self {
             transcript: Vec::new(),
             input: String::new(),
@@ -120,6 +131,7 @@ impl AgentPanel {
             ingesting: false,
             ingest_note: None,
             last_workspace: editor_workspace,
+            last_probe: Instant::now(),
             sessions: Vec::new(),
             session: None,
         }
@@ -138,6 +150,7 @@ impl AgentPanel {
             self.worker.send(command);
             got_event = true;
         }
+        self.poll_probes(ctx);
         if self.busy || self.syncing || self.ingesting {
             // Keep polling the channel while a query streams, an index run or
             // an ingestion progresses.
@@ -147,12 +160,42 @@ impl AgentPanel {
         }
     }
 
+    /// Re-check the backends on the automatic cadence and wake the UI for the
+    /// next check (an idle egui app runs no frames by itself, so a timer that
+    /// is not followed by [`egui::Context::request_repaint_after`] would never
+    /// be observed).
+    fn poll_probes(&mut self, ctx: &egui::Context) {
+        if let Some((due_in, scope)) = self.next_probe_check() {
+            if due_in.is_zero() {
+                self.request_probe(scope);
+            }
+            // After a pass the cadence restarts, so recompute before waking up.
+            if let Some((due_in, _)) = self.next_probe_check() {
+                ctx.request_repaint_after(due_in);
+            }
+        }
+    }
+
+    /// The next automatic check: time until it is due and what it covers;
+    /// `None` when there is nothing to watch at all (no snapshot yet, or no
+    /// backend configured).
+    fn next_probe_check(&self) -> Option<(Duration, ProbeScope)> {
+        let (interval, scope) = probe_cadence(self.status.as_ref()?.probes)?;
+        Some((interval.saturating_sub(self.last_probe.elapsed()), scope))
+    }
+
+    /// Ask the worker to re-check the backends and restart the cadence.
+    fn request_probe(&mut self, scope: ProbeScope) {
+        self.last_probe = Instant::now();
+        self.worker.send(RagCommand::Probe { scope });
+    }
+
     /// Ask the worker for a fresh status snapshot and a backend probe, and
     /// re-read the bibliography (e.g. after re-opening the dock).
-    pub fn refresh_status(&self) {
+    pub fn refresh_status(&mut self) {
         self.worker.send(RagCommand::Ping);
-        self.worker.send(RagCommand::Probe);
         self.worker.send(RagCommand::LoadLibrary);
+        self.request_probe(ProbeScope::All);
     }
 
     /// Render the dock.
@@ -257,8 +300,13 @@ impl AgentPanel {
                         // The dots are only as fresh as the last probe, and a server
                         // started after the app would otherwise keep a stale
                         // "not reachable" until the next ingest. Opening a menu is
-                        // exactly when the user looks at the state.
-                        commands.borrow_mut().push(RagCommand::Probe);
+                        // exactly when the user looks at the state. The cadence is
+                        // restarted here as well; the command itself is deferred to
+                        // the end of the frame.
+                        self.last_probe = Instant::now();
+                        commands.borrow_mut().push(RagCommand::Probe {
+                            scope: ProbeScope::All,
+                        });
                     }
 
                     let list_bottom = (footer_ui.min_rect().top() - ui.spacing().item_spacing.y)
@@ -328,7 +376,10 @@ impl AgentPanel {
             let bar = AgentBar::new(&components, &mut self.open_menu)
                 .show(&mut footer_ui, |ui, id| component_menu(ui, id, &mut menu));
             if bar.toggled.is_some() && self.open_menu.is_some() {
-                commands.borrow_mut().push(RagCommand::Probe);
+                self.last_probe = Instant::now();
+                commands.borrow_mut().push(RagCommand::Probe {
+                    scope: ProbeScope::All,
+                });
             }
             let composer = Composer::new(&mut self.input)
                 .busy(working)
@@ -648,7 +699,7 @@ impl AgentPanel {
                 // The pipeline just talked to GROBID, so the server is up:
                 // refresh the dots instead of leaving a stale "not reachable"
                 // behind a completed add.
-                self.worker.send(RagCommand::Probe);
+                self.request_probe(ProbeScope::All);
             }
             #[cfg(feature = "grobid")]
             RagEvent::IngestCancelled => {
@@ -668,7 +719,7 @@ impl AgentPanel {
                 }]);
                 // Tell connectivity failures apart from bad documents: the
                 // probe re-checks the server the pipeline could not use.
-                self.worker.send(RagCommand::Probe);
+                self.request_probe(ProbeScope::All);
             }
             RagEvent::SessionFailed { message } => {
                 self.transcript.push(ChatMessage {
@@ -1165,7 +1216,9 @@ fn probe_button(ui: &mut egui::Ui, ctx: &mut MenuContext<'_>) {
         .on_hover_text(t!("agent.menu.test_connection_hint"))
         .clicked()
     {
-        ctx.commands.borrow_mut().push(RagCommand::Probe);
+        ctx.commands.borrow_mut().push(RagCommand::Probe {
+            scope: ProbeScope::All,
+        });
     }
 }
 
@@ -1255,7 +1308,9 @@ fn embed_menu(
         dirty.set(true);
         if enabled {
             // Give immediate feedback on whether the backend answers.
-            commands.borrow_mut().push(RagCommand::Probe);
+            commands.borrow_mut().push(RagCommand::Probe {
+                scope: ProbeScope::All,
+            });
         }
     }
     ui.add_enabled_ui(settings.embeddings_enabled, |ui| {
@@ -1602,6 +1657,7 @@ fn memory_strategy_label(strategy: &MemoryStrategyKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rag::status::{ProbeResults, Reachability};
 
     #[test]
     fn the_two_bars_cover_every_component_exactly_once() {
@@ -1844,6 +1900,85 @@ mod tests {
         let _ = ctx.run_ui(input, |ui| {
             panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
         });
+    }
+
+    #[test]
+    fn the_panel_keeps_its_own_probe_cadence() {
+        // The bar is automatic: with a watched backend the panel schedules
+        // its next check by itself, and with nothing configured it does not
+        // schedule anything (no wake-ups for a backend that does not exist).
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = RagSettings::default();
+        settings.ragrig.workspace = dir.path().to_path_buf();
+        let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
+
+        // No snapshot yet: nothing to watch.
+        assert_eq!(panel.next_probe_check(), None);
+
+        // A GROBID that is down is followed on the fast retry cadence…
+        panel.status = Some(status_with_probes(ProbeResults {
+            grobid: Reachability::Unreachable,
+            ..ProbeResults::default()
+        }));
+        let (due_in, scope) = panel.next_probe_check().expect("a watched backend");
+        assert!(
+            due_in <= Duration::from_secs(2),
+            "the retry is due within 2 s: {due_in:?}"
+        );
+        assert_eq!(
+            scope,
+            ProbeScope::Local,
+            "the fast retry leaves the remote API alone"
+        );
+
+        // …and the healthy set only gets the heartbeat.
+        panel.status = Some(status_with_probes(ProbeResults {
+            grobid: Reachability::Reachable,
+            ..ProbeResults::default()
+        }));
+        let (due_in, scope) = panel.next_probe_check().expect("a watched backend");
+        assert!(
+            due_in <= Duration::from_secs(30) && due_in > Duration::from_secs(20),
+            "the heartbeat is 30 s away: {due_in:?}"
+        );
+        assert_eq!(scope, ProbeScope::All);
+
+        // Requesting a probe restarts the cadence from zero.
+        panel.status = Some(status_with_probes(ProbeResults {
+            grobid: Reachability::Unreachable,
+            ..ProbeResults::default()
+        }));
+        panel.request_probe(ProbeScope::Local);
+        let (restarted, _) = panel.next_probe_check().expect("a watched backend");
+        assert!(
+            restarted > Duration::from_secs(1),
+            "the cadence restarted: {restarted:?}"
+        );
+
+        // Nothing configured: no cadence, so no wake-up call is scheduled.
+        panel.status = Some(status_with_probes(ProbeResults::default()));
+        assert_eq!(panel.next_probe_check(), None);
+        panel.poll(&ctx);
+    }
+
+    /// A status snapshot carrying exactly `probes` (other fields are empty).
+    fn status_with_probes(probes: ProbeResults) -> RagStatus {
+        let settings = RagSettings::default();
+        RagStatus::derive(crate::rag::StatusInput {
+            settings: &settings,
+            workspace: None,
+            initialized: false,
+            activity: None,
+            documents: None,
+            chunks: None,
+            init_error: None,
+            bibliography: None,
+            probes,
+            sync: None,
+            ingest: None,
+            index: None,
+        })
     }
 
     #[test]

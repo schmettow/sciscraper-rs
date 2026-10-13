@@ -38,7 +38,7 @@ use ragrig::{
 use super::ingest::{self, IngestOptions, IngestOutcome, IngestSource, IngestTargets};
 use super::probe;
 use super::status::{
-    ActivityKind, IndexInfo, IngestProgress, ProbeResults, Reachability, SyncProgress,
+    ActivityKind, IndexInfo, IngestProgress, ProbeResults, ProbeScope, Reachability, SyncProgress,
 };
 use super::{cite, library, RagSettings, RagStatus, StatusInput};
 use crate::rag::LibraryState;
@@ -115,7 +115,10 @@ pub enum RagCommand {
         sources: Vec<IngestSource>,
     },
     /// Probe the configured backends for reachability.
-    Probe,
+    Probe {
+        /// Which backends to cover (see [`ProbeScope`]).
+        scope: ProbeScope,
+    },
     /// Cancel the running query or ingestion.
     Cancel,
     /// Refresh the saved-session list.
@@ -631,16 +634,16 @@ async fn worker_main(
                     tokio::spawn(run_ingest(state.query_context(), sources, events.clone()));
                 }
             }
-            RagCommand::Probe => {
+            RagCommand::Probe { scope } => {
                 // Coalesce: while a probe is in flight its answer is the
                 // freshest available, so a second pass would only stack
                 // requests and flap the status dots (menus re-probe on every
                 // open). The latch is released when the pass reports.
                 if !state.shared.probing.swap(true, Ordering::SeqCst) {
                     let context = state.query_context();
-                    mark_probing(&context);
+                    mark_probing(&context, scope);
                     emit_status(&context, &events);
-                    tokio::spawn(run_probe(context, events.clone()));
+                    tokio::spawn(run_probe(context, events.clone(), scope));
                 }
             }
             RagCommand::Cancel => {
@@ -666,14 +669,14 @@ fn busy_message() -> String {
 }
 
 /// Mark the backends that are about to be probed.
-fn mark_probing(context: &QueryContext) {
+fn mark_probing(context: &QueryContext, scope: ProbeScope) {
     let mut probes = lock(&context.shared.probes);
     let ollama_used = context.settings.ragrig.chat.provider == Provider::Ollama
         || context.settings.embeddings_enabled;
     if ollama_used {
         probes.ollama = Reachability::Probing;
     }
-    if context.settings.resolve_deepseek_api_key().is_some() {
+    if scope == ProbeScope::All && context.settings.resolve_deepseek_api_key().is_some() {
         probes.deepseek = Reachability::Probing;
     }
     if cfg!(feature = "grobid") {
@@ -711,11 +714,16 @@ fn spawn_library_load(context: QueryContext, events: Sender<RagEvent>) {
 }
 
 /// Probe the configured backends off the executor thread.
-async fn run_probe(context: QueryContext, events: Sender<RagEvent>) {
+async fn run_probe(context: QueryContext, events: Sender<RagEvent>, scope: ProbeScope) {
     let base_url = probe::ollama_base_url();
     let ollama_used = context.settings.ragrig.chat.provider == Provider::Ollama
         || context.settings.embeddings_enabled;
-    let api_key = context.settings.resolve_deepseek_api_key();
+    // A local pass leaves the remote API untouched: its dot keeps the state of
+    // the last full pass instead of being re-checked every two seconds.
+    let api_key = match scope {
+        ProbeScope::All => context.settings.resolve_deepseek_api_key(),
+        ProbeScope::Local => None,
+    };
     let grobid_url = context.settings.grobid.url.clone();
     let probed = tokio::task::spawn_blocking(move || {
         let ollama = ollama_used.then(|| probe::probe_ollama(&base_url));
@@ -1661,6 +1669,42 @@ mod tests {
         RagFactories {
             chat: Arc::new(|_| Ok(Box::new(MutexGenerator::new(EchoGen)) as Box<dyn Generator>)),
             embed: Arc::new(|_| Ok(Box::new(TinyEmbedder) as Box<dyn Embedder>)),
+        }
+    }
+
+    #[test]
+    fn a_local_probe_leaves_the_remote_backend_alone() {
+        // Sprint 5.5: the 2 s retry cadence checks local backends only; the
+        // DeepSeek dots must keep the answer of the last full pass instead of
+        // being re-checked (and re-marked "checking…") every two seconds.
+        let mut settings = RagSettings::default();
+        settings.ragrig.chat.deepseek_api_key = Some("test-key".into());
+        let shared = Arc::new(Shared::default());
+        let context = QueryContext {
+            settings,
+            editor_workspace: None,
+            factories: tiny_factories(),
+            shared: Arc::clone(&shared),
+        };
+
+        mark_probing(&context, ProbeScope::All);
+        assert_eq!(lock(&shared.probes).deepseek, Reachability::Probing);
+
+        // A full pass answered: settle every backend, then probe locally.
+        *lock(&shared.probes) = ProbeResults {
+            ollama: Reachability::Reachable,
+            deepseek: Reachability::Reachable,
+            grobid: Reachability::Reachable,
+        };
+        mark_probing(&context, ProbeScope::Local);
+        let probes = *lock(&shared.probes);
+        assert_eq!(
+            probes.deepseek,
+            Reachability::Reachable,
+            "a local pass must not touch the remote backend"
+        );
+        if cfg!(feature = "grobid") {
+            assert_eq!(probes.grobid, Reachability::Probing, "GROBID is local");
         }
     }
 

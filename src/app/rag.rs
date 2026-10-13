@@ -54,7 +54,7 @@ impl FerriteApp {
         self.state.mark_settings_dirty();
         if enabled {
             self.ensure_agent_panel();
-            if let Some(panel) = &self.agent_panel {
+            if let Some(panel) = &mut self.agent_panel {
                 panel.refresh_status();
             }
         }

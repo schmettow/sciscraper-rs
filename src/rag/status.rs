@@ -7,6 +7,7 @@
 //! the derivation unit-testable without a UI.
 
 use std::path::Path;
+use std::time::Duration;
 
 use ragrig::types::{MemoryStrategyKind, Provider};
 
@@ -318,6 +319,10 @@ pub struct RagStatus {
     pub index: Option<IndexInfo>,
     /// Whether a GROBID ingestion run is in progress (feature `grobid`).
     pub ingesting: bool,
+    /// The reachability facts this snapshot was derived from. The panel reads
+    /// them to schedule its automatic re-checks (a backend that is down or
+    /// booting is followed closely, a healthy set only gets a heartbeat).
+    pub probes: ProbeResults,
 }
 
 /// Runtime facts fed into [`RagStatus::derive`].
@@ -380,6 +385,7 @@ impl RagStatus {
             chunks: input.chunks,
             index: input.index.cloned(),
             ingesting: input.ingest.is_some(),
+            probes: input.probes,
         }
     }
 
@@ -638,6 +644,57 @@ fn grobid_status(input: StatusInput<'_>) -> ComponentStatus {
             format!("{url} · not checked yet — use Test connection"),
         ),
     }
+}
+
+/// Re-check cadence while a backend is down, booting, or being checked: fast
+/// enough to follow a container start without hammering anything.
+const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Re-check cadence once every backend answers — a heartbeat that keeps the
+/// dots honest about servers that were stopped later on.
+const PROBE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Which backends one probe pass covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeScope {
+    /// Every configured backend — the explicit checks (panel start, a
+    /// finished ingestion, a menu opening, *Test connection*).
+    All,
+    /// Only the backends a local action can change: Ollama and GROBID. The
+    /// remote DeepSeek API is left out so that the fast retry cadence cannot
+    /// become two-second polling of an external service.
+    Local,
+}
+
+/// Interval and coverage of the next automatic backend check.
+///
+/// The status bar is automatic but not real-time (decision):
+///
+/// - a **local** backend that is down, booting or mid-check is followed every
+///   [`PROBE_RETRY_INTERVAL`], and only the local backends are re-checked —
+///   that is how a container start shows up on its own;
+/// - otherwise every configured backend is checked on the
+///   [`PROBE_HEARTBEAT_INTERVAL`], which also keeps the remote DeepSeek dot
+///   honest;
+/// - `None` means there is nothing to watch at all: every backend is unknown
+///   because none is configured (no key, retrieval off, `grobid` not in this
+///   build), so the host schedules no wake-ups.
+#[must_use]
+pub fn probe_cadence(probes: ProbeResults) -> Option<(Duration, ProbeScope)> {
+    let states = [probes.ollama, probes.deepseek, probes.grobid];
+    if states.iter().all(|state| *state == Reachability::Unknown) {
+        return None;
+    }
+    let waiting = |state: Reachability| {
+        matches!(
+            state,
+            Reachability::Probing | Reachability::Booting | Reachability::Unreachable
+        )
+    };
+    if waiting(probes.ollama) || waiting(probes.grobid) {
+        return Some((PROBE_RETRY_INTERVAL, ProbeScope::Local));
+    }
+    Some((PROBE_HEARTBEAT_INTERVAL, ProbeScope::All))
 }
 
 #[cfg(test)]
@@ -990,6 +1047,80 @@ mod tests {
             };
             assert_eq!(progress.detail(), expected);
         }
+    }
+
+    #[test]
+    fn the_recheck_cadence_follows_the_backend_states() {
+        use ProbeScope::{All, Local};
+        use Reachability::{Booting, Probing, Reachable, Unreachable};
+
+        // Nothing configured (no key, retrieval off, `grobid` not in this
+        // build): no timer at all.
+        assert_eq!(probe_cadence(ProbeResults::default()), None);
+
+        // Everything answers: the slow heartbeat, covering every backend.
+        let settled = ProbeResults {
+            ollama: Reachable,
+            ..ProbeResults::default()
+        };
+        assert_eq!(
+            probe_cadence(settled),
+            Some((Duration::from_secs(30), All)),
+            "a healthy set is checked every 30 s"
+        );
+
+        // A local backend that is down, booting or mid-check: fast retry, and
+        // the remote API is left alone (2 s DeepSeek polling would be
+        // impolite and pointless).
+        for state in [Unreachable, Booting, Probing] {
+            for probes in [
+                ProbeResults {
+                    ollama: state,
+                    ..ProbeResults::default()
+                },
+                ProbeResults {
+                    grobid: state,
+                    ..ProbeResults::default()
+                },
+            ] {
+                assert_eq!(
+                    probe_cadence(probes),
+                    Some((Duration::from_secs(2), Local)),
+                    "{state:?} is followed every 2 s"
+                );
+            }
+        }
+
+        // A healthy local backend does not hide an unhealthy one.
+        let mixed = ProbeResults {
+            ollama: Reachable,
+            grobid: Unreachable,
+            ..ProbeResults::default()
+        };
+        assert_eq!(probe_cadence(mixed), Some((Duration::from_secs(2), Local)));
+
+        // The remote API on its own keeps the heartbeat.
+        let remote_down = ProbeResults {
+            ollama: Reachable,
+            deepseek: Unreachable,
+            ..ProbeResults::default()
+        };
+        assert_eq!(
+            probe_cadence(remote_down),
+            Some((Duration::from_secs(30), All))
+        );
+
+        // The reported bug's GROBID states: a down server is picked up
+        // quickly once it answers, without touching the menu.
+        let down = ProbeResults {
+            grobid: Unreachable,
+            ..ProbeResults::default()
+        };
+        let up = ProbeResults {
+            grobid: Reachable,
+            ..down
+        };
+        assert!(probe_cadence(down).unwrap().0 < probe_cadence(up).unwrap().0);
     }
 
     #[test]

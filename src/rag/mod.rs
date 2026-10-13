@@ -38,7 +38,7 @@ pub use cite::CitePayload;
 #[cfg(feature = "grobid")]
 pub use ingest::{IngestOutcome, IngestSource};
 pub use library::{LibraryEntry, LibraryState, LibraryView};
-pub use status::{ComponentState, RagComponent, RagStatus, StatusInput};
+pub use status::{probe_cadence, ComponentState, RagComponent, RagStatus, StatusInput};
 pub use worker::{
     RagCommand, RagEvent, RagFactories, RagrigWorker, SessionInfo, SyncMode, TurnInfo,
 };
