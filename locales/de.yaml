@@ -1032,6 +1032,12 @@ agent:
   cancelled: "Abgebrochen"
   attached: "Angehängt"
   attach_missed: "Konnte nicht anhängen"
+  attached_document: "Dokument angehängt: %{name} (%{chars} Zeichen)"
+  attached_document_truncated: "Dokument angehängt: %{name} (erste %{shown} von %{chars} Zeichen)"
+  buffer:
+    empty: "Dieses Dokument hat keinen Text zum Anhängen"
+    on: "Das aktive Dokument wird an jede Frage angehängt — klicken zum Abwählen"
+    off: "Das aktive Dokument an Fragen anhängen"
   session:
     new: "Neu"
     new_hint: "Neue Unterhaltung beginnen"

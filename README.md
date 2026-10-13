@@ -150,6 +150,24 @@ source — *Use prompt file…* picks a Markdown file that replaces the built-in
 *Reset to built-in* goes back. The switch reaches the running session immediately; without
 retrieved context (retrieval off, empty index) the persona stays in place either way.
 
+### The document buffer — the agent reads what you write
+
+The active document rides along with every question unless you switch it off: the agent sees
+your Markdown source, the file name and where your caret is, wrapped in a
+`<sciscraper:v1:document …>` container. That is what makes "shorten this paragraph" or "does
+this fit the argument above?" work without pasting anything.
+
+- The **paperclip chip above the composer** shows which document is attached; click it to
+  detach or re-attach. The choice is remembered across restarts.
+- Documents longer than 60 000 characters are attached as an excerpt: the container names the
+  full length and carries a `<sciscraper:v1:truncated …/>` marker, and the transcript notes
+  *"Document attached: draft.md (first 60000 of 123456 chars)"*.
+- An empty document attaches nothing; a scratch tab without a file name is sent without a
+  path. Only real document tabs count — the settings pane and the image/PDF viewers never
+  ride along.
+- The buffer never counts against the three-paper `@Key` limit, and with the chip off the
+  document never leaves the editor.
+
 ### The component bars
 
 One icon per RAG component sits at the bottom of each pane, grouped by the work

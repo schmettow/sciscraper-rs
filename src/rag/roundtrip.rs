@@ -31,9 +31,12 @@
 //! only be dead code.
 
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 use ragrig::attach::AttachStrategy;
 use ragrig::AttachedDocument;
+
+use super::cite::MAX_ATTACH_CHARS;
 
 /// Protocol version prefix shared by every marker.
 ///
@@ -52,9 +55,18 @@ pub const MARKER_DOCUMENT: &str = "sciscraper:v1:document";
 /// Container for a passage the author marked for a question.
 pub const MARKER_SELECTION: &str = "sciscraper:v1:selection";
 
+/// Marks where a truncated context was cut, so the model knows the text is
+/// incomplete.
+pub const MARKER_TRUNCATED: &str = "sciscraper:v1:truncated";
+
 /// Info string of the replacement block the agent answers with when it is
 /// asked to edit a marked passage.
 pub const MARKER_REPLACE: &str = "sciscraper:v1:replace";
+
+/// One attached context carries at most this many characters — the same cap
+/// as an `@Key` paper ([`MAX_ATTACH_CHARS`]), so no single source can crowd
+/// out the rest of the prompt.
+pub const MAX_CONTEXT_CHARS: usize = MAX_ATTACH_CHARS;
 
 /// Every marker the protocol defines, in the order the system prompt
 /// introduces them.
@@ -62,6 +74,7 @@ pub const MARKERS: &[&str] = &[
     MARKER_CONTEXT,
     MARKER_DOCUMENT,
     MARKER_SELECTION,
+    MARKER_TRUNCATED,
     MARKER_REPLACE,
 ];
 
@@ -78,6 +91,147 @@ pub fn missing_markers(prompt: &str) -> Vec<&'static str> {
         .copied()
         .filter(|marker| !prompt.contains(marker))
         .collect()
+}
+
+/// The editor facts a [`RoundtripContext`] is built from.
+///
+/// The host borrows them from the active tab for the length of one frame; the
+/// RAG side never sees an editor type, and nothing is cloned until a query
+/// actually carries the buffer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EditorBuffer<'a> {
+    /// Display name of the document (`draft.md`, `Untitled-1`).
+    pub name: &'a str,
+    /// Its path, when it is backed by a file.
+    pub path: Option<&'a Path>,
+    /// Caret position (line, column, 0-based).
+    pub cursor: (usize, usize),
+    /// The document source.
+    pub content: &'a str,
+}
+
+impl EditorBuffer<'_> {
+    /// Whether the buffer carries text worth attaching.
+    ///
+    /// [`RoundtripContext::document`] returns `None` exactly when this is
+    /// `false`, and the host uses it for its cost-free chip state.
+    #[must_use]
+    pub fn has_text(&self) -> bool {
+        !self.content.trim().is_empty()
+    }
+}
+
+/// One region of the editor attached to a query.
+///
+/// Sprint 6.2 ships the document flavour (the active buffer). A marked
+/// selection (6.3) is the same shape with a `range` and a `digest` instead of
+/// a `path` and a `cursor`; fields grow with their first reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoundtripContext {
+    name: String,
+    path: Option<PathBuf>,
+    cursor: Option<(usize, usize)>,
+    /// Characters in the full text — before truncation.
+    chars: usize,
+    /// Whether [`MAX_CONTEXT_CHARS`] cut the text short.
+    truncated: bool,
+    /// The text handed to the model.
+    text: String,
+}
+
+/// What the transcript needs to note an attached context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextNote {
+    /// Display name of the attached document.
+    pub name: String,
+    /// Characters in the full text (before truncation).
+    pub chars: usize,
+    /// Whether the model only saw the first [`MAX_CONTEXT_CHARS`].
+    pub truncated: bool,
+}
+
+impl RoundtripContext {
+    /// The active document, or `None` when there is nothing worth attaching.
+    ///
+    /// Oversized text is cut to [`MAX_CONTEXT_CHARS`] and marked with
+    /// [`MARKER_TRUNCATED`]; the full length stays in the `chars` attribute,
+    /// so the model can tell a complete document from an excerpt.
+    #[must_use]
+    pub fn document(buffer: EditorBuffer<'_>) -> Option<Self> {
+        if !buffer.has_text() {
+            return None;
+        }
+        let mut text = String::new();
+        let mut chars = 0usize;
+        for character in buffer.content.chars() {
+            chars += 1;
+            if chars <= MAX_CONTEXT_CHARS {
+                text.push(character);
+            }
+        }
+        let truncated = chars > MAX_CONTEXT_CHARS;
+        Some(Self {
+            name: buffer.name.to_string(),
+            path: buffer.path.map(Path::to_path_buf),
+            cursor: Some(buffer.cursor),
+            chars,
+            truncated,
+            text,
+        })
+    }
+
+    /// The container as the model sees it.
+    #[must_use]
+    pub fn container(&self) -> String {
+        let mut out = format!(
+            "<{MARKER_DOCUMENT}{}>\n{}\n",
+            self.attributes(),
+            self.text.trim_end()
+        );
+        if self.truncated {
+            out.push_str(&format!(
+                "<{MARKER_TRUNCATED} shown=\"{MAX_CONTEXT_CHARS}\" total=\"{}\"/>\n",
+                self.chars
+            ));
+        }
+        out.push_str(&format!("</{MARKER_DOCUMENT}>"));
+        out
+    }
+
+    /// The query attachment carrying the container.
+    #[must_use]
+    pub fn attachment(&self) -> AttachedDocument {
+        AttachedDocument {
+            name: self.name.clone(),
+            content: self.container(),
+        }
+    }
+
+    /// The facts the transcript note is built from.
+    #[must_use]
+    pub fn note(&self) -> ContextNote {
+        ContextNote {
+            name: self.name.clone(),
+            chars: self.chars,
+            truncated: self.truncated,
+        }
+    }
+
+    /// The container's attributes, in a fixed order.
+    fn attributes(&self) -> String {
+        let mut out = format!(" name=\"{}\"", attribute(&self.name));
+        if let Some(path) = &self.path {
+            out.push_str(&format!(
+                " path=\"{}\"",
+                attribute(&path.display().to_string())
+            ));
+        }
+        if let Some((line, column)) = self.cursor {
+            out.push_str(&format!(" cursor=\"{line}:{column}\""));
+        }
+        out.push_str(&format!(" chars=\"{}\"", self.chars));
+        out
+    }
 }
 
 /// Whether `text` already is one of our containers.
@@ -201,14 +355,20 @@ mod tests {
 
     #[test]
     fn missing_markers_reports_what_a_prompt_forgot() {
-        let complete =
-            format!("see {MARKER_CONTEXT} {MARKER_DOCUMENT} {MARKER_SELECTION} {MARKER_REPLACE}");
+        let complete = format!(
+            "see {MARKER_CONTEXT} {MARKER_DOCUMENT} {MARKER_SELECTION} {MARKER_TRUNCATED} {MARKER_REPLACE}"
+        );
         assert!(missing_markers(&complete).is_empty());
 
         let partial = format!("only {MARKER_DOCUMENT}");
         assert_eq!(
             missing_markers(&partial),
-            vec![MARKER_CONTEXT, MARKER_SELECTION, MARKER_REPLACE]
+            vec![
+                MARKER_CONTEXT,
+                MARKER_SELECTION,
+                MARKER_TRUNCATED,
+                MARKER_REPLACE
+            ]
         );
         assert_eq!(missing_markers(""), MARKERS.to_vec());
     }
@@ -310,5 +470,102 @@ mod tests {
     fn replace_at_clamps_ranges_past_the_end() {
         assert_eq!(replace_at("abc", 9..12, "!"), "abc!");
         assert_eq!(replace_at("abc", 2..9, ""), "ab");
+    }
+
+    /// An editor buffer over `content` with a stable name/path/cursor.
+    fn buffer<'a>(content: &'a str) -> EditorBuffer<'a> {
+        EditorBuffer {
+            name: "draft.md",
+            path: Some(Path::new("chapters/draft.md")),
+            cursor: (42, 7),
+            content,
+        }
+    }
+
+    #[test]
+    fn a_document_container_carries_name_path_cursor_and_length() {
+        let context = RoundtripContext::document(buffer("line one\nline two\n")).expect("text");
+        assert_eq!(
+            context.container(),
+            "<sciscraper:v1:document name=\"draft.md\" path=\"chapters/draft.md\" cursor=\"42:7\" chars=\"18\">\n\
+             line one\nline two\n\
+             </sciscraper:v1:document>"
+        );
+        assert_eq!(
+            context.note(),
+            ContextNote {
+                name: "draft.md".to_string(),
+                chars: 18,
+                truncated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn a_buffer_without_text_attaches_nothing() {
+        assert!(!buffer("\n  \t\n").has_text());
+        assert!(RoundtripContext::document(buffer("  \n\t ")).is_none());
+        assert!(buffer("x").has_text());
+    }
+
+    #[test]
+    fn an_untitled_document_omits_the_path() {
+        let untitled = EditorBuffer {
+            name: "Untitled-1",
+            path: None,
+            cursor: (0, 0),
+            content: "scratch thought",
+        };
+        let context = RoundtripContext::document(untitled).expect("text");
+        let opening = context.container().lines().next().unwrap().to_string();
+        assert_eq!(
+            opening,
+            "<sciscraper:v1:document name=\"Untitled-1\" cursor=\"0:0\" chars=\"15\">"
+        );
+    }
+
+    #[test]
+    fn an_oversized_document_is_truncated_with_a_marker() {
+        // Exactly the cap is complete…
+        let exact: String = std::iter::repeat_n('ü', MAX_CONTEXT_CHARS).collect();
+        let context = RoundtripContext::document(buffer(&exact)).expect("text");
+        assert!(!context.truncated, "exactly the cap is not truncated");
+        assert!(!context.container().contains(MARKER_TRUNCATED));
+
+        // …one character more is cut, and the cut is marked with both lengths.
+        let over: String = std::iter::repeat_n('ü', MAX_CONTEXT_CHARS + 5).collect();
+        let context = RoundtripContext::document(buffer(&over)).expect("text");
+        assert!(context.truncated);
+        let container = context.container();
+        assert!(
+            container.contains(&format!(
+                "<{} shown=\"{MAX_CONTEXT_CHARS}\" total=\"{}\"/>",
+                MARKER_TRUNCATED,
+                MAX_CONTEXT_CHARS + 5
+            )),
+            "the cut is marked with both lengths"
+        );
+        assert_eq!(context.note().chars, MAX_CONTEXT_CHARS + 5);
+        // Multi-byte characters survive the cut (char counts, not bytes).
+        assert!(container.contains('ü'));
+    }
+
+    #[test]
+    fn the_document_attachment_is_already_a_container() {
+        let context = RoundtripContext::document(buffer("body")).expect("text");
+        let attachment = context.attachment();
+        assert_eq!(attachment.name, "draft.md");
+        assert_eq!(attachment.content, context.container());
+        assert!(
+            is_container(&attachment.content),
+            "ContainerAttach must pass it through instead of wrapping it twice"
+        );
+        assert_eq!(
+            ContainerAttach.merge("", &[attachment]),
+            format!(
+                "<sciscraper:v1:context source=\"creator\">\n{}\n</sciscraper:v1:context>\n",
+                context.container()
+            )
+        );
     }
 }

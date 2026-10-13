@@ -3875,6 +3875,16 @@ impl AppState {
         self.tabs.get(self.active_tab_index)
     }
 
+    /// The settings and the active tab together.
+    ///
+    /// Split borrows of the two fields: the agent pane renders with a mutable
+    /// settings borrow while the same frame borrows the active document for
+    /// the roundtrip context (sprint 6.2). [`Self::active_tab`] alone would
+    /// hand out a borrow of the whole state and rule that out.
+    pub fn settings_and_active_tab(&mut self) -> (&mut Settings, Option<&Tab>) {
+        (&mut self.settings, self.tabs.get(self.active_tab_index))
+    }
+
     /// Get a mutable reference to the active tab.
     ///
     /// Returns `None` if there are no tabs.

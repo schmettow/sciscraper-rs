@@ -20,7 +20,7 @@ without features behaves exactly as before.
 | D4 | Backend defaults: **DeepSeek**, context window > 400 000 tokens, embeddings `top_k = 300`, `threshold = 0.03`, **transcript** memory. |
 | D5 | `@Key` chat attachments (PDF attached to the query) are in v1 scope. |
 | D6 | Status bar cadence: **automatic, not real-time** — 2 s while a backend is down or starting up, 30 s after a successful pass (Sprint 5.5). |
-| D7 | Phase "Editor Roundtrip" (chat ⇄ editor): default co-writer prompt, document-buffer attachment with a toggle, focus mode for a marked region, and Co-Edit with a region replacement (2026-10-13; the phase's open questions live in its own section). |
+| D7 | Phase "Editor Roundtrip" (chat ⇄ editor): default co-writer prompt, document-buffer attachment with a toggle (**on by default**), focus mode for a marked region, and Co-Edit with a region replacement (2026-10-13; the phase's open questions live in its own section). |
 
 ---
 
@@ -596,6 +596,41 @@ Verification: 1633 tests pass with the 3 pre-existing failures (`rag,grobid`), 1
 Verification: 1637 tests pass with the 3 pre-existing failures (`rag,grobid`), 1619 with
 `rag` only.
 
+### ✅ Sprint 6.2 — Document buffer attachment (feature 2)
+
+- **Protocol.** `roundtrip::RoundtripContext::document(EditorBuffer)` builds the attachment
+  from the host's view of the buffer (`name`, optional `path`, `cursor`): it renders
+  `<sciscraper:v1:document … chars="N">`, cuts at `MAX_CONTEXT_CHARS` (60 000, the `@Key`
+  cap) and marks the cut with a new `sciscraper:v1:truncated shown total` marker — which is
+  in `MARKERS`, so the prompt must (and now does) explain it. `attachment()` hands the
+  container to the pipeline; `ContainerAttach` passes it through instead of wrapping it twice
+  (the idempotence designed in 6.0), which also covers US-15's retrieval-off framing.
+  `EditorBuffer::has_text()` keeps the host's chip state cost-free.
+- **Transport.** `RagCommand::Query` carries the context; the worker appends it to the `@Key`
+  papers in `resolve_query_context` (renamed from `resolve_attachments`) and reports it in the
+  new `QueryAttachments.document` field, which the transcript note renders as *“Document
+  attached: draft.md (12 345 chars)”* or the truncated variant.
+- **Host.** `EditorBuffer` is built per frame from the active tab — document tabs only — via
+  `AppState::settings_and_active_tab`, a split-borrow helper that lets the pane render with a
+  mutable settings borrow while the buffer stays borrowed (no per-frame clone of the text).
+  The composer gained the chip above it (`.selected(attached)`, disabled while the document has
+  no text, tooltips en/de); an idle frame never flips the toggle, only a click does.
+- **Decision.** Default **on** (the user's own spec: *“the RAG system gets to see the active
+  document buffer with every query”*), persisted; the chip switches it off. Deviation from the
+  plan line “an empty/untitled tab attaches nothing”: only *emptiness* suppresses the
+  attachment — a non-empty untitled tab is exactly the co-writing case, and its name is sent
+  without a `path` attribute.
+- Pinned by `a_document_container_carries_name_path_cursor_and_length`,
+  `a_buffer_without_text_attaches_nothing`, `an_untitled_document_omits_the_path`,
+  `an_oversized_document_is_truncated_with_a_marker` (both lengths, multi-byte safe),
+  `the_document_attachment_is_already_a_container`, `the_active_document_reaches_the_model_as_a_container`
+  (end to end in the wire prompt) and `the_buffer_follows_the_toggle_and_the_document` plus the
+  chip render test. The plan's `prompt_hook` idea was not needed: the echo generator already
+  returns the assembled prompt.
+
+Verification: 1645 tests pass with the 3 pre-existing failures (`rag,grobid`), 1627 with
+`rag` only.
+
 ### 🚧 Phase "Editor Roundtrip" (planned) — chat ⇄ editor
 
 The RAG↔bibliography round trip works (sprints 4–5). The open gap is the *editor*: the agent
@@ -703,9 +738,10 @@ block → apply the first, report the rest; empty block → no-op note.
   default prompt applies without a file; a file wins; `{context}` survives; the no-docs variant
   carries the same persona; the protocol section matches the module's markers.
 - **Sprint 6.2 — Buffer attachment.** Settings field, toggle chip above the composer, the
-  document in `resolve_attachments`, transcript note, README. Tests: extraction from the
+  document in `resolve_query_context`, transcript note, README. Tests: extraction from the
   active tab (untitled/empty/oversized), toggle persistence, and the container reaching the
-  wire prompt (asserted with ragrig's `prompt_hook` — hermetic, no model).
+  wire prompt (echo generator — it already returns the assembled prompt, so the planned
+  `prompt_hook` was not needed).
 - **Sprint 6.3 — Focus mode.** Editor accessor (with a generic doc comment for upstream),
   overlay, pending-context state, chip, focus request, container transport. Tests: rect
   derivation headless (no selection → none), overlay renders and hides, extraction bounds,
@@ -746,6 +782,10 @@ the document never leaves the editor.
   `markdown/mermaid/flowchart/render/edges.rs`, `ui/productivity_panel.rs`; stale APIs like
   `TextBuffer`). Sprint 1 tests were run by temporarily quarantining those test modules;
   the patch was reverted. Fixing them is out of scope but recommended before any MR.
+- **One flaky test, seen in Sprint 6.2:** `markdown::cache::tests::block_height_cache_hit`
+  fails in some full-suite runs (`left: None, right: Some(42.0)`) and passes in isolation and
+  on re-runs — a test-order race on a global markdown cache in an untouched module. Not
+  caused by the RAG work and not fixed here; either serialise it or give it its own cache.
 - 3 tests fail at HEAD independently of this work:
   `markdown::video_embed::tests::document_parses_bare_youtube_url_paragraph`,
   `state::tests::test_recovery_identity_original_bleeding_repro_rejected`,

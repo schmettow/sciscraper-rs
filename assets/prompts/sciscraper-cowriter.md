@@ -50,6 +50,9 @@ in their indexed library.
 - A `selection` is a passage the author marked for this question; `range` is its position in
   the document, `digest` identifies the version they marked.
 - Corpus passages are proxies for the papers behind them: cite the paper, not the chunk.
+- A `<sciscraper:v1:truncated shown="…" total="…"/>` marker inside a container means you
+  are seeing an excerpt: never assume you hold the whole document, and say so when the
+  missing part could matter.
 - Not everything the author wrote is necessarily included; do not claim to know the whole
   document or library when only a part of it is shown.
 

@@ -11,7 +11,34 @@ use eframe::egui;
 use rust_i18n::t;
 
 #[cfg(feature = "rag")]
+use crate::rag::roundtrip::EditorBuffer;
+#[cfg(feature = "rag")]
+use crate::state::{Tab, TabKind};
+
+#[cfg(feature = "rag")]
 impl FerriteApp {
+    /// The agent's view of the active document (sprint 6.2).
+    ///
+    /// Only real document tabs carry text worth co-writing: the settings and
+    /// help panes, the image and PDF viewers do not.
+    fn document_buffer(tab: &Tab) -> Option<EditorBuffer<'_>> {
+        if !matches!(tab.kind, TabKind::Document) {
+            return None;
+        }
+        let name = tab
+            .path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .or(tab.untitled_display_name.as_deref())
+            .unwrap_or("Untitled");
+        Some(EditorBuffer {
+            name,
+            path: tab.path.as_deref(),
+            cursor: tab.cursor_position,
+            content: &tab.content,
+        })
+    }
     /// Route a dropped file set to the library (feature `grobid`); returns
     /// `true` when the drop was consumed and must not also be handled as a
     /// document/folder drop.
@@ -85,12 +112,17 @@ impl FerriteApp {
         self.ensure_agent_panel();
         let editor_workspace = self.state.workspace_root().cloned();
         let recent_workspaces = self.state.settings.recent_workspaces.clone();
+        // The active document is borrowed for this frame only; the settings
+        // borrow comes from the same split (see `settings_and_active_tab`).
+        let (settings, buffer) = self.state.settings_and_active_tab();
+        let buffer = buffer.and_then(Self::document_buffer);
         let output = match &mut self.agent_panel {
             Some(panel) => panel.show_ui(
                 ui,
-                &mut self.state.settings.rag,
+                &mut settings.rag,
                 editor_workspace.as_deref(),
                 &recent_workspaces,
+                buffer,
             ),
             None => crate::ui::AgentPanelOutput::default(),
         };

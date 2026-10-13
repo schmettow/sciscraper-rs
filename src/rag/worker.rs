@@ -99,6 +99,9 @@ pub enum RagCommand {
     Query {
         /// The user's question.
         text: String,
+        /// The active document the host attached to this question (sprint
+        /// 6.2), built by the panel from the editor buffer.
+        context: Option<roundtrip::RoundtripContext>,
     },
     /// Index the library folder into the vector store.
     SyncCorpus {
@@ -183,12 +186,16 @@ pub enum RagEvent {
         /// Tokens received before cancellation.
         tokens: usize,
     },
-    /// `@Key` mentions resolved for the running query.
+    /// One system note per query that carried or missed context: the `@Key`
+    /// papers it attached, the document the host sent along (sprint 6.2) and
+    /// the keys that could not be resolved.
     QueryAttachments {
         /// Keys that were attached.
         resolved: Vec<String>,
         /// One line per key that could not be attached.
         missed: Vec<String>,
+        /// The attached document context, when the question carried one.
+        document: Option<roundtrip::ContextNote>,
     },
     /// The corpus sync finished.
     SyncFinished {
@@ -597,7 +604,7 @@ async fn worker_main(
                 state.reload_library_if_changed(&events);
                 state.emit_status(&events);
             }
-            RagCommand::Query { text } => {
+            RagCommand::Query { text, context } => {
                 // The flag is claimed here, in the single-threaded command
                 // loop, so two operations can never run at once.
                 if state.is_busy() {
@@ -606,7 +613,12 @@ async fn worker_main(
                     });
                 } else {
                     state.shared.busy.store(true, Ordering::SeqCst);
-                    tokio::spawn(run_query(state.query_context(), text, events.clone()));
+                    tokio::spawn(run_query(
+                        state.query_context(),
+                        text,
+                        context,
+                        events.clone(),
+                    ));
                 }
             }
             RagCommand::SyncCorpus { mode } => {
@@ -898,12 +910,17 @@ fn turns_of(session: &AgentSession) -> Vec<TurnInfo> {
         .collect()
 }
 
-async fn run_query(context: QueryContext, text: String, events: Sender<RagEvent>) {
+async fn run_query(
+    context: QueryContext,
+    text: String,
+    document: Option<roundtrip::RoundtripContext>,
+    events: Sender<RagEvent>,
+) {
     let shared = &context.shared;
     let token = CancellationToken::new();
     *lock(&shared.cancel) = Some(token.clone());
     let epoch = shared.session_epoch.load(Ordering::SeqCst);
-    let attachments = resolve_attachments(&context, &text, &events).await;
+    let attachments = resolve_query_context(&context, &text, document, &events).await;
     let mut guard = match context.ensure_session().await {
         Ok(guard) => guard,
         Err(err) => {
@@ -1057,38 +1074,58 @@ fn emit_status(context: &QueryContext, events: &Sender<RagEvent>) {
 /// Parsing the bibliography and the documents is blocking I/O, so it runs
 /// off the async executor thread. Misses never abort the query; they are
 /// reported to the UI as a system note.
-async fn resolve_attachments(
+/// Resolve everything one query carries: the `@Key` papers and, from sprint
+/// 6.2 on, the document context the host attached.
+///
+/// The document is appended last (papers keep their order) and is indepenent
+/// of the library: a query with no workspace still reaches the model with the
+/// author's own text.
+async fn resolve_query_context(
     context: &QueryContext,
     text: &str,
+    document: Option<roundtrip::RoundtripContext>,
     events: &Sender<RagEvent>,
 ) -> Vec<AttachedDocument> {
     let keys = cite::cite_keys(text);
-    if keys.is_empty() {
-        return Vec::new();
+    let mut attachments = Vec::new();
+    let mut resolved = Vec::new();
+    let mut missed = Vec::new();
+    if !keys.is_empty() {
+        match context
+            .settings
+            .effective_workspace(context.editor_workspace.as_deref())
+        {
+            None => {
+                missed = keys
+                    .iter()
+                    .map(|key| format!("@{key} — no workspace"))
+                    .collect();
+            }
+            Some(workspace) => {
+                let library = context.settings.library.clone();
+                let resolution =
+                    tokio::task::spawn_blocking(move || cite::resolve(&workspace, &library, &keys))
+                        .await
+                        .unwrap_or_default();
+                resolved = resolution.resolved.clone();
+                missed = resolution.missed.clone();
+                attachments = resolution.attachments;
+            }
+        }
     }
-    let Some(workspace) = context
-        .settings
-        .effective_workspace(context.editor_workspace.as_deref())
-    else {
-        let _ = events.send(RagEvent::QueryAttachments {
-            resolved: Vec::new(),
-            missed: keys
-                .iter()
-                .map(|key| format!("@{key} — no workspace"))
-                .collect(),
-        });
-        return Vec::new();
-    };
-    let library = context.settings.library.clone();
-    let resolution =
-        tokio::task::spawn_blocking(move || cite::resolve(&workspace, &library, &keys))
-            .await
-            .unwrap_or_default();
-    let _ = events.send(RagEvent::QueryAttachments {
-        resolved: resolution.resolved.clone(),
-        missed: resolution.missed.clone(),
+    let document_note = document.map(|document| {
+        let note = document.note();
+        attachments.push(document.attachment());
+        note
     });
-    resolution.attachments
+    if !resolved.is_empty() || !missed.is_empty() || document_note.is_some() {
+        let _ = events.send(RagEvent::QueryAttachments {
+            resolved,
+            missed,
+            document: document_note,
+        });
+    }
+    attachments
 }
 
 /// What a sync needs, resolved before the session is touched.
@@ -1753,6 +1790,7 @@ mod tests {
         wait_for_status(&worker);
         worker.send(RagCommand::Query {
             text: "hello".into(),
+            context: None,
         });
         let message = wait_for_failure(&worker);
         assert!(
@@ -1807,6 +1845,7 @@ mod tests {
 
         worker.send(RagCommand::Query {
             text: "hello".into(),
+            context: None,
         });
         wait_for_event(&worker, |event| {
             matches!(event, RagEvent::QueryFinished { .. })
@@ -1832,6 +1871,7 @@ mod tests {
         wait_for_status(&worker);
         worker.send(RagCommand::Query {
             text: "hello".into(),
+            context: None,
         });
         wait_for_event(&worker, |event| {
             matches!(event, RagEvent::QueryFinished { .. })
@@ -1889,16 +1929,26 @@ mod tests {
         wait_for_status(&worker);
         worker.send(RagCommand::Query {
             text: "Summarize @Key2024 and @Missing".into(),
+            context: None,
         });
         let event = wait_for_event(&worker, |event| {
             matches!(event, RagEvent::QueryAttachments { .. })
         });
-        let RagEvent::QueryAttachments { resolved, missed } = event else {
+        let RagEvent::QueryAttachments {
+            resolved,
+            missed,
+            document,
+        } = event
+        else {
             unreachable!()
         };
         assert_eq!(resolved, vec!["Key2024"]);
         assert_eq!(missed.len(), 1);
         assert!(missed[0].contains("@Missing"));
+        assert!(
+            document.is_none(),
+            "a query without a document context notes nothing"
+        );
         wait_for_event(&worker, |event| {
             matches!(event, RagEvent::QueryFinished { .. })
         });
@@ -1928,6 +1978,7 @@ mod tests {
         wait_for_status(&worker);
         worker.send(RagCommand::Query {
             text: "Summarize @Key2024".into(),
+            context: None,
         });
 
         let prompt = collect_answer(&worker);
@@ -2020,6 +2071,7 @@ mod tests {
         wait_for_status(&worker);
         worker.send(RagCommand::Query {
             text: "hello".into(),
+            context: None,
         });
         let first = collect_answer(&worker);
         assert!(first.contains("co-writer"), "the built-in prompt: {first}");
@@ -2033,12 +2085,62 @@ mod tests {
         });
         worker.send(RagCommand::Query {
             text: "again".into(),
+            context: None,
         });
         let second = collect_answer(&worker);
         assert!(
             second.contains("HOT-SWAP-PROMPT"),
             "the new prompt is live without a restart: {second}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_active_document_reaches_the_model_as_a_container() {
+        // Sprint 6.2 end to end: the host builds the context from the buffer,
+        // the worker attaches it and notes it, the generator sees the
+        // container in the wire prompt.
+        let dir = tempfile::tempdir().unwrap();
+        let settings = workspace_settings(dir.path());
+        let worker = RagrigWorker::spawn(settings, None, tiny_factories());
+        wait_for_status(&worker);
+
+        let document = roundtrip::RoundtripContext::document(roundtrip::EditorBuffer {
+            name: "draft.md",
+            path: Some(Path::new("chapters/draft.md")),
+            cursor: (3, 0),
+            content: "# Intro\n\nThe buffer text.",
+        })
+        .expect("the buffer has text");
+        worker.send(RagCommand::Query {
+            text: "What does this need?".into(),
+            context: Some(document),
+        });
+
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::QueryAttachments { .. })
+        });
+        let RagEvent::QueryAttachments {
+            resolved,
+            missed,
+            document,
+        } = event
+        else {
+            unreachable!()
+        };
+        assert!(resolved.is_empty() && missed.is_empty(), "no @Key mentions");
+        let note = document.expect("the document is noted for the transcript");
+        assert_eq!(note.name, "draft.md");
+        assert_eq!(note.chars, 25);
+        assert!(!note.truncated);
+
+        let prompt = collect_answer(&worker);
+        assert!(
+            prompt.contains(
+                "<sciscraper:v1:document name=\"draft.md\" path=\"chapters/draft.md\" cursor=\"3:0\" chars=\"25\">"
+            ),
+            "the document arrives as a marked container: {prompt}"
+        );
+        assert!(prompt.contains("The buffer text."), "{prompt}");
     }
 
     /// Wait for a finished query and return everything the generator streamed
@@ -2069,6 +2171,7 @@ mod tests {
 
         worker.send(RagCommand::Query {
             text: "hello".into(),
+            context: None,
         });
         wait_for_event(&worker, |event| {
             matches!(event, RagEvent::QueryFinished { .. })
@@ -2091,6 +2194,7 @@ mod tests {
 
         worker.send(RagCommand::Query {
             text: "again".into(),
+            context: None,
         });
         wait_for_event(&worker, |event| {
             matches!(event, RagEvent::QueryFinished { .. })

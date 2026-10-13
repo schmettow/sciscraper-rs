@@ -49,6 +49,7 @@ use ragrig::types::Provider;
 use ragrig::MemoryStrategyKind;
 use rust_i18n::t;
 
+use crate::rag::roundtrip::{self, EditorBuffer, RoundtripContext};
 use crate::rag::status::ProbeScope;
 use crate::rag::ComponentState;
 use crate::rag::{
@@ -200,6 +201,10 @@ impl AgentPanel {
 
     /// Render the dock.
     ///
+    /// `buffer` is the host's view of the active document (sprint 6.2),
+    /// borrowed for this frame only: the panel decides whether it rides along
+    /// with the next question.
+    ///
     /// Returns what the host should do: persist the settings when they
     /// changed, insert a citation into the active document.
     pub fn show_ui(
@@ -208,6 +213,7 @@ impl AgentPanel {
         settings: &mut RagSettings,
         editor_workspace: Option<&Path>,
         recent_workspaces: &[PathBuf],
+        buffer: Option<EditorBuffer<'_>>,
     ) -> AgentPanelOutput {
         let editor_ws: Option<PathBuf> = editor_workspace.map(Path::to_path_buf);
 
@@ -250,6 +256,8 @@ impl AgentPanel {
         // takes this mutable borrow of the settings.
         let library_width = settings.library_width;
         let agent_width = settings.width;
+        let buffer_attached = settings.buffer_attached;
+        let buffer_toggled = Cell::new(false);
         let mut menu = MenuContext {
             settings: &mut *settings,
             status: self.status.as_ref(),
@@ -393,6 +401,10 @@ impl AgentPanel {
             if composer.cancelled {
                 cancel_requested.set(true);
             }
+            // The context chip sits above the composer (bottom-up layout:
+            // whatever comes last is highest). Its toggle is applied after
+            // the docks, where the settings borrow is free again.
+            context_chip(&mut footer_ui, buffer, buffer_attached, &buffer_toggled);
 
             // Transcript in the space above the footer.
             let transcript_bottom = (footer_ui.min_rect().top() - ui.spacing().item_spacing.y)
@@ -426,6 +438,10 @@ impl AgentPanel {
         self.paint_drop_banner(ui);
 
         // Persist dock state.
+        if buffer_toggled.get() {
+            settings.buffer_attached = !settings.buffer_attached;
+            settings_changed = true;
+        }
         if let Some(width) = library_response.width {
             settings.library_width = width;
             settings_changed = true;
@@ -467,7 +483,7 @@ impl AgentPanel {
         }
 
         if submit_requested.get() {
-            self.submit();
+            self.submit(settings, buffer);
         }
         if cancel_requested.get() {
             self.worker.send(RagCommand::Cancel);
@@ -528,17 +544,18 @@ impl AgentPanel {
     }
 
     /// Start a query with the current input buffer.
-    fn submit(&mut self) {
+    fn submit(&mut self, settings: &RagSettings, buffer: Option<EditorBuffer<'_>>) {
         let text = self.input.trim().to_string();
         if text.is_empty() || self.is_working() {
             return;
         }
+        let context = buffer_context(settings, buffer);
         self.transcript.push(ChatMessage::user(&text));
         self.transcript
             .push(ChatMessage::assistant(String::new()).streaming());
         self.input.clear();
         self.busy = true;
-        self.worker.send(RagCommand::Query { text });
+        self.worker.send(RagCommand::Query { text, context });
     }
 
     /// Whether the worker is busy with a query, an index run or an ingestion.
@@ -638,8 +655,12 @@ impl AgentPanel {
                 )));
                 self.busy = false;
             }
-            RagEvent::QueryAttachments { resolved, missed } => {
-                if let Some(note) = attachment_note(&resolved, &missed) {
+            RagEvent::QueryAttachments {
+                resolved,
+                missed,
+                document,
+            } => {
+                if let Some(note) = attachment_note(&resolved, &missed, document.as_ref()) {
                     self.transcript.push(note);
                 }
             }
@@ -916,25 +937,45 @@ fn message_from_turn(turn: TurnInfo) -> ChatMessage {
     }
 }
 
-/// One system note per query that carried or missed `@Key` attachments;
-/// `None` when the query had no mentions at all.
-fn attachment_note(resolved: &[String], missed: &[String]) -> Option<ChatMessage> {
-    if resolved.is_empty() && missed.is_empty() {
+/// One system note per query that carried or missed context: the `@Key`
+/// papers, the attached document (sprint 6.2) and the keys that missed;
+/// `None` when the query had no context at all.
+fn attachment_note(
+    resolved: &[String],
+    missed: &[String],
+    document: Option<&roundtrip::ContextNote>,
+) -> Option<ChatMessage> {
+    if resolved.is_empty() && missed.is_empty() && document.is_none() {
         return None;
     }
-    let mut text = String::new();
+    let mut lines: Vec<String> = Vec::new();
     if !resolved.is_empty() {
-        text.push_str(&format!(
+        lines.push(format!(
             "{}: @{}",
             t!("agent.attached"),
             resolved.join(", @")
         ));
     }
+    if let Some(document) = document {
+        lines.push(if document.truncated {
+            t!(
+                "agent.attached_document_truncated",
+                name = document.name.as_str(),
+                shown = roundtrip::MAX_CONTEXT_CHARS,
+                chars = document.chars
+            )
+            .to_string()
+        } else {
+            t!(
+                "agent.attached_document",
+                name = document.name.as_str(),
+                chars = document.chars
+            )
+            .to_string()
+        });
+    }
     if !missed.is_empty() {
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(&format!(
+        lines.push(format!(
             "{}:\n{}",
             t!("agent.attach_missed"),
             missed.join("\n")
@@ -947,10 +988,59 @@ fn attachment_note(resolved: &[String], missed: &[String]) -> Option<ChatMessage
     };
     Some(ChatMessage {
         role: ChatRole::System,
-        text,
+        text: lines.join("\n"),
         state,
         meta: None,
     })
+}
+
+/// The document attachment for the next question: on while the toggle is on
+/// and the active document has text.
+fn buffer_context(
+    settings: &RagSettings,
+    buffer: Option<EditorBuffer<'_>>,
+) -> Option<RoundtripContext> {
+    if !settings.buffer_attached {
+        return None;
+    }
+    RoundtripContext::document(buffer?)
+}
+
+/// The composer's context chip: which document rides along with the next
+/// question, and a click to change that.
+///
+/// Hidden when no document is open; disabled while the document has no text,
+/// so the toggle never promises an attachment it cannot make.
+fn context_chip(
+    ui: &mut egui::Ui,
+    buffer: Option<EditorBuffer<'_>>,
+    attached: bool,
+    toggled: &Cell<bool>,
+) {
+    use crate::ui::phosphor_icons::PAPERCLIP;
+    let Some(buffer) = buffer else {
+        return;
+    };
+    let has_text = buffer.has_text();
+    let on = attached && has_text;
+    let hint = if !has_text {
+        t!("agent.buffer.empty")
+    } else if on {
+        t!("agent.buffer.on")
+    } else {
+        t!("agent.buffer.off")
+    };
+    ui.horizontal(|ui| {
+        let response = ui
+            .add_enabled(
+                has_text,
+                egui::Button::new(format!("{PAPERCLIP} {}", buffer.name)).selected(on),
+            )
+            .on_hover_text(hint);
+        if has_text && response.clicked() {
+            toggled.set(true);
+        }
+    });
 }
 
 /// Build one bar's items from the latest status snapshot.
@@ -1790,7 +1880,7 @@ mod tests {
         for component in RagComponent::all() {
             panel.open_menu = Some(component.id().to_string());
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
             });
         }
         assert!(panel.open_menu.is_some(), "no clicks, menu stays open");
@@ -1833,7 +1923,7 @@ mod tests {
         };
         for _ in 0..2 {
             let _ = ctx.run_ui(input.clone(), |ui| {
-                panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
             });
         }
     }
@@ -1860,7 +1950,7 @@ mod tests {
         for _ in 0..2 {
             let _ = ctx.run_ui(input.clone(), |ui| {
                 let full = ui.max_rect();
-                let _ = panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+                let _ = panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
                 let editor = ui.available_rect_before_wrap();
                 assert!(
                     editor.width() > 0.0,
@@ -1894,7 +1984,7 @@ mod tests {
         let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
         for _ in 0..2 {
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
             });
         }
 
@@ -1938,7 +2028,7 @@ mod tests {
             ..egui::RawInput::default()
         };
         let _ = ctx.run_ui(input, |ui| {
-            panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+            panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
         });
     }
 
@@ -2022,13 +2112,72 @@ mod tests {
     }
 
     #[test]
+    fn the_buffer_follows_the_toggle_and_the_document() {
+        // The attachment policy of a question (sprint 6.2): the toggle decides
+        // whether the document is sent, and an empty buffer never is.
+        let settings = RagSettings::default();
+        let buffer = EditorBuffer {
+            name: "draft.md",
+            path: None,
+            cursor: (0, 0),
+            content: "text",
+        };
+        let context = buffer_context(&settings, Some(buffer)).expect("on by default");
+        assert!(context.container().contains("name=\"draft.md\""));
+
+        let mut off = RagSettings::default();
+        off.buffer_attached = false;
+        assert!(buffer_context(&off, Some(buffer)).is_none(), "toggled off");
+
+        assert!(
+            buffer_context(&settings, None).is_none(),
+            "no document open"
+        );
+        let empty = EditorBuffer {
+            content: "  \n\t",
+            ..buffer
+        };
+        assert!(
+            buffer_context(&settings, Some(empty)).is_none(),
+            "an empty document attaches nothing"
+        );
+    }
+
+    #[test]
+    fn the_context_chip_renders_with_and_without_a_document() {
+        // Render smoke test: the chip is drawn above the composer with a
+        // document and hidden without one; an idle frame never flips the
+        // toggle (only a click does).
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+        let mut panel = AgentPanel::new(&settings, None);
+        let buffer = EditorBuffer {
+            name: "draft.md",
+            path: None,
+            cursor: (1, 2),
+            content: "body",
+        };
+        for editor in [Some(buffer), None] {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                panel.show_ui(ui, &mut settings, None, &[], editor);
+            });
+        }
+        assert!(
+            settings.buffer_attached,
+            "idle frames leave the toggle alone"
+        );
+    }
+
+    #[test]
     fn panel_renders_headless_and_persists_nothing_by_default() {
         let ctx = egui::Context::default();
         let mut settings = RagSettings::default();
         let mut panel = AgentPanel::new(&settings, None);
         let mut changed = false;
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            changed = panel.show_ui(ui, &mut settings, None, &[]).settings_changed;
+            changed = panel
+                .show_ui(ui, &mut settings, None, &[], None)
+                .settings_changed;
         });
         assert!(!changed, "idle frame must not touch the settings");
     }
@@ -2067,7 +2216,7 @@ mod tests {
         for state in states {
             panel.library.apply(state);
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                panel.show_ui(ui, &mut settings, None, &[]);
+                panel.show_ui(ui, &mut settings, None, &[], None);
             });
         }
     }

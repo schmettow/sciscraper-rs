@@ -236,6 +236,10 @@ pub struct RagSettings {
     /// Whether retrieval is available at all (ragrig's no-op embedder when
     /// off: answers run without corpus context).
     pub embeddings_enabled: bool,
+    /// Whether the active document buffer rides along with every question
+    /// (the "Editor Roundtrip" phase, sprint 6.2). The composer chip toggles
+    /// it; the document never leaves the editor when it is off.
+    pub buffer_attached: bool,
     /// Chunking algorithm for corpus ingestion.
     pub chunker: ChunkerKind,
     /// The ragrig configuration (chat, embeddings, parsing, memory).
@@ -264,6 +268,9 @@ impl Default for RagSettings {
             agent_collapsed: false,
             library_collapsed: false,
             embeddings_enabled: true,
+            // The agent should see what the author is writing; one click
+            // switches it off (decision D7).
+            buffer_attached: true,
             chunker: ChunkerKind::default(),
             ragrig,
             library: LibrarySettings::default(),
@@ -328,6 +335,10 @@ mod tests {
         let settings = RagSettings::default();
         assert!(!settings.enabled);
         assert!(settings.embeddings_enabled, "retrieval is on by default");
+        assert!(
+            settings.buffer_attached,
+            "the active document rides along unless switched off"
+        );
         assert_eq!(settings.chunker, ChunkerKind::Markdown);
         assert_eq!(settings.width, DEFAULT_PANEL_WIDTH);
         assert_eq!(settings.library_width, DEFAULT_LIBRARY_WIDTH);
@@ -365,6 +376,7 @@ mod tests {
         assert_eq!(loaded.ragrig.chat.provider, Provider::Deepseek);
         assert_eq!(loaded.ragrig.embed.similarity_threshold, 0.03);
         assert!(loaded.embeddings_enabled);
+        assert!(loaded.buffer_attached, "the sprint 6.2 default is on");
         assert_eq!(loaded.chunker, ChunkerKind::Markdown);
     }
 

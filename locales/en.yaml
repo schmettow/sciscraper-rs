@@ -1100,6 +1100,12 @@ agent:
   cancelled: "Cancelled"
   attached: "Attached"
   attach_missed: "Could not attach"
+  attached_document: "Document attached: %{name} (%{chars} chars)"
+  attached_document_truncated: "Document attached: %{name} (first %{shown} of %{chars} chars)"
+  buffer:
+    empty: "This document has no text to attach"
+    on: "The active document is attached to every question — click to detach"
+    off: "Attach the active document to your questions"
   session:
     new: "New"
     new_hint: "Start a new conversation"
