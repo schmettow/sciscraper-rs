@@ -12,6 +12,44 @@ use rust_i18n::t;
 
 #[cfg(feature = "rag")]
 impl FerriteApp {
+    /// Route a dropped-file event to the agent library when the pointer was
+    /// over its section (feature `grobid`); returns `true` when the drop was
+    /// consumed and must not be handled as a file/folder drop.
+    ///
+    /// `handle_dropped_files` runs before the UI is rendered, so the drop
+    /// target comes from the previous frame's library section rect — the dock
+    /// layout is stable across frames, and an unknown rect (dock hidden, list
+    /// never rendered) falls through to the normal drop handling.
+    #[cfg(feature = "grobid")]
+    pub(crate) fn try_library_ingest(
+        &mut self,
+        ctx: &egui::Context,
+        paths: &[std::path::PathBuf],
+    ) -> bool {
+        if !self.state.settings.rag.enabled {
+            return false;
+        }
+        self.ensure_agent_panel();
+        let Some(panel) = self.agent_panel.as_mut() else {
+            return false;
+        };
+        let Some(rect) = panel.library_drop_rect() else {
+            return false;
+        };
+        let Some(position) = ctx.input(|input| input.pointer.latest_pos()) else {
+            return false;
+        };
+        if !rect.contains(position) {
+            return false;
+        }
+        let sources = crate::rag::ingest::sources_from_paths(paths);
+        if sources.is_empty() {
+            return false;
+        }
+        panel.start_ingest(sources);
+        true
+    }
+
     /// Toggle the agent dock (ribbon button, command palette, shortcut).
     pub(crate) fn handle_toggle_agent(&mut self) {
         let enabled = !self.state.settings.rag.enabled;

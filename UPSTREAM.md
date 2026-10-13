@@ -28,6 +28,7 @@ every entry is filed and closed.
 | US-10 | ragrig (ergonomics) | low | Listing saved sessions requires a fully built agent | to file |
 | US-11 | ragrig (store API) | medium | No way to replace one pipeline's chunks; parser/chunker changes accumulate in the store | to file |
 | US-12 | grobid-bibtex (ergonomics) | low | `CiteEntry` (key + file) is too thin for a host list UI | to file |
+| US-13 | egui/winit (external) | low | Native drag-and-drop never delivers web URLs, so "drop a URL" needs a text fallback | informational |
 
 ## US-1 — Publish `grobid-bibtex` 0.2.1
 
@@ -69,7 +70,9 @@ every entry is filed and closed.
   Sprints 4–5 — and then has to track upstream changes to the manifest format and rename policy.
 - **Workaround in sciscraper.** Sprint 2 re-implemented the citation-attach subset in
   `src/rag/cite.rs` (deliberately simpler: one corpus folder, no-guess ambiguity policy).
-  Sprint 5 will re-orchestrate the pre-pass from the public `grobid-bibtex` API.
+  Sprint 5 re-orchestrated the pre-pass from the public `grobid-bibtex` API in
+  `src/rag/ingest.rs` (~450 lines + tests) — same manifest, same rename policy, plus URL
+  download and per-stage progress. The duplication now exists twice.
 - **Suggested fix.** Expose both pipelines as library API — e.g. a `grobid-bibtex` feature
   `pipeline` (`prepass(folder, config)`, `attach(keys, library)`) or a small
   `ragrig-grobid` crate — with the manifest and rename policy as the single source of truth.
@@ -261,6 +264,28 @@ every entry is filed and closed.
   pre-rendered for display) or re-export the `biblatex` types it hands out, so
   consumers depend on one crate instead of its internals.
 
+## US-13 — Native drag-and-drop does not deliver web URLs
+
+- **Target:** external (`winit` / `egui-winit` platform backends; informational for `ragrig`)
+- **Severity:** low (UX gap, not a defect — no upstream fix is expected soon)
+- **Context.** The drop-to-ingest story is "drop a PDF *or a URL* on the library". Files
+  arrive as `DroppedFile.path`, but a URL dragged from a browser never does:
+  - **X11:** winit parses only `text/uri-list` entries with the `file://` scheme and rejects
+    the whole drop with `DndDataParseError::UnexpectedProtocol` for `http(s)` URIs
+    (`winit-0.30::platform_impl::linux::x11::dnd`).
+  - **Windows/macOS:** browser drags use `CFSTR_INETURL`/`NSURL` flavors that the native
+    backends do not map to `DroppedFile`, and `egui`'s `DroppedFile` carries `path`/`bytes`
+    only — there is no "text dropped onto the window" event to read.
+  Consequence: no host can implement URL drop by listening to drop events alone, on any
+  platform.
+- **Workaround in sciscraper.** `IngestSource::Url` is still produced from any dropped
+  *path-like* value that parses as an `http(s)` URL (so a future backend that forwards URLs
+  works unchanged), and the Library section carries an explicit *add-from-URL* row — a link
+  icon that opens a one-line input — as the dependable path.
+- **Suggested fix / follow-up.** Track `egui` support for text drops
+  (`Event::Text`-style drops from external sources) or winit accepting non-file URI lists;
+  when that lands, only `sources_from_paths` needs to change.
+
 ## Notes (monitoring — not issues to file)
 
 - **Tier-2 surface used.** sciscraper depends on `AgentSession`, the `progress` module and
@@ -292,6 +317,7 @@ every entry is filed and closed.
 | US-10 | Worker builds `FsSessionStore` directly for listing | `src/rag/worker.rs` |
 | US-11 | Explicit *Rebuild* (`delete_corpus` + full sync) + staleness warning from the manifest | `src/rag/worker.rs`, `src/ui/agent_panel.rs` |
 | US-12 | Direct `biblatex` dependency + own field fallback chains | `src/rag/library.rs`, `Cargo.toml` |
+| US-13 | URL-looking dropped paths become URLs; explicit *add-from-URL* row | `src/rag/ingest.rs`, `src/ui/library_panel.rs` |
 
 ## Suggested filing order
 

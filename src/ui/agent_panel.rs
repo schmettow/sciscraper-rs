@@ -36,6 +36,8 @@ use crate::rag::{
     ChunkerKind, CitePayload, LibrarySettings, RagCommand, RagComponent, RagEvent, RagFactories,
     RagSettings, RagStatus, RagrigWorker, SessionInfo, SyncMode, TurnInfo,
 };
+#[cfg(feature = "grobid")]
+use crate::rag::{IngestOutcome, IngestSource};
 use crate::ui::library_panel::{LibraryAction, LibrarySection};
 
 /// Deferred actions produced while rendering (applied after the borrows end).
@@ -67,6 +69,17 @@ pub struct AgentPanel {
     status: Option<RagStatus>,
     busy: bool,
     syncing: bool,
+    /// A GROBID ingestion is running (feature `grobid`).
+    #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
+    ingesting: bool,
+    /// Transcript index of the transient ingestion note that the outcome
+    /// replaces (feature `grobid`).
+    #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
+    ingest_note: Option<usize>,
+    /// Screen rect of the library section from the last rendered frame; the
+    /// host routes file drops inside it to ingestion (feature `grobid`).
+    #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
+    library_drop_rect: Option<egui::Rect>,
     last_workspace: Option<PathBuf>,
     sessions: Vec<SessionInfo>,
     session: Option<String>,
@@ -96,6 +109,9 @@ impl AgentPanel {
             status: None,
             busy: false,
             syncing: false,
+            ingesting: false,
+            ingest_note: None,
+            library_drop_rect: None,
             last_workspace: editor_workspace,
             sessions: Vec::new(),
             session: None,
@@ -115,9 +131,9 @@ impl AgentPanel {
             self.worker.send(command);
             got_event = true;
         }
-        if self.busy || self.syncing {
-            // Keep polling the channel while a query streams or an index run
-            // progresses.
+        if self.busy || self.syncing || self.ingesting {
+            // Keep polling the channel while a query streams, an index run or
+            // an ingestion progresses.
             ctx.request_repaint_after(Duration::from_millis(50));
         } else if got_event {
             ctx.request_repaint();
@@ -144,6 +160,13 @@ impl AgentPanel {
         recent_workspaces: &[PathBuf],
     ) -> AgentPanelOutput {
         let editor_ws: Option<PathBuf> = editor_workspace.map(Path::to_path_buf);
+
+        // The library drop target is re-established by every rendered frame
+        // (see the library section below).
+        #[cfg(feature = "grobid")]
+        {
+            self.library_drop_rect = None;
+        }
 
         // When the workspace tracks the editor, follow changes immediately.
         let mut settings_changed = false;
@@ -175,6 +198,10 @@ impl AgentPanel {
             t!("agent.empty").to_string()
         };
 
+        // Snapshot the busy state for the closures below: reading it inside
+        // them would borrow all of `self` and clash with their field borrows.
+        let working = self.is_working();
+
         let dock = SectionDock::new("sciscraper_agent_dock", DockSide::Right, settings.width)
             .width_range(300.0, 720.0);
 
@@ -191,7 +218,7 @@ impl AgentPanel {
                 ui,
                 self.session.as_deref(),
                 &self.sessions,
-                self.busy,
+                working,
                 &new_session_requested,
                 &sessions_refresh_requested,
                 &session_load_requested,
@@ -234,7 +261,7 @@ impl AgentPanel {
                 )
             });
             let composer = Composer::new(&mut self.input)
-                .busy(self.busy || self.syncing)
+                .busy(working)
                 .placeholder(&t!("agent.placeholder"))
                 .labels(&t!("agent.send"), &t!("agent.stop"))
                 .hint(&t!("agent.hint"))
@@ -273,10 +300,26 @@ impl AgentPanel {
         // Section 2: the bibliography list (drag a row into the document).
         let library_action: RefCell<LibraryAction> = RefCell::new(LibraryAction::default());
         let dock = dock.section(&mut self.library_section, |ui| {
+            // Drop target for ingestion (feature `grobid`): the whole section
+            // area below its header, including the empty space under the list.
+            #[cfg(feature = "grobid")]
+            let drop_top = ui.cursor().min.y - ui.spacing().interact_size.y;
             self.library.show(ui, &mut library_action.borrow_mut());
+            #[cfg(feature = "grobid")]
+            {
+                let bounds = ui.max_rect();
+                self.library_drop_rect = Some(egui::Rect::from_min_max(
+                    egui::pos2(bounds.left(), drop_top),
+                    egui::pos2(bounds.right(), bounds.bottom()),
+                ));
+            }
         });
 
         let response = dock.show(ui);
+
+        // Highlight the library while files hover over it (feature `grobid`).
+        #[cfg(feature = "grobid")]
+        self.paint_drop_hint(ui);
 
         // Persist dock state.
         if let Some(width) = response.width {
@@ -349,6 +392,10 @@ impl AgentPanel {
         for command in library_action.commands {
             self.worker.send(command);
         }
+        #[cfg(feature = "grobid")]
+        for url in library_action.ingest_urls {
+            self.start_ingest(vec![IngestSource::Url(url)]);
+        }
 
         AgentPanelOutput {
             settings_changed,
@@ -359,7 +406,7 @@ impl AgentPanel {
     /// Start a query with the current input buffer.
     fn submit(&mut self) {
         let text = self.input.trim().to_string();
-        if text.is_empty() || self.busy || self.syncing {
+        if text.is_empty() || self.is_working() {
             return;
         }
         self.transcript.push(ChatMessage::user(&text));
@@ -368,6 +415,40 @@ impl AgentPanel {
         self.input.clear();
         self.busy = true;
         self.worker.send(RagCommand::Query { text });
+    }
+
+    /// Whether the worker is busy with a query, an index run or an ingestion.
+    fn is_working(&self) -> bool {
+        self.busy || self.syncing || self.ingesting
+    }
+
+    /// Start a GROBID ingestion for dropped sources (feature `grobid`).
+    ///
+    /// The transcript gets a transient note that the outcome replaces, so a
+    /// drop always has a visible effect even while the bar shows the stage.
+    #[cfg(feature = "grobid")]
+    pub fn start_ingest(&mut self, sources: Vec<IngestSource>) {
+        if sources.is_empty() {
+            return;
+        }
+        if self.is_working() {
+            self.transcript
+                .push(ChatMessage::system(t!("agent.ingest.busy").to_string()));
+            return;
+        }
+        self.transcript.push(ChatMessage::system(
+            t!("agent.ingest.started", count = sources.len()).to_string(),
+        ));
+        self.ingest_note = Some(self.transcript.len() - 1);
+        self.ingesting = true;
+        self.worker.send(RagCommand::Ingest { sources });
+    }
+
+    /// Screen rect of the library section, when the dock rendered it in the
+    /// previous frame (feature `grobid`; the host routes drops that land there).
+    #[cfg(feature = "grobid")]
+    pub fn library_drop_rect(&self) -> Option<egui::Rect> {
+        self.library_drop_rect
     }
 
     fn send_configure(&self, settings: &RagSettings, editor_ws: Option<PathBuf>) {
@@ -383,6 +464,7 @@ impl AgentPanel {
                 self.syncing = status
                     .component(RagComponent::Store)
                     .is_some_and(|store| store.state == ComponentState::Busy);
+                self.ingesting = status.ingesting;
                 self.status = Some(status);
             }
             RagEvent::Token { delta } => {
@@ -472,7 +554,35 @@ impl AgentPanel {
             }
             RagEvent::SessionSwitched { id, turns } => {
                 self.transcript = turns.into_iter().map(message_from_turn).collect();
+                self.ingest_note = None;
                 self.session = Some(id);
+            }
+            #[cfg(feature = "grobid")]
+            RagEvent::IngestFinished {
+                outcome,
+                indexed,
+                nothing_new,
+            } => {
+                self.ingesting = false;
+                let messages = ingest_messages(&outcome, indexed, nothing_new);
+                self.replace_ingest_note(messages);
+            }
+            #[cfg(feature = "grobid")]
+            RagEvent::IngestCancelled => {
+                self.ingesting = false;
+                self.replace_ingest_note(vec![ChatMessage::system(
+                    t!("agent.ingest.cancelled").to_string(),
+                )]);
+            }
+            #[cfg(feature = "grobid")]
+            RagEvent::IngestFailed { message } => {
+                self.ingesting = false;
+                self.replace_ingest_note(vec![ChatMessage {
+                    role: ChatRole::System,
+                    text: message,
+                    state: MessageState::Error,
+                    meta: None,
+                }]);
             }
             RagEvent::SessionFailed { message } => {
                 self.transcript.push(ChatMessage {
@@ -483,6 +593,55 @@ impl AgentPanel {
                 });
             }
         }
+    }
+
+    /// Drop the transient ingestion note and append the run's outcome
+    /// (feature `grobid`).
+    #[cfg(feature = "grobid")]
+    fn replace_ingest_note(&mut self, messages: Vec<ChatMessage>) {
+        if let Some(index) = self.ingest_note.take() {
+            if index < self.transcript.len() {
+                self.transcript.remove(index);
+            }
+        }
+        self.transcript.extend(messages);
+    }
+
+    /// Outline the library while files hover over it, so the drop target is
+    /// visible before the user releases the button (feature `grobid`).
+    #[cfg(feature = "grobid")]
+    fn paint_drop_hint(&self, ui: &mut egui::Ui) {
+        let Some(rect) = self.library_drop_rect else {
+            return;
+        };
+        let hovering = ui.ctx().input(|input| {
+            !input.raw.hovered_files.is_empty()
+                && input
+                    .pointer
+                    .hover_pos()
+                    .is_some_and(|position| rect.contains(position))
+        });
+        if !hovering {
+            return;
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+        let painter = ui.painter();
+        let highlight = ui.visuals().selection.bg_fill;
+        let rect = rect.shrink(1.5);
+        painter.rect_filled(rect, 4.0, highlight.gamma_multiply(0.15));
+        painter.rect_stroke(
+            rect,
+            4.0,
+            egui::Stroke::new(1.5, highlight),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            t!("agent.library.drop_hint"),
+            egui::FontId::proportional(13.0),
+            ui.visuals().strong_text_color(),
+        );
     }
 
     /// Surface a failure: replace an empty streaming placeholder, append
@@ -685,6 +844,68 @@ fn component_glyph(component: RagComponent) -> &'static str {
     }
 }
 
+/// Transcript messages summarising a finished ingestion (feature `grobid`).
+#[cfg(feature = "grobid")]
+fn ingest_messages(outcome: &IngestOutcome, indexed: bool, nothing_new: bool) -> Vec<ChatMessage> {
+    let mut messages = Vec::new();
+    if nothing_new {
+        messages.push(ChatMessage::system(
+            t!("agent.ingest.nothing_new").to_string(),
+        ));
+    } else {
+        messages.push(ChatMessage::system(
+            t!("agent.ingest.done", count = outcome.processed).to_string(),
+        ));
+        let mut details = Vec::new();
+        if outcome.renamed > 0 {
+            details.push(t!("agent.ingest.renamed", count = outcome.renamed).to_string());
+        }
+        if outcome.merged > 0 {
+            details.push(t!("agent.ingest.merged", count = outcome.merged).to_string());
+        }
+        if outcome.duplicates > 0 {
+            details.push(t!("agent.ingest.duplicates", count = outcome.duplicates).to_string());
+        }
+        if outcome.completed > 0 {
+            details.push(t!("agent.ingest.completed", count = outcome.completed).to_string());
+        }
+        if !details.is_empty() {
+            messages.push(ChatMessage::system(details.join(" · ")));
+        }
+        if !indexed && outcome.processed > 0 {
+            messages.push(ChatMessage::system(
+                t!("agent.menu.index_needs_embeddings").to_string(),
+            ));
+        }
+    }
+    for line in outcome.failed.iter().take(5) {
+        messages.push(ChatMessage {
+            role: ChatRole::System,
+            text: t!("agent.ingest.failed", line = line.as_str()).to_string(),
+            state: MessageState::Error,
+            meta: None,
+        });
+    }
+    if outcome.failed.len() > 5 {
+        messages.push(ChatMessage::system(format!(
+            "… +{}",
+            outcome.failed.len() - 5
+        )));
+    }
+    for line in outcome.skipped.iter().take(5) {
+        messages.push(ChatMessage::system(
+            t!("agent.ingest.skipped", line = line.as_str()).to_string(),
+        ));
+    }
+    if outcome.skipped.len() > 5 {
+        messages.push(ChatMessage::system(format!(
+            "… +{}",
+            outcome.skipped.len() - 5
+        )));
+    }
+    messages
+}
+
 /// Transcript note summarising a finished index update.
 fn sync_summary(indexed: usize, documents: Option<usize>) -> ChatMessage {
     let mut text = if indexed == 0 {
@@ -809,6 +1030,11 @@ fn component_menu(ui: &mut egui::Ui, id: &str, ctx: &mut MenuContext<'_>) -> boo
             }
             ui.separator();
             library_menu(ui, ctx);
+            #[cfg(feature = "grobid")]
+            {
+                ui.separator();
+                grobid_url_row(ui, ctx.settings, ctx.dirty);
+            }
             ui.separator();
             return index_section(ui, ctx);
         }
@@ -1150,6 +1376,20 @@ fn workspace_menu(
     false
 }
 
+/// GROBID server used by drop-to-ingest (feature `grobid`).
+#[cfg(feature = "grobid")]
+fn grobid_url_row(ui: &mut egui::Ui, settings: &mut RagSettings, dirty: &Cell<bool>) {
+    setting_row(ui, &t!("agent.menu.grobid_url"), |ui| {
+        if ui
+            .text_edit_singleline(&mut settings.grobid.url)
+            .on_hover_text(t!("agent.menu.grobid_url_hint"))
+            .changed()
+        {
+            dirty.set(true);
+        }
+    });
+}
+
 /// Bibliography and corpus folder of the library (the Corpus component).
 fn library_menu(ui: &mut egui::Ui, ctx: &mut MenuContext<'_>) {
     let Some(workspace) = ctx.settings.effective_workspace(ctx.editor_workspace) else {
@@ -1267,6 +1507,7 @@ mod tests {
             bibliography: None,
             probes: Default::default(),
             sync: None,
+            ingest: None,
             index: None,
         });
         let components = bar_components(Some(&status));

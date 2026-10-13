@@ -34,8 +34,12 @@ use ragrig::{
     SessionId, SessionManifest, SessionStore, SummaryHistory, TurnRole,
 };
 
+#[cfg(feature = "grobid")]
+use super::ingest::{self, IngestOptions, IngestOutcome, IngestSource, IngestTargets};
 use super::probe;
-use super::status::{ActivityKind, IndexInfo, ProbeResults, Reachability, SyncProgress};
+use super::status::{
+    ActivityKind, IndexInfo, IngestProgress, ProbeResults, Reachability, SyncProgress,
+};
 use super::{cite, library, RagSettings, RagStatus, StatusInput};
 use crate::rag::LibraryState;
 
@@ -103,6 +107,13 @@ pub enum RagCommand {
     },
     /// Re-read the library bibliography (startup, watcher, settings change).
     LoadLibrary,
+    /// Ingest dropped PDFs and URLs (feature `grobid`): the GROBID pre-pass,
+    /// then a bibliography merge, a library reload and an incremental sync.
+    #[cfg(feature = "grobid")]
+    Ingest {
+        /// The dropped sources, in drop order.
+        sources: Vec<IngestSource>,
+    },
     /// Probe the configured backends for reachability.
     Probe,
     /// Cancel the running query or ingestion.
@@ -196,6 +207,25 @@ pub enum RagEvent {
     Library {
         /// What the pane should render.
         state: Box<LibraryState>,
+    },
+    /// An ingestion run finished (feature `grobid`).
+    #[cfg(feature = "grobid")]
+    IngestFinished {
+        /// What the run did.
+        outcome: IngestOutcome,
+        /// Whether the corpus was indexed afterwards.
+        indexed: bool,
+        /// Whether the run changed nothing the user could see.
+        nothing_new: bool,
+    },
+    /// The ingestion run was cancelled.
+    #[cfg(feature = "grobid")]
+    IngestCancelled,
+    /// The ingestion run could not run or failed; `message` explains.
+    #[cfg(feature = "grobid")]
+    IngestFailed {
+        /// User-presentable reason.
+        message: String,
     },
     /// The saved-session list (and the current session id).
     Sessions {
@@ -326,8 +356,10 @@ struct Shared {
     init_error: Mutex<Option<String>>,
     busy: AtomicBool,
     syncing: AtomicBool,
+    ingesting: AtomicBool,
     probes: Mutex<ProbeResults>,
     sync_progress: Mutex<Option<SyncProgress>>,
+    ingest_progress: Mutex<Option<IngestProgress>>,
 }
 
 impl Shared {
@@ -344,6 +376,7 @@ impl Shared {
 }
 
 /// Everything a query task needs, snapshotted from the worker state.
+#[derive(Clone)]
 struct QueryContext {
     settings: RagSettings,
     editor_workspace: Option<PathBuf>,
@@ -394,7 +427,9 @@ impl WorkerState {
 
     /// Whether a query or sync is running.
     fn is_busy(&self) -> bool {
-        self.shared.busy.load(Ordering::SeqCst) || self.shared.syncing.load(Ordering::SeqCst)
+        self.shared.busy.load(Ordering::SeqCst)
+            || self.shared.syncing.load(Ordering::SeqCst)
+            || self.shared.ingesting.load(Ordering::SeqCst)
     }
 
     /// Apply the current settings to the live session in place.
@@ -582,6 +617,17 @@ async fn worker_main(
             RagCommand::LoadLibrary => {
                 state.library_path = state.library_path();
                 spawn_library_load(state.query_context(), events.clone());
+            }
+            #[cfg(feature = "grobid")]
+            RagCommand::Ingest { sources } => {
+                if state.is_busy() {
+                    let _ = events.send(RagEvent::IngestFailed {
+                        message: busy_message(),
+                    });
+                } else {
+                    state.shared.ingesting.store(true, Ordering::SeqCst);
+                    tokio::spawn(run_ingest(state.query_context(), sources, events.clone()));
+                }
             }
             RagCommand::Probe => {
                 let context = state.query_context();
@@ -943,6 +989,7 @@ fn status_snapshot(
         .and_then(|workspace| settings.library.resolve(workspace).bibtex);
     let probes = *lock(&shared.probes);
     let sync = lock(&shared.sync_progress).clone();
+    let ingest = lock(&shared.ingest_progress).clone();
     RagStatus::derive(StatusInput {
         settings,
         workspace: workspace.as_deref(),
@@ -954,6 +1001,7 @@ fn status_snapshot(
         bibliography: bibliography.as_deref(),
         probes,
         sync: sync.as_ref(),
+        ingest: ingest.as_ref(),
         index: index.as_ref(),
     })
 }
@@ -1137,6 +1185,111 @@ async fn run_sync(context: QueryContext, mode: SyncMode, events: Sender<RagEvent
         }
     }
     emit_status(&context, &events);
+}
+
+/// Run the GROBID ingestion for dropped sources, then reload the library and
+/// index the new documents (feature `grobid`).
+///
+/// The pre-pass itself never touches the agent session; only the incremental
+/// sync afterwards does, so the two share the worker's cancel slot and the
+/// index keeps its usual progress rendering.
+#[cfg(feature = "grobid")]
+async fn run_ingest(context: QueryContext, sources: Vec<IngestSource>, events: Sender<RagEvent>) {
+    let shared = &context.shared;
+    let token = CancellationToken::new();
+    *lock(&shared.cancel) = Some(token.clone());
+    emit_status(&context, &events);
+
+    let result = run_ingest_inner(&context, &sources, &token, &events).await;
+
+    shared.ingesting.store(false, Ordering::SeqCst);
+    *lock(&shared.cancel) = None;
+    *lock(&shared.ingest_progress) = None;
+
+    // Only a run that changed something is worth indexing; a re-drop of files
+    // already in the library must not trigger a no-op sync.
+    let (reload, sync, indexed) = match &result {
+        Ok(outcome) => {
+            let reload = outcome.processed > 0;
+            let sync = reload && !outcome.nothing_new();
+            (reload, sync, sync && context.settings.embeddings_enabled)
+        }
+        Err(_) => (false, false, false),
+    };
+
+    match result {
+        Ok(outcome) => {
+            let nothing_new = outcome.nothing_new();
+            let _ = events.send(RagEvent::IngestFinished {
+                outcome,
+                indexed,
+                nothing_new,
+            });
+        }
+        Err(err) if err.downcast_ref::<ragrig::Cancelled>().is_some() => {
+            let _ = events.send(RagEvent::IngestCancelled);
+        }
+        Err(err) => {
+            let _ = events.send(RagEvent::IngestFailed {
+                message: format!("{err:#}"),
+            });
+        }
+    }
+    emit_status(&context, &events);
+
+    // The bibliography changed (or was created): refresh the library list, and
+    // index the new documents unless retrieval is switched off.
+    if reload {
+        spawn_library_load(context.clone(), events.clone());
+    }
+    if sync && context.settings.embeddings_enabled {
+        run_sync(context, SyncMode::Incremental, events).await;
+    }
+}
+
+/// Resolve folder, bibliography and options, then run the pre-pass.
+#[cfg(feature = "grobid")]
+async fn run_ingest_inner(
+    context: &QueryContext,
+    sources: &[IngestSource],
+    token: &CancellationToken,
+    events: &Sender<RagEvent>,
+) -> anyhow::Result<IngestOutcome> {
+    let workspace = context
+        .settings
+        .effective_workspace(context.editor_workspace.as_deref())
+        .context("no RAG workspace configured — use the component bar to choose a folder")?;
+    let paths = context.settings.library.resolve(&workspace);
+    let folder = paths.folder;
+    std::fs::create_dir_all(&folder)
+        .with_context(|| format!("cannot create the library folder {}", folder.display()))?;
+
+    // Merge target: the configured or discovered bibliography, else the
+    // conventional `<library>/library.bib` (created by the merge) so a fresh
+    // workspace works without any configuration. Several found bibliographies
+    // stay a user decision — ingest never guesses.
+    let bibtex = if let Some(bibtex) = paths.bibtex {
+        Some(bibtex)
+    } else if paths.candidates.is_empty() {
+        Some(folder.join("library.bib"))
+    } else {
+        anyhow::bail!("several bibliographies found — pick one in the Corpus menu first");
+    };
+
+    let options = IngestOptions {
+        grobid_url: context.settings.grobid.url.clone(),
+        ..IngestOptions::default()
+    };
+    let targets = IngestTargets {
+        folder: &folder,
+        bibtex: bibtex.as_deref(),
+        link: true,
+    };
+    let progress = |update: IngestProgress| {
+        *lock(&context.shared.ingest_progress) = Some(update);
+        emit_status(context, events);
+    };
+    ingest::run(sources, &targets, &options, token, &progress).await
 }
 
 /// Summary of one sync run.
@@ -1798,6 +1951,73 @@ mod tests {
             index.embedding_model, "tiny-v1",
             "the manifest records the live embedder, not the configured name"
         );
+    }
+
+    /// The full drop-to-ingest plumbing: the worker runs the GROBID pre-pass
+    /// for a dropped file, emits the outcome and refreshes the library
+    /// (feature `grobid`).
+    ///
+    /// Multi-threaded on purpose: the worker polls with blocking sleeps, and
+    /// the mock GROBID server needs an executor thread of its own.
+    #[cfg(feature = "grobid")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ingest_runs_the_grobid_prepass_for_dropped_files() {
+        use crate::rag::ingest::mock::{spawn_mock_grobid, MOCK_TEI};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = workspace_settings(dir.path());
+        // Ingestion without indexing keeps this test off the embedder.
+        settings.embeddings_enabled = false;
+        let library = dir.path().join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let source = library.join("scan.pdf");
+        std::fs::write(&source, b"%PDF-1.4 fake").unwrap();
+        let (addr, parses) = spawn_mock_grobid(MOCK_TEI).await;
+        settings.grobid.url = format!("http://{addr}");
+
+        let worker = RagrigWorker::spawn(settings, None, tiny_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::Ingest {
+            sources: vec![IngestSource::File(source)],
+        });
+
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::IngestFinished { .. })
+        });
+        let RagEvent::IngestFinished {
+            outcome,
+            indexed,
+            nothing_new,
+        } = event
+        else {
+            unreachable!()
+        };
+        assert_eq!(outcome.processed, 1);
+        assert_eq!(outcome.renamed, 1);
+        assert_eq!(outcome.merged, 1);
+        assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+        assert!(!nothing_new);
+        assert!(!indexed, "retrieval is switched off");
+        assert_eq!(parses.load(Ordering::SeqCst), 1);
+
+        // The renamed PDF and the created bibliography are on disk…
+        let pdfs: Vec<String> = std::fs::read_dir(&library)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.to_ascii_lowercase().ends_with(".pdf"))
+            .collect();
+        assert_eq!(pdfs.len(), 1, "{pdfs:?}");
+        assert!(pdfs[0].starts_with("Smith2020 - "), "{pdfs:?}");
+        assert!(library.join("library.bib").is_file());
+
+        // …and the library list is refreshed for the new entry.
+        let state = wait_for_library(&worker);
+        let crate::rag::LibraryState::Ready { view, .. } = state else {
+            panic!("expected a readable library, got {state:?}");
+        };
+        assert_eq!(view.entries.len(), 1);
+        assert_eq!(view.entries[0].key, "Smith2020");
     }
 
     #[tokio::test]

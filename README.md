@@ -87,7 +87,7 @@ Packaging metadata (`cargo deb`, `cargo generate-rpm`, `cargo wix`,
 | Cargo feature | Default | What it enables |
 |---|---|---|
 | `rag` | off | Agent pane, component bar, Library pane, `@Key` citations |
-| `grobid` | planned | Drag a file or URL onto the Library to ingest it via GROBID (Sprint 5) |
+| `grobid` | off | Drop-to-ingest: PDFs and URLs dropped on the Library are parsed by GROBID, renamed and merged into the bibliography |
 
 ## Using the agent
 
@@ -158,7 +158,8 @@ actions:
   chunk size (tokens) and overlap, plus a note about whether the index matches
   the current chunker settings.
 - **Corpus** — workspace picker, the bibliography and corpus folder of the
-  Library pane, and the same index actions.
+  Library pane, the GROBID server used by drop-to-ingest, and the same index
+  actions.
 
 ### Workspace and corpus
 
@@ -306,12 +307,58 @@ The corpus folder falls back to the bibliography's directory when the
 conventional folder does not exist — that is where `--bibtex-merge` workspaces
 keep their renamed PDFs.
 
+### Adding documents: drop a PDF or a URL
+
+With the `grobid` feature the Library section is also a drop target: expand it
+and drop one or more **PDFs** onto it. A highlight shows where they will land
+while the files hover; expand the section first — a collapsed Library is not a
+drop target.
+
+The drop runs the same pipeline as `ragrig-cli --embed-rename --bibtex-merge`:
+
+1. Files from outside the library folder are **copied** in (the originals stay
+   where they are); a file whose content is already in the folder is recognized
+   and reused instead of duplicated.
+2. Every new or changed PDF is parsed by the GROBID server, completed against
+   OpenAlex (DOI first, then title search) and renamed to
+   `Key - Full authors - Full title - Year.pdf`.
+3. The record is merged into the bibliography — duplicate detection, `file`
+   link to the renamed PDF — and the conventional
+   `<workspace>/.ragrig/library/library.bib` is created when no bibliography
+   existed yet.
+4. An incremental **index update** follows automatically, so the new documents
+   are searchable in the agent pane right away (unless retrieval is switched
+   off; the transcript says so if it is).
+
+Progress is visible on the component bar: the *Parser* icon turns busy while
+GROBID parses and OpenAlex completes, the *Corpus* icon while downloading,
+renaming and merging. **Stop** in the composer cancels the run, and the
+transcript reports the outcome, skips and failures — a document that is already
+in the library answers with *"Nothing new"*.
+
+**URLs** are added with the link icon above the list: paste
+`https://…/paper.pdf` and press *Add*. The PDF is downloaded into the library
+folder (50 MiB cap, and the response has to be a PDF rather than a landing
+page), then goes through the same pipeline. Dragging a URL from a browser onto
+the window does not work on any current platform — the window backends drop
+non-file URIs (see `UPSTREAM.md`, US-13) — so the input row is the dependable
+path; URL-looking dropped paths are still accepted for future backends.
+
+Only PDFs can be ingested this way (that is what GROBID parses). Other dropped
+files are reported as skipped; put them into the corpus folder and press
+*Update index* to index them without a bibliography entry, or open them in the
+editor. Folders are skipped as well — open them as a workspace instead.
+
+The **Corpus** component menu configures the *GROBID server* (default
+`http://localhost:8070`); it has to be running when a drop arrives, and the
+error message names a ready-to-run `docker run` command when it is not.
+
 ### Building the bibliography with GROBID
 
-Sciscraper reads `.bib` files; it does not (yet) create them. The companion
-tools do — and they share the same layout, so Sciscraper picks the result up
-without configuration. (Dropping a PDF or URL straight onto the Library to run
-this ingestion from inside the editor is planned as the `grobid` feature.)
+Sciscraper reads and maintains `.bib` files — the drop-to-ingest pipeline above
+writes exactly what the companion tools write. Those tools remain the fastest
+way to ingest a whole shelf of PDFs at once, and they share the same layout, so
+Sciscraper picks their results up without configuration:
 
 - **`ragrig-cli`** ([crates.io](https://crates.io/crates/ragrig-cli)) with the
   `grobid` feature renames PDFs by their metadata and maintains the
@@ -429,6 +476,13 @@ menu and press **Rebuild index**.
 The `@Key` attachment needs the Library pane's bibliography. Open the Corpus
 menu and pick the `.bib` (or the *Choose bibliography…* button in the Library
 pane) — the error message lists the bibliographies that were found.
+
+### A drop says the GROBID server is not ready
+
+Start one of the containers from [GROBID prerequisites](#grobid-prerequisites)
+(or point *GROBID server* in the Corpus menu at your instance) and drop the file
+again. GROBID preloads its models on start, so the first `/api/isalive` can take
+tens of seconds — the check waits for it before giving up.
 
 ## Where Sciscraper keeps its state
 

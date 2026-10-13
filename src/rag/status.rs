@@ -154,6 +154,76 @@ impl SyncProgress {
     }
 }
 
+/// Stages of a running GROBID ingestion (feature `grobid`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IngestStage {
+    /// A URL is being downloaded into the library folder.
+    Downloading,
+    /// New or changed PDFs are parsed by the GROBID server.
+    Parsing,
+    /// Parsed headers are completed against OpenAlex.
+    Completing,
+    /// Files are renamed to their metadata name.
+    Renaming,
+    /// Records are merged into the bibliography.
+    Merging,
+}
+
+impl IngestStage {
+    /// Whether this stage keeps the Parser component busy.
+    pub fn is_parser(self) -> bool {
+        matches!(self, Self::Parsing | Self::Completing)
+    }
+
+    /// Whether this stage keeps the Corpus component busy.
+    pub fn is_corpus(self) -> bool {
+        matches!(self, Self::Downloading | Self::Renaming | Self::Merging)
+    }
+
+    /// English stage name for status details.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Downloading => "downloading",
+            Self::Parsing => "grobid",
+            Self::Completing => "openalex",
+            Self::Renaming => "renaming",
+            Self::Merging => "merging",
+        }
+    }
+}
+
+/// Progress of a running ingestion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IngestProgress {
+    /// The stage the run is in.
+    pub stage: IngestStage,
+    /// 1-based step within the stage.
+    pub done: usize,
+    /// Steps in this stage.
+    pub total: usize,
+    /// Document or URL the step is about (empty when the stage has none).
+    pub name: String,
+}
+
+impl IngestProgress {
+    /// One-line English detail for status tooltips (see [`SyncProgress::detail`]).
+    pub fn detail(&self) -> String {
+        let stage = self.stage.label();
+        if self.total > 1 {
+            let base = format!("{stage} {}/{}", self.done, self.total);
+            if self.name.is_empty() {
+                return base;
+            }
+            return format!("{base} · {}", self.name);
+        }
+        if self.name.is_empty() {
+            format!("{stage}…")
+        } else {
+            format!("{stage} · {}", self.name)
+        }
+    }
+}
+
 /// What the open vector store says about its index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexInfo {
@@ -235,6 +305,8 @@ pub struct RagStatus {
     pub chunks: Option<usize>,
     /// What the store says about its index, when a session is open.
     pub index: Option<IndexInfo>,
+    /// Whether a GROBID ingestion run is in progress (feature `grobid`).
+    pub ingesting: bool,
 }
 
 /// Runtime facts fed into [`RagStatus::derive`].
@@ -260,6 +332,8 @@ pub struct StatusInput<'a> {
     pub probes: ProbeResults,
     /// Latest sync progress, while a sync runs.
     pub sync: Option<&'a SyncProgress>,
+    /// Latest ingestion progress, while an ingestion runs.
+    pub ingest: Option<&'a IngestProgress>,
     /// What the store says about its index.
     pub index: Option<&'a IndexInfo>,
 }
@@ -273,11 +347,7 @@ impl RagStatus {
             memory_status(input),
             embed_status(input),
             store_status(input),
-            ComponentStatus::new(
-                RagComponent::Parser,
-                ComponentState::Ready,
-                "pdf · epub · docx · html · md",
-            ),
+            parser_status(input),
             ComponentStatus::new(
                 RagComponent::Chunker,
                 ComponentState::Ready,
@@ -297,6 +367,7 @@ impl RagStatus {
             documents: input.documents,
             chunks: input.chunks,
             index: input.index.cloned(),
+            ingesting: input.ingest.is_some(),
         }
     }
 
@@ -463,6 +534,15 @@ fn corpus_status(input: StatusInput<'_>) -> ComponentStatus {
             "no workspace",
         );
     }
+    if let Some(progress) = input.ingest {
+        if progress.stage.is_corpus() {
+            return ComponentStatus::new(
+                RagComponent::Corpus,
+                ComponentState::Busy,
+                progress.detail(),
+            );
+        }
+    }
     match input.bibliography {
         Some(bib) => {
             let label = bib
@@ -477,6 +557,24 @@ fn corpus_status(input: StatusInput<'_>) -> ComponentStatus {
             "no bibliography — set one in the component menu",
         ),
     }
+}
+
+/// Parser status: idle, or the GROBID ingestion stage currently running.
+fn parser_status(input: StatusInput<'_>) -> ComponentStatus {
+    if let Some(progress) = input.ingest {
+        if progress.stage.is_parser() {
+            return ComponentStatus::new(
+                RagComponent::Parser,
+                ComponentState::Busy,
+                progress.detail(),
+            );
+        }
+    }
+    ComponentStatus::new(
+        RagComponent::Parser,
+        ComponentState::Ready,
+        "pdf · epub · docx · html · md",
+    )
 }
 
 #[cfg(test)]
@@ -498,6 +596,7 @@ mod tests {
             bibliography: None,
             probes: ProbeResults::default(),
             sync: None,
+            ingest: None,
             index: None,
         }
     }
@@ -742,6 +841,92 @@ mod tests {
         let store = status.component(RagComponent::Store).unwrap();
         assert_eq!(store.state, ComponentState::Busy);
         assert_eq!(store.detail, "updating index…");
+    }
+
+    #[test]
+    fn ingest_progress_marks_parser_and_corpus_busy() {
+        let settings = RagSettings::default();
+        let workspace = std::path::PathBuf::from("/tmp/ws");
+
+        // Parsing shows on the Parser component, with a step counter.
+        let progress = IngestProgress {
+            stage: IngestStage::Parsing,
+            done: 2,
+            total: 5,
+            name: "scan.pdf".into(),
+        };
+        let status = RagStatus::derive(StatusInput {
+            ingest: Some(&progress),
+            ..input(&settings, Some(&workspace))
+        });
+        assert!(status.ingesting);
+        let parser = status.component(RagComponent::Parser).unwrap();
+        assert_eq!(parser.state, ComponentState::Busy);
+        assert_eq!(parser.detail, "grobid 2/5 · scan.pdf");
+        assert_ne!(
+            status.component(RagComponent::Corpus).unwrap().state,
+            ComponentState::Busy,
+            "parsing does not touch the corpus component"
+        );
+
+        // Downloading, renaming and merging show on the Corpus component.
+        for stage in [
+            IngestStage::Downloading,
+            IngestStage::Renaming,
+            IngestStage::Merging,
+        ] {
+            let progress = IngestProgress {
+                stage,
+                done: 1,
+                total: 1,
+                name: String::new(),
+            };
+            let status = RagStatus::derive(StatusInput {
+                ingest: Some(&progress),
+                ..input(&settings, Some(&workspace))
+            });
+            let corpus = status.component(RagComponent::Corpus).unwrap();
+            assert_eq!(corpus.state, ComponentState::Busy, "{stage:?}");
+            assert_eq!(
+                status.component(RagComponent::Parser).unwrap().state,
+                ComponentState::Ready,
+                "{stage:?} does not touch the parser"
+            );
+        }
+
+        // Idle again once the run is over.
+        let status = derive(&settings, Some(&workspace));
+        assert!(!status.ingesting);
+        assert_eq!(
+            status.component(RagComponent::Parser).unwrap().state,
+            ComponentState::Ready
+        );
+    }
+
+    #[test]
+    fn ingest_stage_details_are_one_liners() {
+        let cases = [
+            (
+                IngestStage::Downloading,
+                1,
+                3,
+                "https://example.org/a.pdf",
+                "downloading 1/3 · https://example.org/a.pdf",
+            ),
+            (IngestStage::Parsing, 1, 1, "scan.pdf", "grobid · scan.pdf"),
+            (IngestStage::Completing, 2, 4, "", "openalex 2/4"),
+            (IngestStage::Renaming, 1, 1, "", "renaming…"),
+            (IngestStage::Merging, 1, 1, "", "merging…"),
+        ];
+        for (stage, done, total, name, expected) in cases {
+            let progress = IngestProgress {
+                stage,
+                done,
+                total,
+                name: name.to_string(),
+            };
+            assert_eq!(progress.detail(), expected);
+        }
     }
 
     #[test]

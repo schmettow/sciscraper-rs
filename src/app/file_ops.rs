@@ -1574,6 +1574,13 @@ impl FerriteApp {
             return;
         }
 
+        // A drop that lands on the agent library is ingested (feature
+        // `grobid`): it must not also open documents or switch workspaces.
+        #[cfg(feature = "grobid")]
+        if self.try_library_ingest(ctx, &dropped_files) {
+            return;
+        }
+
         // Categorize dropped items
         let mut folders: Vec<std::path::PathBuf> = Vec::new();
         let mut images: Vec<std::path::PathBuf> = Vec::new();

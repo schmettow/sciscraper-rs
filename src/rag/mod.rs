@@ -20,6 +20,8 @@
 //! [`AgentSession`]: ragrig::AgentSession
 
 pub mod cite;
+#[cfg(feature = "grobid")]
+pub mod ingest;
 pub mod library;
 pub mod probe;
 pub mod status;
@@ -33,6 +35,8 @@ use ragrig::Chunker;
 use serde::{Deserialize, Serialize};
 
 pub use cite::CitePayload;
+#[cfg(feature = "grobid")]
+pub use ingest::{IngestOutcome, IngestSource};
 pub use library::{LibraryEntry, LibraryState, LibraryView};
 pub use status::{ComponentState, RagComponent, RagStatus, StatusInput};
 pub use worker::{
@@ -60,6 +64,27 @@ pub struct LibrarySettings {
     pub folder: Option<PathBuf>,
     /// BibTeX file; `None` = `<library folder>/library.bib`.
     pub bibtex: Option<PathBuf>,
+}
+
+/// Settings of the GROBID drop-to-ingest pipeline (feature `grobid`).
+///
+/// The server URL is the only knob: workers, timeouts and the rename policy
+/// follow the `ragrig-cli` pre-pass. The setting exists in every build (a
+/// `rag`-only binary ignores it) so settings files stay portable between
+/// feature builds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GrobidSettings {
+    /// GROBID server base URL (a Docker container by default).
+    pub url: String,
+}
+
+impl Default for GrobidSettings {
+    fn default() -> Self {
+        Self {
+            url: "http://localhost:8070".to_string(),
+        }
+    }
 }
 
 impl LibrarySettings {
@@ -212,6 +237,8 @@ pub struct RagSettings {
     pub ragrig: RagrigConfig,
     /// The bibliography and corpus folder.
     pub library: LibrarySettings,
+    /// GROBID server used by drop-to-ingest (feature `grobid`).
+    pub grobid: GrobidSettings,
 }
 
 impl Default for RagSettings {
@@ -234,6 +261,7 @@ impl Default for RagSettings {
             chunker: ChunkerKind::default(),
             ragrig,
             library: LibrarySettings::default(),
+            grobid: GrobidSettings::default(),
         }
     }
 }

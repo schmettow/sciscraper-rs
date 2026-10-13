@@ -29,7 +29,8 @@ without features behaves exactly as before.
   `SimpleGenerator` / `test-fixtures` allow hermetic tests.
 - The **GROBID pre-pass lives in the `ragrig-cli` binary**, not in `ragrig`; the GUI must
   re-orchestrate it against the public `grobid-bibtex` API (possible — ragrig-cli is
-  itself an external consumer). Upstream issue candidate.
+  itself an external consumer). Upstream issue candidate. Sprint 5 did exactly that
+  (`src/rag/ingest.rs`); the resulting duplication is recorded as US-2.
 - The fork has the right seams: worker pattern (`src/workers/`), egui 0.34 `Popup` API,
   typed drag payloads in use, `ai_panel_visible` placeholder, `notify`/`fuzzy-matcher`/
   `url`/`comrak` already in the tree.
@@ -49,7 +50,10 @@ sciscraper-rs  (feature `rag`, off by default)
   src/rag/mod.rs                 RagSettings (embeds RagrigConfig), defaults, workspace
   src/rag/status.rs              pure component status model (unit-testable)
   src/rag/worker.rs              background worker: AgentSession, commands/events
+  src/rag/ingest.rs              GROBID pre-pass re-orchestration + URL download
+                                 (feature `grobid`)
   src/ui/agent_panel.rs          dock composition, menus, transcript↔worker glue
+  src/ui/library_panel.rs        bibliography rows, drag-to-cite, drop target, URL row
   src/app/rag.rs                 FerriteApp glue: toggle, lazy init, polling, rendering
   hooks                          settings field, ribbon button, Ctrl+Shift+A, palette,
                                  locales (en/de); all `#[cfg(feature = "rag")]`
@@ -303,11 +307,43 @@ Verification: 1593 tests pass with the 3 pre-existing failures (+2 host tests);
 `egui_chat` 0.3.1 is green (34 unit + 2 layout tests + 6 doctests, clippy
 `-D warnings` clean).
 
-### Sprint 5 — Ingestion (feature `grobid`) (next)
+### ✅ Sprint 5 — Ingestion (feature `grobid`) (done)
 
-- Drop files/URLs on the library; GROBID pre-pass re-orchestration (manifest → extract →
-  OpenAlex complete → rename → merge into `.bib`) mirroring ragrig-cli semantics, then sync.
-- Progress UI from `ProgressEvent`; failure isolation; mock-GROBID tests.
+- **Feature split.** New `grobid = ["rag", "grobid-bibtex/openalex"]`: the pre-pass needs the
+  OpenAlex completion tier, while `rag` alone keeps chat + library. A `rag`-only build behaves
+  exactly as before (no drop target, no URL row, no GROBID menu row).
+- **`src/rag/ingest.rs`** re-orchestrates the `ragrig-cli` pre-pass against the public
+  `grobid-bibtex` API (the US-2 workaround): shared `.ragrig_grobid.json` manifest, batched
+  `extract::headers` → `complete::biblios` → `files::rename_pdfs_with` (Keyed/Year) →
+  `collection::merge_file`, plus what a drop needs — copy dropped files into the library, reuse
+  a content-identical file instead of duplicating it, download URLs into the folder (`ureq`,
+  50 MiB cap, `%PDF-` sniff, `.part`-free in-memory write), per-stage progress and cooperative
+  cancellation (the download loop checks the token mid-stream). OpenAlex base URL, probe
+  attempts and worker count are injectable for tests; production mirrors the CLI (4 workers,
+  5 × 3 s probes, 15 s OpenAlex timeout).
+- **Worker.** `RagCommand::Ingest` → `run_ingest`: pre-pass, `IngestFinished/Cancelled/Failed`
+  events, then a library reload and an incremental sync — skipped when retrieval is off or the
+  run changed nothing, so a re-drop does not trigger a no-op index update. The sync keeps its
+  existing `ProgressEvent`-driven bar rendering.
+- **Status.** `IngestStage`/`IngestProgress` drive the component bar: *Parser* busy while
+  parsing/completing, *Corpus* while downloading/renaming/merging; `RagStatus.ingesting` feeds
+  the composer's busy state (Stop cancels the ingest through the shared cancel slot).
+- **UI.** The library section is a drop target (its rect is captured every rendered frame); the
+  host intercepts `handle_dropped_files` *before* the global handler, so a drop on the library
+  is ingested instead of opened as a tab. Hover highlight with hint text, a link-icon row adds
+  URLs, the Corpus menu gained the *GROBID server* field, and the transcript gets notes for
+  start/outcome/skips/failures (the transient note is replaced by the outcome).
+- **Known limitation (US-13).** Native drag-and-drop never delivers `http(s)` URLs (winit X11
+  rejects non-file URI lists, Windows/macOS map neither `CFSTR_INETURL` nor `NSURL`), so the
+  add-from-URL row is the dependable path; URL-looking dropped paths are still accepted for
+  future backends.
+- **Tests (18 new, hermetic).** Mock GROBID over TCP (shared with the worker round trip), a std
+  download server, manifest/cache round trip (second drop = *nothing new*, no second parse),
+  re-drop identity, cancellation marker error, corrupt-`.bib` fail-fast, stage progress, status
+  rendering, folder/non-PDF skips.
+
+Verification: 1616 tests pass with the 3 pre-existing failures (`--all-features`); `rag`, and
+`rag,grobid` both compile; clippy reports nothing new in the sprint's files.
 
 ## 5. Baseline health (found during Sprint 1)
 

@@ -27,6 +27,10 @@ lsp = []
 # backed by the `ragrig` framework. Off by default so a plain Ferrite build
 # is unchanged; see .planning/sciscraper-ragrig.md.
 rag = ["dep:ragrig", "dep:egui_chat", "dep:grobid-bibtex", "dep:biblatex", "dep:anyhow", "async-workers"]
+# Drop-to-ingest (sprint 5): PDFs and URLs dropped on the library go through
+# the GROBID pre-pass (parse → OpenAlex → rename → merge into the `.bib`) and
+# are indexed afterwards. Keeps `rag` free of the OpenAlex completion tier.
+grobid = ["rag", "grobid-bibtex/openalex"]
 
 [dependencies]
 egui = { version = "0.34", features = ["serde"] }

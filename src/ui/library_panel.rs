@@ -24,7 +24,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rust_i18n::t;
 
 use crate::rag::{CitePayload, LibraryEntry, LibraryState, LibraryView, RagCommand};
-use crate::ui::phosphor_icons::{ARROWS_CLOCKWISE, COPY, MAGNIFYING_GLASS, PLUS, X};
+use crate::ui::phosphor_icons::{ARROWS_CLOCKWISE, COPY, LINK, MAGNIFYING_GLASS, PLUS, X};
 
 /// What one frame of the library section produced.
 #[derive(Default)]
@@ -35,6 +35,8 @@ pub struct LibraryAction {
     pub choose_bib: Option<PathBuf>,
     /// Worker commands (reload; the panel forwards them).
     pub commands: Vec<RagCommand>,
+    /// URLs typed into the add-from-URL row (feature `grobid`).
+    pub ingest_urls: Vec<String>,
 }
 
 /// State of the library section, owned by `AgentPanel`.
@@ -52,6 +54,10 @@ pub struct LibrarySection {
     loaded_mtime: Option<SystemTime>,
     /// Last copied key and when (for the transient "copied" hint).
     copied: Option<(String, f64)>,
+    /// Buffer of the add-from-URL row; `None` keeps the row closed
+    /// (feature `grobid`).
+    #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
+    url_input: Option<String>,
 }
 
 impl LibrarySection {
@@ -69,6 +75,58 @@ impl LibrarySection {
         self.loaded_mtime = path.and_then(|path| mtime_of(path));
         self.watch(path);
         self.state = Some(state);
+    }
+
+    /// The add-from-URL row (feature `grobid`): a link icon that opens a
+    /// one-line input. Browsers deliver URL drags as text, which native
+    /// window backends do not forward as file drops, so typing is the
+    /// dependable path (see `UPSTREAM.md`, US-13).
+    #[cfg(feature = "grobid")]
+    fn show_url_row(&mut self, ui: &mut egui::Ui, action: &mut LibraryAction) {
+        let mut open = false;
+        let mut submit = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| match &mut self.url_input {
+            None => {
+                if ui
+                    .small_button(LINK)
+                    .on_hover_text(t!("agent.library.add_url"))
+                    .clicked()
+                {
+                    open = true;
+                }
+            }
+            Some(url) => {
+                let width = (ui.available_width() - 96.0).max(80.0);
+                let response = ui.add(
+                    egui::TextEdit::singleline(url)
+                        .desired_width(width)
+                        .hint_text(t!("agent.library.url_hint")),
+                );
+                let entered =
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if entered || ui.button(t!("agent.library.url_add")).clicked() {
+                    submit = true;
+                }
+                if ui.small_button(X).clicked() {
+                    cancel = true;
+                }
+            }
+        });
+        if open {
+            self.url_input = Some(String::new());
+        }
+        if cancel {
+            self.url_input = None;
+        }
+        if submit {
+            if let Some(url) = self.url_input.take() {
+                let url = url.trim().to_string();
+                if !url.is_empty() {
+                    action.ingest_urls.push(url);
+                }
+            }
+        }
     }
 
     /// Watch the bibliography file (recreated when the path changes).
@@ -108,6 +166,8 @@ impl LibrarySection {
     /// Render the section.
     pub fn show(&mut self, ui: &mut egui::Ui, action: &mut LibraryAction) {
         ui.add_space(2.0);
+        #[cfg(feature = "grobid")]
+        self.show_url_row(ui, action);
         match self.state.as_ref() {
             None => note(ui, &t!("agent.library.loading")),
             Some(LibraryState::Missing { reason }) => {
