@@ -22,9 +22,9 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use egui_chat::agent_bar::{AgentBar, Component, ComponentStatus as BarStatus};
+use egui_chat::agent_bar::{AgentBar, AgentBarStyle, Component, ComponentStatus as BarStatus};
 use egui_chat::chat_view::{ChatMessage, ChatRole, ChatView, MessageMeta, MessageState};
-use egui_chat::composer::Composer;
+use egui_chat::composer::{max_composer_height, Composer};
 use egui_chat::dock::{DockSide, SectionDock, SectionState};
 use egui_chat::form::{note, setting_row, warning};
 use ragrig::types::Provider;
@@ -179,6 +179,13 @@ impl AgentPanel {
             .width_range(300.0, 720.0);
 
         // Section 1: conversation controls, transcript, composer, bar.
+        //
+        // Layout contract (mirrored by egui_chat's `dock_layout` tests): the
+        // footer is anchored to the bottom of the section and the transcript
+        // is placed *above* it, so a multi-line prompt grows upward instead of
+        // pushing the agent bar — and the library section below — out of the
+        // panel. Explicit rects keep every height bounded: the session row,
+        // the transcript, the footer, and the library's reserved share.
         let dock = dock.section(&mut self.agent_section, |ui| {
             session_row(
                 ui,
@@ -190,33 +197,28 @@ impl AgentPanel {
                 &session_load_requested,
             );
 
-            let transcript_height = (ui.available_height() - 120.0).max(140.0);
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), transcript_height),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ChatView::new(&self.transcript)
-                        .empty_text(&empty_text)
-                        .markdown(true)
-                        .show(ui);
-                },
+            let top = ui.cursor().min.y;
+            let bounds = ui.available_rect_before_wrap();
+            let reserve = library_reserve(ui, settings.library_collapsed);
+            let section_bottom = (ui.max_rect().bottom() - reserve)
+                .max(top + MIN_TRANSCRIPT_HEIGHT + min_footer_height(ui));
+
+            // Footer first (bottom-anchored): composer and bar keep their
+            // natural size, whatever the transcript does.
+            let footer_rect = egui::Rect::from_min_max(
+                egui::pos2(
+                    bounds.left(),
+                    (top + MIN_TRANSCRIPT_HEIGHT).min(section_bottom),
+                ),
+                egui::pos2(bounds.right(), section_bottom),
             );
-
-            let composer = Composer::new(&mut self.input)
-                .busy(self.busy || self.syncing)
-                .placeholder(&t!("agent.placeholder"))
-                .labels(&t!("agent.send"), &t!("agent.stop"))
-                .hint(&t!("agent.hint"))
-                .show(ui);
-            if composer.submitted {
-                submit_requested.set(true);
-            }
-            if composer.cancelled {
-                cancel_requested.set(true);
-            }
-
+            let mut footer_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(footer_rect)
+                    .layout(egui::Layout::bottom_up(egui::Align::Min)),
+            );
             let components = bar_components(self.status.as_ref());
-            AgentBar::new(&components, &mut self.open_menu).show(ui, |ui, id| {
+            AgentBar::new(&components, &mut self.open_menu).show(&mut footer_ui, |ui, id| {
                 component_menu(
                     ui,
                     id,
@@ -231,6 +233,41 @@ impl AgentPanel {
                     },
                 )
             });
+            let composer = Composer::new(&mut self.input)
+                .busy(self.busy || self.syncing)
+                .placeholder(&t!("agent.placeholder"))
+                .labels(&t!("agent.send"), &t!("agent.stop"))
+                .hint(&t!("agent.hint"))
+                .show(&mut footer_ui);
+            if composer.submitted {
+                submit_requested.set(true);
+            }
+            if composer.cancelled {
+                cancel_requested.set(true);
+            }
+
+            // Transcript in the space above the footer.
+            let transcript_bottom = (footer_ui.min_rect().top() - ui.spacing().item_spacing.y)
+                .max(top + MIN_TRANSCRIPT_HEIGHT);
+            let transcript_rect = egui::Rect::from_min_max(
+                egui::pos2(bounds.left(), top),
+                egui::pos2(bounds.right(), transcript_bottom),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(transcript_rect), |ui| {
+                ChatView::new(&self.transcript)
+                    .empty_text(&empty_text)
+                    .markdown(true)
+                    .show(ui);
+            });
+
+            // The section ends at the footer's bottom; the library follows.
+            ui.allocate_rect(
+                egui::Rect::from_min_max(
+                    egui::pos2(bounds.left(), top),
+                    egui::pos2(bounds.right(), section_bottom),
+                ),
+                egui::Sense::hover(),
+            );
         });
 
         // Section 2: the bibliography list (drag a row into the document).
@@ -660,6 +697,39 @@ fn sync_summary(indexed: usize, documents: Option<usize>) -> ChatMessage {
         text.push_str(&t!("agent.sync.documents", count = documents));
     }
     ChatMessage::system(text)
+}
+
+/// Smallest height the transcript keeps, whatever else the section needs.
+const MIN_TRANSCRIPT_HEIGHT: f32 = 120.0;
+
+/// Height reserved under the agent pane for the library section.
+///
+/// The dock stacks its sections in one column without a per-section budget,
+/// so the agent section has to leave room for the library: without this
+/// reserve, the library's header, filter and rows are pushed below the panel
+/// (the very first thing a taller transcript would do). The reserve covers
+/// the section header plus the library chrome — file line, filter, count —
+/// and a couple of list rows; a collapsed library only needs its header.
+fn library_reserve(ui: &egui::Ui, collapsed: bool) -> f32 {
+    let spacing = ui.spacing().item_spacing.y;
+    if collapsed {
+        return ui.spacing().interact_size.y + 2.0 * spacing;
+    }
+    ui.spacing().interact_size.y * 3.0
+        + ui.text_style_height(&egui::TextStyle::Small) * 2.0
+        + ui.text_style_height(&egui::TextStyle::Body) * 2.0
+        + 8.0 * spacing
+}
+
+/// Smallest footer that still shows the capped composer and the agent bar.
+///
+/// The footer is bottom-anchored, so this is the space it can never exceed;
+/// the transcript gives it up before anything is clipped.
+fn min_footer_height(ui: &egui::Ui) -> f32 {
+    max_composer_height(ui)
+        + AgentBarStyle::default().height
+        + 8.0
+        + 3.0 * ui.spacing().item_spacing.y
 }
 
 /// Everything a component menu reads or changes.
@@ -1243,6 +1313,62 @@ mod tests {
             });
         }
         assert!(panel.open_menu.is_some(), "no clicks, menu stays open");
+    }
+
+    #[test]
+    fn reserves_leave_room_for_the_library_and_the_footer() {
+        // The dock stacks sections in one column; these reserves are what keep
+        // the library from being pushed below the panel.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let expanded = library_reserve(ui, false);
+            let collapsed = library_reserve(ui, true);
+            assert!(
+                collapsed < expanded,
+                "a collapsed library needs less room: {collapsed} vs {expanded}"
+            );
+            assert!(expanded <= 220.0, "library reserve is bounded: {expanded}");
+            assert!(
+                expanded >= 120.0,
+                "the library needs its chrome: {expanded}"
+            );
+
+            let footer = min_footer_height(ui);
+            let composer_cap = max_composer_height(ui);
+            assert!(footer > composer_cap, "the agent bar adds height");
+            assert!(footer <= 260.0, "footer reserve is bounded: {footer}");
+        });
+    }
+
+    #[test]
+    fn a_multi_line_prompt_renders_within_the_dock() {
+        // Layout smoke test: a tall prompt with a long transcript must render
+        // without panicking (the geometry contract lives in egui_chat's
+        // `dock_layout` tests, which mirror this recipe).
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = RagSettings::default();
+        settings.ragrig.workspace = dir.path().to_path_buf();
+        let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
+        panel.input =
+            "line one\nline two\nline three\nline four\nline five\nline six\nline seven\n"
+                .to_string();
+        panel.transcript = vec![
+            ChatMessage::user("question"),
+            ChatMessage::assistant("an answer ".repeat(100)),
+        ];
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..egui::RawInput::default()
+        };
+        for _ in 0..2 {
+            let _ = ctx.run_ui(input.clone(), |ui| {
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+            });
+        }
     }
 
     #[test]

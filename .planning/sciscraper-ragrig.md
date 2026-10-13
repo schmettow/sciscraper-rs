@@ -274,13 +274,34 @@ through `cite_keys` (what the library inserts is what the chat attach scanner
 sees). 1591 tests pass with the 3 pre-existing failures (+24 feature tests);
 `cargo check` with and without `rag` is clean; clippy adds no warnings.
 
-### Sprint 5 — Ingestion (feature `grobid`) (next)
+### ✅ Sprint 4.1 — dock layout and bubble wrapping (cosmetic fix, egui_chat 0.3.1)
 
-- `grobid` feature (server-dependent paths gated separately); `.bib` view model
-  (the `rag` feature already carries `grobid-bibtex` for `@Key` resolution),
-  Au–Yr–Ti–Source rows, filter, watcher (`notify`), corrupt-file states.
-- Typed cite-drag payload → editor insertion with undo; formats fixed per D2
-  (`@key` inline, `[@k1, @k2]` bracketed); accessible non-drag path.
+Triggered by a user report: chat bubbles ran too wide (cut off at the panel
+edge) and a multi-line query pushed the composer, the agent bar and the
+library section off the panel.
+
+- **Root cause (width):** list items and quotes render inside *horizontal*
+  layouts, where egui resolves `TextWrapMode::Extend` — the `LayoutJob`'s
+  `wrap.max_width` was ignored, and a long bullet demanded 2 104 px inside a
+  300 px column. Both arms now request `.wrap()` explicitly; a regression test
+  pins the width (`markdown::rendered_blocks_stay_within_the_available_width`).
+- **Root cause (height):** the composer's `TextEdit` was unbounded and the
+  host reserved a magic 120 px for the footer; a six-line prompt needed more,
+  so everything below was pushed out of the panel (the agent bar ended up
+  clamped to 3 px). The field now has an *exact* height from its line count
+  (capped at `MAX_INPUT_ROWS = 6`, longer text scrolls inside), and the host
+  lays the section out with explicit rects: the footer is anchored to the
+  section floor and grows upward, the transcript sits above it, and the
+  library's share is reserved below (a collapsed library reserves only its
+  header). Every height is bounded, nothing depends on the previous frame, and
+  no widget is clamped.
+- The recipe is pinned by `egui_chat`'s `tests/dock_layout.rs` (short *and*
+  multi-line prompts: no overlap, nothing pushed out) and documented in the
+  composer module.
+
+Verification: 1593 tests pass with the 3 pre-existing failures (+2 host tests);
+`egui_chat` 0.3.1 is green (34 unit + 2 layout tests + 6 doctests, clippy
+`-D warnings` clean).
 
 ### Sprint 5 — Ingestion (feature `grobid`) (next)
 

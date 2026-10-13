@@ -134,8 +134,9 @@ krilla-svg = "0.7"
 # `internal` = pure-Rust vector store; `ollama-embed` = Ollama embeddings.
 ragrig = { version = "1", default-features = false, features = ["internal", "ollama-embed"], optional = true }
 # Reusable chat/agent-panel widgets (side project, co-developed).
-# 0.3 adds the `form` helpers (setting rows, note/warning lines).
-egui_chat = { version = "0.3.0", path = "../egui_chat", optional = true }
+# 0.3 adds the `form` helpers (setting rows, note/warning lines); 0.3.1 caps
+# the composer height and wraps Markdown list items/quotes.
+egui_chat = { version = "0.3.1", path = "../egui_chat", optional = true }
 # Bibliography model for `@Key` resolution and the library pane. The path
 # serves local co-development: crates.io carries only 0.2.0, which lacks
 # `Collection::cite_entries`; publish 0.2.1 before dropping the path.
