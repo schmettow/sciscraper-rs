@@ -1114,6 +1114,9 @@ agent:
     chip: "Marked region (%{chars} chars)"
     hint: "The marked region rides along with the next question"
     drop: "Drop the marked region"
+  pane:
+    collapse: "Collapse the pane to a strip"
+    expand: "Expand the pane"
   focus:
     hint: "Ask the agent about the marked passage"
   edit:
@@ -1165,7 +1168,6 @@ agent:
     corrupt: "Cannot read %{file}"
     choose_bibliography: "Choose bibliography…"
     insert_hint: "Insert @key at the cursor"
-    insert_inline: "Insert @key (inline)"
     insert_bracketed: "Insert [@key] (APA)"
     copy_key: "Copy citation key"
     copied: "Copied @%{key}"

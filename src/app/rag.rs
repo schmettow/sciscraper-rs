@@ -87,11 +87,12 @@ impl FerriteApp {
     /// question and moves the caret to the chat prompt.
     ///
     /// Painted after the central panel from `render_ui`, so it sits above the
-    /// editor. Hidden while the panes are closed or a query runs, in
+    /// editor. Hidden while the panes are closed or the agent pane is
+    /// collapsed (there is nowhere to type), while a query runs, in
     /// rendered-only mode (there is no raw editor to mark in), without a
     /// document, and while the mark is blank.
     pub(crate) fn render_focus_overlay(&mut self, ui: &mut egui::Ui) {
-        if !self.state.settings.rag.enabled {
+        if !self.state.settings.rag.enabled || self.state.settings.rag.agent_collapsed {
             return;
         }
         let Some(tab) = self.state.active_tab() else {

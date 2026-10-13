@@ -4,10 +4,12 @@
 //! `.bib` the Corpus component points at). Every row is a drag source
 //! carrying a [`CitePayload`] — dragging it into the document inserts the
 //! citation (decision D2: inline `@key`, bracketed `[@k1, @k2]`). Click
-//! selects, Ctrl/⌘-click toggles; double-click, the `+` button and the
-//! context menu insert without dragging (the accessible path). The section
-//! never writes to the editor or the settings: it returns a [`LibraryAction`]
-//! that the agent panel turns into commands and insertions.
+//! selects, Ctrl/⌘-click toggles; double-click and the action buttons that
+//! appear while the pointer is on a row insert without dragging (the
+//! accessible path; sprint 6.5 replaced a right-click menu that was hard to
+//! hit with those buttons). The section never writes to the editor or the
+//! settings: it returns a [`LibraryAction`] that the agent panel turns into
+//! commands and insertions.
 //!
 //! A `notify` watcher on the bibliography's *directory* reloads the list when
 //! the file changes on disk (ragrig-cli merging into it, another tool
@@ -24,7 +26,9 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rust_i18n::t;
 
 use crate::rag::{CitePayload, LibraryEntry, LibraryState, LibraryView, RagCommand};
-use crate::ui::phosphor_icons::{ARROWS_CLOCKWISE, COPY, MAGNIFYING_GLASS, PLUS, UPLOAD_SIMPLE, X};
+use crate::ui::phosphor_icons::{
+    ARROWS_CLOCKWISE, BRACKETS_SQUARE, COPY, MAGNIFYING_GLASS, PLUS, UPLOAD_SIMPLE, X,
+};
 
 /// What one frame of the library section produced.
 #[derive(Default)]
@@ -388,8 +392,11 @@ struct RowOutcome {
 /// Render one two-line row and collect its interactions.
 ///
 /// The row is a `click_and_drag` widget (the tab-bar pattern): clicking
-/// selects, dragging publishes `drag` as the egui payload, and the `+` button
-/// and context menu produce explicit insert requests.
+/// selects, dragging publishes `drag` as the egui payload. While the pointer
+/// is on the row, three action buttons appear at its right edge — insert at
+/// the cursor, insert the APA form, copy the key (sprint 6.5: they replaced a
+/// right-click menu that was hard to hit). Their space is always reserved, so
+/// the text does not jump when they appear.
 fn show_row(
     ui: &mut egui::Ui,
     entry: &LibraryEntry,
@@ -420,10 +427,11 @@ fn show_row(
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     }
 
-    // Layout: meta line (Au · Yr — Source) above the title, `+` on the right.
-    let button_width = 20.0;
+    // Layout: meta line (Au · Yr — Source) above the title; the action
+    // buttons keep the right edge.
+    let [insert_rect, bracketed_rect, copy_rect] = action_buttons(rect);
     let mut text_rect = rect.shrink2(egui::vec2(4.0, 2.0));
-    text_rect.max.x = (text_rect.max.x - button_width).max(text_rect.min.x + 20.0);
+    text_rect.max.x = (copy_rect.min.x - ui.spacing().item_spacing.x).max(text_rect.min.x + 20.0);
     let mut row_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(text_rect)
@@ -439,40 +447,77 @@ fn show_row(
     };
     row_ui.add(egui::Label::new(title).truncate());
 
-    let button_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.max.x - 2.0 - button_width / 2.0, rect.center().y),
-        egui::vec2(button_width, button_width),
-    );
-    if ui
-        .put(button_rect, egui::Button::new(PLUS).small().frame(false))
-        .on_hover_text(t!("agent.library.insert_hint"))
-        .clicked()
-    {
-        outcome.insert = true;
+    if ui.rect_contains_pointer(rect) {
+        if action_button(
+            ui,
+            insert_rect,
+            &entry.key,
+            "insert",
+            PLUS,
+            &t!("agent.library.insert_hint"),
+        ) {
+            outcome.insert = true;
+        }
+        if action_button(
+            ui,
+            bracketed_rect,
+            &entry.key,
+            "bracketed",
+            BRACKETS_SQUARE,
+            &t!("agent.library.insert_bracketed"),
+        ) {
+            outcome.insert_bracketed = true;
+        }
+        if action_button(
+            ui,
+            copy_rect,
+            &entry.key,
+            "copy",
+            COPY,
+            &t!("agent.library.copy_key"),
+        ) {
+            ui.ctx().copy_text(entry.key.clone());
+            outcome.copied = Some(entry.key.clone());
+        }
     }
 
     outcome.clicked = response.clicked();
     outcome.command_clicked = ui.input(|input| input.modifiers.command);
     outcome.double_clicked = response.double_clicked();
-    response.context_menu(|ui| {
-        if ui.button(t!("agent.library.insert_inline")).clicked() {
-            outcome.insert = true;
-            ui.close();
-        }
-        if ui.button(t!("agent.library.insert_bracketed")).clicked() {
-            outcome.insert_bracketed = true;
-            ui.close();
-        }
-        if ui
-            .button(format!("{} {}", COPY, t!("agent.library.copy_key")))
-            .clicked()
-        {
-            ui.ctx().copy_text(entry.key.clone());
-            outcome.copied = Some(entry.key.clone());
-            ui.close();
-        }
-    });
     outcome
+}
+
+/// The three action buttons of a row: insert at the cursor (the primary
+/// action, keeping the corner the `+` always had), the APA form, and copy —
+/// laid out right to left behind the text.
+fn action_buttons(rect: egui::Rect) -> [egui::Rect; 3] {
+    const SIZE: f32 = 18.0;
+    const GAP: f32 = 2.0;
+    let y = rect.center().y - SIZE / 2.0;
+    let at = |slot: usize| {
+        let x = (rect.max.x - 2.0 - SIZE - slot as f32 * (SIZE + GAP)).max(rect.min.x);
+        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(SIZE, SIZE))
+    };
+    [at(0), at(1), at(2)]
+}
+
+/// One row action button, with a per-row stable id: a recycled auto id could
+/// shift between press and release while the list scrolls.
+fn action_button(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    key: &str,
+    action: &str,
+    icon: &str,
+    hint: &str,
+) -> bool {
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(rect).id_salt((action, key)),
+        |ui| ui.add(egui::Button::new(icon).small().frame(false)),
+    )
+    .inner
+    .on_hover_text(hint)
+    .clicked()
 }
 
 /// The payload a row should carry.
@@ -709,6 +754,56 @@ mod tests {
             assert!(!text.contains("%{"), "unresolved placeholder: {text}");
             assert!(!text.contains("agent."), "missing key: {text}");
         }
+    }
+
+    #[test]
+    fn hovering_a_row_offers_actions_and_a_click_inserts() {
+        // Sprint 6.5: the action buttons replaced the right-click menu. They
+        // appear while the pointer is on the row; a click on the primary one
+        // asks for the inline insert — and does not also select the row.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let entry = &view.entries[0];
+        let drag = CitePayload::inline(entry.key.clone());
+        let row_height = 36.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, row_height));
+        let target = action_buttons(row)[0].center();
+
+        // Frame 1: the pointer rests on the row, so the buttons are laid out.
+        let mut outcome = RowOutcome::default();
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![egui::Event::PointerMoved(target)],
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+        assert!(
+            !outcome.insert && !outcome.insert_bracketed && outcome.copied.is_none(),
+            "hovering alone only reveals the buttons"
+        );
+
+        // Frame 2: the click lands on the primary button registered above.
+        let press = |pressed| egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![press(true), press(false)],
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+        assert!(outcome.insert, "the primary button inserts at the cursor");
+        assert!(outcome.copied.is_none());
+        assert!(!outcome.clicked, "a button click is not a row click");
     }
 
     #[test]

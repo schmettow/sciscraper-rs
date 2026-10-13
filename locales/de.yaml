@@ -1046,6 +1046,9 @@ agent:
     chip: "Markierter Bereich (%{chars} Zeichen)"
     hint: "Der markierte Bereich wird an die nächste Frage angehängt"
     drop: "Markierten Bereich verwerfen"
+  pane:
+    collapse: "Bereich zu einem Streifen einklappen"
+    expand: "Bereich ausklappen"
   focus:
     hint: "Den Agenten zu dem markierten Bereich fragen"
   edit:
@@ -1097,7 +1100,6 @@ agent:
     corrupt: "%{file} kann nicht gelesen werden"
     choose_bibliography: "Bibliografie wählen…"
     insert_hint: "@key an der Cursorposition einfügen"
-    insert_inline: "@key einfügen (inline)"
     insert_bracketed: "[@key] einfügen (APA)"
     copy_key: "Zitationsschlüssel kopieren"
     copied: "@%{key} kopiert"

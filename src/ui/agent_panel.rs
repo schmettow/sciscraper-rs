@@ -11,19 +11,23 @@
 //! dedicated pane on the left — a working pane next to the document for
 //! drag-to-cite, add-from-disk and drop-to-ingest, not a chat accessory
 //! (Sprint 5.1 moved it out of the right dock, which had become over-crowded).
-//! Both panes are collapsible and remember their width and state; one toggle
-//! shows or hides both.
+//! Collapsing a pane is **horizontal** (sprint 6.5, egui_chat 0.4): it shrinks
+//! to a narrow strip at its window edge with one control to bring it back, so a
+//! collapsed pane gives its width to the editor. The host owns the flags and
+//! persists them; one toggle shows or hides both.
 //!
 //! Each pane carries the component bar for the tools it hosts (Sprint 5.3):
-//! the agent bar (*Chat · Memory · Embed · Store*) sits at the bottom of the
-//! agent pane, the library bar (*GROBID · Parser · Chunker · Corpus*) at the
-//! bottom of the library pane — the parsers and the bibliography belong with
-//! the corpus they build, next to the *Add* control. Clicking an icon slides
-//! up its control menu: backend settings, *Test connection* probes, and — for
-//! the Corpus and Store components — the index housekeeping (*Update*
-//! incrementally, *Rebuild* from scratch). The GROBID menu carries the server
-//! URL and a liveness test; in a build without the `grobid` feature the icon
-//! is grey and the menu says so, instead of silently doing nothing.
+//! the agent bar (*Chat · Memory · Embed*) sits at the bottom of the agent
+//! pane, the library bar (*Corpus · GROBID · Parser · Chunker · Vector store*)
+//! at the bottom of the library pane, ordered as the corpus pipeline runs —
+//! the parsers, the index and the bibliography belong with the corpus they
+//! build, next to the *Add* control (sprint 6.5 moved the vector store over
+//! from the agent bar). Clicking an icon slides up its control menu: backend
+//! settings, *Test connection* probes, and — for the Corpus and Store
+//! components — the index housekeeping (*Update* incrementally, *Rebuild* from
+//! scratch). The GROBID menu carries the server URL and a liveness test; in a
+//! build without the `grobid` feature the icon is grey and the menu says so,
+//! instead of silently doing nothing.
 //!
 //! Menu edits mark the settings dirty; the caller hands the new snapshot to the
 //! worker, which applies it to the live session in place (the conversation
@@ -301,9 +305,6 @@ impl AgentPanel {
             self.send_configure(settings, editor_ws.clone());
         }
 
-        self.agent_section.collapsed = settings.agent_collapsed;
-        self.library_section.collapsed = settings.library_collapsed;
-
         let actions: RefCell<Vec<PanelAction>> = RefCell::new(Vec::new());
         let commands: RefCell<Vec<RagCommand>> = RefCell::new(Vec::new());
         let settings_dirty = Cell::new(false);
@@ -333,6 +334,8 @@ impl AgentPanel {
         // takes this mutable borrow of the settings.
         let library_width = settings.library_width;
         let agent_width = settings.width;
+        let library_collapsed = settings.library_collapsed;
+        let agent_collapsed = settings.agent_collapsed;
         let buffer_attached = settings.buffer_attached;
         let buffer_toggled = Cell::new(false);
         let selection_dropped = Cell::new(false);
@@ -354,13 +357,19 @@ impl AgentPanel {
         // bibliography is a working pane next to the document (drag-to-cite,
         // add-from-disk, drop-to-ingest), not a chat accessory. It renders
         // first, so it sits directly left of the editor and outermost of the
-        // two docks. Its component bar (GROBID · Parser · Chunker · Corpus)
-        // is bottom-anchored with the same recipe as the agent pane's: the
+        // two docks. Its component bar (Corpus · GROBID · Parser · Chunker ·
+        // Vector store — the corpus pipeline in operation order) is
+        // bottom-anchored with the same recipe as the agent pane's: the
         // list gets everything above the footer, whatever the list's length.
+        // Collapsed, the whole pane shrinks to a strip at the window edge
+        // (egui_chat 0.4); the host owns and persists the flag.
         let library_action: RefCell<LibraryAction> = RefCell::new(LibraryAction::default());
         let library_dock =
             SectionDock::new("sciscraper_library_dock", DockSide::Left, library_width)
                 .width_range(240.0, 560.0)
+                .collapsed(library_collapsed)
+                .collapse_hint(t!("agent.pane.collapse"))
+                .expand_hint(t!("agent.pane.expand"))
                 .section(&mut self.library_section, |ui| {
                     let top = ui.cursor().min.y;
                     let bounds = ui.available_rect_before_wrap();
@@ -427,7 +436,10 @@ impl AgentPanel {
         // dock is built (and shown) after the library one, so its closure
         // re-borrows `menu` only once the library closure is gone.
         let dock = SectionDock::new("sciscraper_agent_dock", DockSide::Right, agent_width)
-            .width_range(300.0, 720.0);
+            .width_range(300.0, 720.0)
+            .collapsed(agent_collapsed)
+            .collapse_hint(t!("agent.pane.collapse"))
+            .expand_hint(t!("agent.pane.expand"));
         let dock = dock.section(&mut self.agent_section, |ui| {
             session_row(
                 ui,
@@ -546,16 +558,16 @@ impl AgentPanel {
             settings.library_width = width;
             settings_changed = true;
         }
+        if let Some(collapsed) = library_response.collapsed {
+            settings.library_collapsed = collapsed;
+            settings_changed = true;
+        }
         if let Some(width) = response.width {
             settings.width = width;
             settings_changed = true;
         }
-        if self.agent_section.collapsed != settings.agent_collapsed {
-            settings.agent_collapsed = self.agent_section.collapsed;
-            settings_changed = true;
-        }
-        if self.library_section.collapsed != settings.library_collapsed {
-            settings.library_collapsed = self.library_section.collapsed;
+        if let Some(collapsed) = response.collapsed {
+            settings.agent_collapsed = collapsed;
             settings_changed = true;
         }
         if response.close_requested || library_response.close_requested {
@@ -1401,15 +1413,18 @@ const AGENT_BAR_COMPONENTS: &[RagComponent] = &[
     RagComponent::Chat,
     RagComponent::Memory,
     RagComponent::Embed,
-    RagComponent::Store,
 ];
 
-/// Components of the library bar: the corpus-building pipeline.
+/// Components of the library bar: the corpus pipeline in the order it runs —
+/// the corpus (folder and bibliography) is the input, GROBID enriches what is
+/// brought in, the parser and chunker turn documents into chunks, and the
+/// vector store is what the index is written to.
 const LIBRARY_BAR_COMPONENTS: &[RagComponent] = &[
+    RagComponent::Corpus,
     RagComponent::Grobid,
     RagComponent::Parser,
     RagComponent::Chunker,
-    RagComponent::Corpus,
+    RagComponent::Store,
 ];
 
 /// Phosphor glyph per RAG component.
@@ -2102,6 +2117,8 @@ mod tests {
     fn the_two_bars_cover_every_component_exactly_once() {
         // Sprint 5.3: the agent pane keeps the chat stack, the library pane
         // hosts the corpus pipeline; together they show every component.
+        // Sprint 6.5 moved the vector store to the library bar (it is where
+        // the index is written) and put that bar in operation order.
         let mut seen: Vec<&str> = AGENT_BAR_COMPONENTS
             .iter()
             .chain(LIBRARY_BAR_COMPONENTS)
@@ -2112,23 +2129,104 @@ mod tests {
         seen.dedup();
         assert_eq!(seen.len(), RagComponent::all().len());
 
-        assert!(AGENT_BAR_COMPONENTS.contains(&RagComponent::Chat));
         for component in [
+            RagComponent::Chat,
+            RagComponent::Memory,
+            RagComponent::Embed,
+        ] {
+            assert!(
+                AGENT_BAR_COMPONENTS.contains(&component),
+                "{component:?} is used by the conversation, so it belongs to the agent bar"
+            );
+        }
+        for component in [
+            RagComponent::Corpus,
             RagComponent::Grobid,
             RagComponent::Parser,
             RagComponent::Chunker,
-            RagComponent::Corpus,
+            RagComponent::Store,
         ] {
             assert!(
                 LIBRARY_BAR_COMPONENTS.contains(&component),
-                "{component:?} builds the corpus, so it belongs to the library bar"
+                "{component:?} builds the corpus and its index, so it belongs to the library bar"
             );
         }
+        assert_eq!(
+            LIBRARY_BAR_COMPONENTS,
+            [
+                RagComponent::Corpus,
+                RagComponent::Grobid,
+                RagComponent::Parser,
+                RagComponent::Chunker,
+                RagComponent::Store,
+            ],
+            "the library bar reads in operation order: input, enrich, parse, chunk, index"
+        );
 
         // Without a status snapshot every component is inactive.
         let components = bar_components(LIBRARY_BAR_COMPONENTS, None);
         assert_eq!(components.len(), LIBRARY_BAR_COMPONENTS.len());
         assert!(components.iter().all(|c| c.status == BarStatus::Inactive));
+    }
+
+    #[test]
+    fn a_collapsed_pane_reopens_through_its_strip() {
+        // Sprint 6.5: panes collapse horizontally (egui_chat 0.4). The host
+        // persists the flag; the strip's chevron flips it straight back into
+        // the settings. egui_chat's dock tests pin the strip's control
+        // position, so this only has to find the top of the strip.
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings {
+            agent_collapsed: true,
+            ..RagSettings::default()
+        };
+        let mut panel = AgentPanel::new(&settings, None);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
+        let target = egui::pos2(
+            screen.right() - egui_chat::dock::COLLAPSED_WIDTH / 2.0,
+            screen.top() + 12.0,
+        );
+        let press = |pressed| egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+
+        // The first frame registers the strip…
+        let mut changed = false;
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..egui::RawInput::default()
+            },
+            |ui| {
+                changed = panel
+                    .show_ui(ui, &mut settings, None, &[], None)
+                    .settings_changed;
+            },
+        );
+        assert!(!changed, "a quiet frame changes nothing");
+        assert!(
+            settings.agent_collapsed,
+            "the host's flag is what the dock rendered"
+        );
+
+        // …the next clicks the chevron on it.
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![press(true), press(false)],
+                ..egui::RawInput::default()
+            },
+            |ui| {
+                changed = panel
+                    .show_ui(ui, &mut settings, None, &[], None)
+                    .settings_changed;
+            },
+        );
+        assert!(!settings.agent_collapsed, "the chevron expands the pane");
+        assert!(changed, "and the host persists the change");
     }
 
     #[test]
@@ -2155,6 +2253,10 @@ mod tests {
             .find(|c| c.id == "chat")
             .expect("chat component");
         assert_eq!(chat.status, BarStatus::Ready);
+
+        // The store reports where the index lives; since sprint 6.5 it is a
+        // library-bar component.
+        let components = bar_components(LIBRARY_BAR_COMPONENTS, Some(&status));
         let store = components
             .iter()
             .find(|c| c.id == "store")

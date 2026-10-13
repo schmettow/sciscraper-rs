@@ -732,7 +732,44 @@ Verification: 1672 tests pass with the 3 pre-existing failures (`rag,grobid`), 1
 only, 1497 with no features (the new tests are all `rag`-gated); all three feature sets
 `cargo check` clean, touched files rustfmt-clean and clippy-clean.
 
-### ✅ Phase "Editor Roundtrip" (6.0–6.4 landed) — chat ⇄ editor
+### ✅ Sprint 6.5 — usability touch-ups (user round)
+
+- **Library rows: hover actions instead of a context menu.** Right-click was hard to hit
+  (a moving target on a two-line row); the three actions now appear as buttons at the row's
+  right edge while the pointer is on the row (`ui.rect_contains_pointer`, so hovering the
+  buttons themselves keeps them visible). `+` keeps the corner it always had; `[@]` (APA)
+  and `⧉` (copy) join it. Each button carries a per-row stable id (`id_salt((action,
+  key))`): a recycled auto id could shift between press and release while the list scrolls.
+  The button space is reserved whether or not they show, so titles do not jump; drag,
+  click-to-select, Ctrl+click and double-click are untouched. Pinned by
+  `hovering_a_row_offers_actions_and_a_click_inserts` (hover reveals only; a click inserts
+  and does not also select the row).
+- **Vector store moves to the library bar, in operation order.** The library bar now reads
+  *Corpus · GROBID · Parser · Chunker · Vector store* — the pipeline in the order it runs:
+  the corpus (folder and bibliography) is the input, GROBID enriches what is brought in,
+  parser and chunker turn documents into chunks, and the store is what the index is written
+  to. The agent bar keeps *Chat · Memory · Embed*. Both the Corpus and the Vector store menu
+  keep the workspace picker and *Update/Rebuild index*, so the library pane now carries the
+  whole corpus-and-index story; the bar test asserts the exact order and membership.
+- **Panes collapse horizontally (egui_chat 0.4.0).** The per-section fold (headers stacked,
+  bodies hidden) was a relict of hosting both panes in one dock. Now the *dock* collapses to
+  a `COLLAPSED_WIDTH` (28 px) strip at its window edge with a chevron that expands it again;
+  `DockResponse::collapsed` reports the toggle, the host owns and persists the flag, and no
+  width is reported while collapsed (the strip must not overwrite the remembered width).
+  `SectionState::collapsed` is gone — a breaking change, hence 0.4.0; sciscraper passes
+  `settings.{agent,library}_collapsed` and localizes the control with
+  `collapse_hint`/`expand_hint` (`agent.pane.*`). The focus-mode button hides while the
+  agent pane is a strip (there is nowhere to type). Pinned in egui_chat by five dock tests
+  (strip skips the bodies, header click collapses, strip click expands, no bogus width, the
+  arrow convention) and in sciscraper by `a_collapsed_pane_reopens_through_its_strip` (the
+  host round trip: flag in, strip out, toggle back into the settings).
+
+Verification: 1674 tests pass with the 3 pre-existing failures (`rag,grobid`), 1656 with
+`rag` only, 1497 with no features; egui_chat 0.4.0 passes its 45 tests (37 unit, 2 layout
+integration, 6 doctests). `cargo check` clean for all feature sets, touched files
+rustfmt-clean and clippy-clean.
+
+### 🚧 Phase "Editor Roundtrip" (6.0–6.4 landed) — chat ⇄ editor
 
 The RAG↔bibliography round trip works (sprints 4–5). The open gap is the *editor*: the agent
 cannot see what the author is writing, and its answers cannot land in the document. This

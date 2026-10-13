@@ -229,9 +229,9 @@ pub struct RagSettings {
     pub width: f32,
     /// Persisted width of the library pane (left pane) in points.
     pub library_width: f32,
-    /// Whether the agent section is collapsed.
+    /// Whether the agent pane is collapsed to its window-edge strip.
     pub agent_collapsed: bool,
-    /// Whether the library section is collapsed.
+    /// Whether the library pane is collapsed to its window-edge strip.
     pub library_collapsed: bool,
     /// Whether retrieval is available at all (ragrig's no-op embedder when
     /// off: answers run without corpus context).

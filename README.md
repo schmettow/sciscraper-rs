@@ -13,10 +13,11 @@ On top of the inherited editor, Sciscraper adds a pane on each side:
   the answer, keeps conversations across restarts, and lets you hot-swap the
   chat model, embeddings, memory and chunking from a component bar.
 - **Library** (left) — your BibTeX bibliography, one row per reference — a
-  working pane next to the document. Drag a row into the document (or use its
-  context menu) to cite it as `@key` or `[@key]`, mention `@Key` in a question
-  to attach the full paper to that query, and drop PDFs anywhere on the window
-  (or add URLs with the link button) to ingest them (feature `grobid`).
+  working pane next to the document. Drag a row into the document (or use the
+  buttons that appear on hover) to cite it as `@key` or `[@key]`, mention
+  `@Key` in a question to attach the full paper to that query, and drop PDFs
+  anywhere on the window (or add URLs with the link button) to ingest them
+  (feature `grobid`).
 
 Both panes are behind the Cargo feature `rag` (see
 [Building and running](#building-and-running)); a build without it is the
@@ -105,7 +106,9 @@ entry *Toggle Agent Panel*, or **Ctrl+Shift+A**. The **Agent** chat appears on
 the right, the **Library** on the left (between any file tree or outline pane
 and the editor); each pane remembers its own width, its collapsed state and the
 overall visibility across restarts. Drag the pane's inner edge to resize it, or
-use the arrow in its header to collapse it.
+click the chevron in its header to **collapse it horizontally** — the pane
+shrinks to a narrow strip at the window edge and the editor takes the freed
+width; the chevron on the strip brings it back.
 
 ### Asking questions
 
@@ -203,10 +206,13 @@ you marked (a digest), and replaces it **in place** — one `Ctrl+Z` restores th
 ### The component bars
 
 One icon per RAG component sits at the bottom of each pane, grouped by the work
-it belongs to: the **agent bar** (*Chat · Memory · Embed · Store*) at the bottom
-of the Agent pane, the **library bar** (*GROBID · Parser · Chunker · Corpus*) at
-the bottom of the Library pane, next to the sources they build. Each icon shows
-a status dot:
+it belongs to: the **agent bar** (*Chat · Memory · Embed*) at the bottom of the
+Agent pane — the conversation and the models it needs; the **library bar**
+(*Corpus · GROBID · Parser · Chunker · Vector store*) at the bottom of the
+Library pane, in the order the corpus pipeline runs: the corpus (folder and
+bibliography) is the input, GROBID enriches what is added, parser and chunker
+turn documents into chunks, and the vector store is what the index is written
+to. Each icon shows a status dot:
 
 | Dot | Meaning |
 |---|---|
@@ -242,11 +248,11 @@ actions:
 - **Embeddings** — *Enable retrieval* (when off, answers run without corpus
   context), the embedding model (`nomic-embed-text:latest`), *Top-k chunks*
   (300 by default) and *Similarity threshold* (0.03), plus *Test connection*.
-- **Vector store** — workspace picker plus the index state, with *Update
-  index* and *Rebuild index*.
 
 In the **library bar**:
 
+- **Corpus** — workspace picker and the bibliography and corpus folder of the
+  Library pane.
 - **GROBID** — the parsing server for added PDFs: state, URL (default
   `http://localhost:8070`) and *Test connection*, which calls the server's
   `/api/isalive`. The endpoint marks readiness in its *body*: `true` once every
@@ -258,20 +264,19 @@ In the **library bar**:
 - **Chunker** — *Markdown* (heading- and paragraph-aware) or *Token* chunking,
   chunk size (tokens) and overlap, plus a note about whether the index matches
   the current chunker settings.
-- **Corpus** — workspace picker and the bibliography and corpus folder of the
-  Library pane, plus the same index actions.
+- **Vector store** — workspace picker plus the index state, with *Update
+  index* and *Rebuild index*.
 
 The *Update index* / *Rebuild index* pair is offered wherever the store is at
-hand: in the **Vector store** menu of the agent bar and in the **Corpus** menu
-of the library bar.
+hand: in the **Vector store** and **Corpus** menus of the library bar.
 
 ### Workspace and corpus
 
 The RAG workspace is where Sciscraper keeps the vector store, sessions and the
 conventional library folder. By default it **follows the editor**: open a
-folder in the editor and the agent uses it. Choosing a folder in the Store or
-Corpus menu *pins* the workspace; *Follow the editor workspace* in the menu
-releases it. Recent folders are offered as one-click choices, and *New
+folder in the editor and the agent uses it. Choosing a folder in the Corpus or
+Vector store menu *pins* the workspace; *Follow the editor workspace* in the
+menu releases it. Recent folders are offered as one-click choices, and *New
 folder…* creates one on the spot.
 
 If you point ragrig-cli at the same workspace, both share one index: a corpus
@@ -378,12 +383,13 @@ key on hover.
   the count line shows `shown of total`.
 - **Select** — click a row; **Ctrl+click** extends the selection; clicking the
   only selected row clears it.
-- **Insert at the cursor** — the `+` button on a row, or a **double-click**.
-- **Context menu** (right-click):
-  - *Insert @key (inline)* — e.g. `@Kano2022`
-  - *Insert [@key] (APA)* — for a multi-selection this expands to
+- **Row actions on hover** — while the pointer is on a row, three buttons
+  appear at its right edge:
+  - `+` *Insert @key at the cursor* — e.g. `@Kano2022` (a **double-click**
+    does the same)
+  - `[ ]` *Insert [@key] (APA)* — for a multi-selection this expands to
     `[@Kano2022, @Smith2020]`
-  - *Copy citation key*
+  - `⧉` *Copy citation key*
 - **Refresh** — the circular-arrow button re-reads the file. The list also
   reloads automatically when the `.bib` file changes on disk.
 
