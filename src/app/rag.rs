@@ -124,9 +124,11 @@ impl FerriteApp {
         };
 
         // Insertion range: the selection when there is one, else the caret.
+        // The splice itself is the roundtrip module's `replace_at` — the same
+        // char-indexed primitive the in-place edit of the Co-Edit sprint uses.
         let (start, end) =
             citation::citation_range(&tab.content, tab.selection, tab.cursor_position);
-        let content = citation::insert_at(&tab.content, start, end, &text);
+        let content = crate::rag::roundtrip::replace_at(&tab.content, start..end, &text);
         tab.set_content(content);
         tab.cursor_position = citation::caret_after(&tab.content, start + text.chars().count());
         tab.selection = None;
@@ -183,19 +185,6 @@ mod citation {
         }
     }
 
-    /// Splice `text` into `content`, replacing `start..end` (char indices).
-    ///
-    /// Char-indexed, so multi-byte content (`Grüße`, emoji) never splits a
-    /// codepoint; the caret helper below converts the result back to
-    /// line/column.
-    pub(super) fn insert_at(content: &str, start: usize, end: usize, text: &str) -> String {
-        let mut out = String::with_capacity(content.len() + text.len());
-        out.extend(content.chars().take(start));
-        out.push_str(text);
-        out.extend(content.chars().skip(end));
-        out
-    }
-
     /// Line/column of `char_index` after an insertion (for the caret).
     pub(super) fn caret_after(content: &str, char_index: usize) -> (usize, usize) {
         char_index_to_line_col(content, char_index)
@@ -204,6 +193,7 @@ mod citation {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::rag::roundtrip::replace_at;
 
         #[test]
         fn ranges_prefer_the_selection_over_the_caret() {
@@ -222,25 +212,16 @@ mod citation {
         }
 
         #[test]
-        fn insertion_respects_multibyte_characters() {
-            // "Grüße" — 'ü' and 'ß' are multi-byte; char indices must not
-            // slice bytes apart.
-            let content = "Grüße @Alt";
-            let start = "Grüße ".chars().count();
-            let out = insert_at(content, start, content.chars().count(), "@Neu2024");
-            assert_eq!(out, "Grüße @Neu2024");
-
-            let out = insert_at("Grüße", 0, 0, "@A ");
-            assert_eq!(out, "@A Grüße");
-        }
-
-        #[test]
-        fn inserting_replaces_the_selected_text() {
+        fn a_citation_lands_where_the_range_says_and_moves_the_caret() {
+            // The splice is `roundtrip::replace_at` (tested there for
+            // multi-byte and out-of-range cases); this pins the citation's use
+            // of it: range from the selection, caret after the inserted text.
             let content = "see [here] for details";
-            let out = insert_at(content, 4, 10, "@Caspar2021");
+            let (start, end) = citation_range(content, Some((4, 10)), (0, 0));
+            let out = replace_at(content, start..end, "@Caspar2021");
             assert_eq!(out, "see @Caspar2021 for details");
             assert_eq!(
-                caret_after(&out, 4 + "@Caspar2021".chars().count()),
+                caret_after(&out, start + "@Caspar2021".chars().count()),
                 (0, 15),
                 "the caret lands after the inserted citation"
             );

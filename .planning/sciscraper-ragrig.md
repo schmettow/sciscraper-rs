@@ -19,6 +19,8 @@ without features behaves exactly as before.
 | D3 | No workspace open ⇒ **Embeddings inactive**; the component menu offers *New folder* and recent folders. |
 | D4 | Backend defaults: **DeepSeek**, context window > 400 000 tokens, embeddings `top_k = 300`, `threshold = 0.03`, **transcript** memory. |
 | D5 | `@Key` chat attachments (PDF attached to the query) are in v1 scope. |
+| D6 | Status bar cadence: **automatic, not real-time** — 2 s while a backend is down or starting up, 30 s after a successful pass (Sprint 5.5). |
+| D7 | Phase "Editor Roundtrip" (chat ⇄ editor): default co-writer prompt, document-buffer attachment with a toggle, focus mode for a marked region, and Co-Edit with a region replacement (2026-10-13; the phase's open questions live in its own section). |
 
 ---
 
@@ -53,9 +55,14 @@ sciscraper-rs  (feature `rag`, off by default)
   src/rag/worker.rs              background worker: AgentSession, commands/events
   src/rag/ingest.rs              GROBID pre-pass re-orchestration + URL download
                                  (feature `grobid`)
+  src/rag/roundtrip.rs           protocol: containers in, edits out (phase "Editor
+                                 Roundtrip", planned)
   src/ui/agent_panel.rs          dock composition, menus, transcript↔worker glue
   src/ui/library_panel.rs        bibliography rows, drag-to-cite, add-PDFs/URL toolbar
+  src/ui/focus_button.rs         selection overlay → chat (planned)
   src/app/rag.rs                 FerriteApp glue: toggle, lazy init, polling, rendering
+  src/app/roundtrip.rs           overlay painting + applying edits (planned)
+  assets/prompts/sciscraper-cowriter.md   the built-in co-writer prompt (embedded)
   hooks                          settings field, ribbon button, Ctrl+Shift+A, palette,
                                  locales (en/de); all `#[cfg(feature = "rag")]`
 ```
@@ -76,6 +83,11 @@ sciscraper-rs  (feature `rag`, off by default)
 
 Sprint 5.3 needed **no** `egui_chat` change: `SectionDock` already takes a `DockSide`, and the
 agent bar is simply instantiated twice with different component lists — the split contract held.
+
+The "Editor Roundtrip" phase reuses that discipline: focus requests work today through the
+public `Composer::input_id()`, and the pending-context chips are host-drawn above the composer.
+A first-class attachment API (`Composer::chips([…])`, `Composer::context_row(…)`) is a good
+0.4 candidate once the host-side prototype has settled.
 
 Crate inquiry (Sprint 2): `egui_commonmark` was the candidate for editor-side
 Markdown rendering, but 0.24 requires **egui 0.35** (sciscraper pins 0.34) and
@@ -509,6 +521,224 @@ is down or starting up, 30 s after a successful pass.
 Verification: 1623 tests pass with the 3 pre-existing failures (`rag,grobid`), 1605 with
 `rag` only; the feature-less build compiles; rustfmt and clippy clean in the touched files.
 
+### ✅ Sprint 6.0 — Container protocol (foundation, narrowed to what is live)
+
+The input half of the "Editor Roundtrip" protocol landed together with the one editor-edit
+primitive the citation path already needed.
+
+- **`src/rag/roundtrip.rs` (new).** `PROTOCOL` prefix, `MARKER_CONTEXT`, `MARKER_DOCUMENT`,
+  `is_container`, `document_container` (attribute values folded, so a file name cannot break
+  the tag), `ContainerAttach` (a `source="creator"` block per attachment, a
+  `source="corpus"` block for retrieved chunks) and `replace_at` — char-indexed, clamping,
+  multi-byte safe.
+- **Wiring.** `build_session` instantiates `ContainerAttach` instead of `PrependAttach`: every
+  query with context now hands the model marked containers. End-to-end evidence is a worker
+  test whose echo generator returns the assembled prompt, asserting
+  `<sciscraper:v1:context source="creator">` and `<sciscraper:v1:document name="@Key2024">`
+  (the attachment name is the cite key, so the model sees what to cite).
+- **One apply path.** The citation insertion goes through `roundtrip::replace_at`; the
+  duplicated splice (`app::rag::citation::insert_at`) is gone, its two test cases moved into
+  `roundtrip` (plus the clamping case a region edit needs).
+- **Sequencing (deliberate deviation from the planned 6.0).** The plan also listed
+  `RoundtripContext`/extraction, the `sciscraper:v1:replace` parser, `EditorEdit` and the
+  prompt↔marker checker. Shipping those now would be dead code — the binary's `dead_code` lint
+  fires for unused `pub` items in private modules (see the existing
+  `parse_video_embed_url` warning) — so each moves to the sprint whose feature first calls it:
+  extraction → 6.2/6.3, parser + `EditorEdit` → 6.4, checker → 6.1 with the prompt asset. The
+  commonality analysis is unaffected: those concerns still live in this one module.
+- **Finding (upstream, US-15).** With a *disabled* embedder (retrieval switched off) ragrig
+  bypasses the host's `AttachStrategy` and formats attachments itself, so the container framing
+  is dropped in that mode. The design already anticipates it — the buffer/selection builders
+  pre-render their container into the attachment *content* and `is_container` passes it
+  through — and the co-writer prompt must not promise containers with retrieval off.
+- Pinned by `rag::roundtrip::tests::*` (markers, containers, attribute folding, passthrough,
+  merge blocks, `replace_at`), `attachments_reach_the_model_inside_containers` (end to end),
+  `builds_a_session_with_test_doubles` (the strategy is part of the session contract) and the
+  citation tests, which now exercise `replace_at` through the real insertion path.
+
+Verification: 1633 tests pass with the 3 pre-existing failures (`rag,grobid`), 1615 with
+`rag` only; the feature-less build compiles; rustfmt and clippy clean in the touched files.
+
+### ✅ Sprint 6.1 — Co-writer prompt (feature 1)
+
+- **The asset.** `assets/prompts/sciscraper-cowriter.md`, embedded with `include_str!`
+  (`worker::COWRITER_PROMPT`). It sets the scientific-writing principles (ground claims and
+  name the source, cite with the document's `@Key` syntax, never invent keys/authors/years/
+  quotes, keep the author's voice and language, separate evidence from general knowledge,
+  smallest edit over rewrite, ask instead of guessing) and explains the tool's inner
+  structure: the `source="creator"`/`source="corpus"` context blocks, `document` attachments
+  (named by cite key), the active buffer and marked `selection`, and the one
+  `sciscraper:v1:replace` block it may answer with when asked to edit a passage. Ends with the
+  `## Context` + `{context}` section retrieval fills.
+- **Wiring (also fixes US-14 better than planned).** `system_prompt(settings)` now always
+  yields a prompt (file wins over the built-in asset) and warns when a *custom* file does not
+  mention a protocol marker (`roundtrip::missing_markers`, the checker now has its live
+  caller). `build_session` installs it with `RagAgent::set_system_prompt` instead of the
+  builder's setter: the agent setter appends the `{context}` section when a file lacks it and
+  derives the no-docs variant, so the persona survives a query without retrieved context —
+  which is exactly the asymmetry of US-14, worked around without duplicating ragrig's
+  derivation. `apply_live_settings` sets the prompt unconditionally, so switching the source
+  in the menu is live.
+- **UI.** The *Chat* menu gained the *System prompt* row (source label, *Use prompt file…* via
+  `rfd` with an `.md`/`.markdown`/`.txt` filter, *Reset to built-in* when a file is set),
+  locales en/de, and the menu's headless render test covers the new row.
+- **Prompt ↔ protocol.** `roundtrip::MARKERS` lists all four markers and
+  `missing_markers(prompt)` is asserted empty for the built-in asset
+  (`the_built_in_prompt_makes_the_agent_a_sciscraper_co_writer`), so a container change the
+  prompt has not been told about fails the suite — the "ongoing task" is mechanical now.
+- Pinned by `the_built_in_prompt_makes_the_agent_a_sciscraper_co_writer` (persona, `{context}`,
+  marker completeness, no-docs variant), `a_prompt_file_wins_over_the_built_in_prompt` (a file
+  replaces the asset; a file without `{context}` gets the section appended),
+  `a_prompt_change_reaches_the_live_session` (menu switch → wire prompt, via the echo
+  generator), `missing_markers_reports_what_a_prompt_forgot`, and the locale assertions in
+  `sync_strings_interpolate`.
+
+Verification: 1637 tests pass with the 3 pre-existing failures (`rag,grobid`), 1619 with
+`rag` only.
+
+### 🚧 Phase "Editor Roundtrip" (planned) — chat ⇄ editor
+
+The RAG↔bibliography round trip works (sprints 4–5). The open gap is the *editor*: the agent
+cannot see what the author is writing, and its answers cannot land in the document. This
+phase closes the loop with four features (user spec, 2026-10-13). Everything stays behind the
+`rag` feature; the single touch outside it (feature 3's editor accessor) is generic and
+additive.
+
+#### Commonality analysis (short report)
+
+| Shared concern | Needed by | Consequence |
+|---|---|---|
+| **One protocol module** — markers, container writers, result parser, region digest | 1 (must *document* the formats), 2, 3 (write containers), 4 (parse the answer) | Features 2–4 are one wire protocol in two directions. The prompt's format section and the module are checked against each other by a test, so "keep the prompt up to date" is enforced mechanically instead of by discipline |
+| **One context extractor** — `(tab, name, range, digest, text)` from the active tab | 2 (whole buffer), 3 (selection), 4 (selection identity) | `buffer()` and `selection()` are the same extraction with different ranges; feature 4 adds only the digest that makes an applied edit safe |
+| **One attachment transport** — `AttachedDocument` + `AttachStrategy` | 2, 3 | Both ride the existing `chat_streaming_detailed_with_attachments` seam; sciscraper replaces `PrependAttach` with a `ContainerAttach` so *every* attachment (papers, buffer, selection) arrives inside a marked container |
+| **One apply path** — `citation_range`/`insert_at`/`set_content`, one undo step | 4 | Reuses the citation contract (D2, sprint 3): `CitePayload` generalises into an `EditorEdit` enum instead of growing a second mechanism |
+| **One pending-context model + composer strip** | 2 (toggle), 3 (chip), 4 (tracked region) | Panel-owned state, host-drawn chips above the composer — `Composer::input_id()` is public, so no `egui_chat` change is needed |
+| **One geometry/overlay seam** | 3 only | The phase's only touch outside the panel: a *generic* `selection_rect()` accessor in the forked editor, read through the existing editor registry — additive, feature-free, MR-friendly |
+
+**Not shared (boundaries).** The system prompt (1) is content plus configuration, not
+plumbing; the answer parser (4) is answer-side only; the overlay (3) is presentation. No
+feature needs a `ragrig` change — with one asymmetry found while analysing:
+`RagAgentBuilder::system_prompt` does **not** derive the no-docs fallback (`chat_without_docs`)
+while `Agent::set_system_prompt` does, so a co-writer persona silently disappears whenever
+retrieval yields no context unless both are set. Workaround in sciscraper (set both), note
+upstream.
+
+**Sequencing consequence.** 6.0 lands the protocol and is the only foundation sprint;
+6.1–6.4 are then small, mostly independent increments. The two real unknowns are the editor
+geometry accessor (6.3, bounded work in the fork) and the model's compliance with the result
+format (6.4 — hence the explicit "no block ⇒ ordinary answer" fallback).
+
+#### The four features (contracts)
+
+**1. Co-writer system prompt.** `assets/prompts/sciscraper-cowriter.md`, embedded with
+`include_str!` and used when `ragrig.chat.system_prompt_path` is unset (a configured file
+still wins). Principles: ground claims in the attached corpus and name the source; cite with
+`@Key` when the library knows the work; never invent references, page numbers or quotes; keep
+the author's voice and language; mark general knowledge as such (the README's own
+troubleshooting calls this out); prefer a small edit over a rewrite; ask instead of guessing.
+*Inner structure:* what it receives (`sciscraper:v1:document`, `sciscraper:v1:selection`,
+`@Key` papers, retrieved chunks) and what it returns (prose, plus at most one
+`sciscraper:v1:replace` block when asked to edit). Wiring: set `system_prompt` **and**
+`chat_without_docs_prompt`; hot-swap through `Agent::set_system_prompt` on configure; a Chat
+menu row (*System prompt*: built-in / file, "Use prompt file…", "Reset to built-in").
+*Ongoing task*: the prompt is versioned with the protocol module — a container change touches
+both, and the checking test fails until the prompt follows.
+
+**2. Buffer attachment.** Setting `buffer_attached: bool` (persisted; default **on**, pending
+confirmation). Extraction from the active tab — markdown source and caret:
+
+```text
+<sciscraper:v1:document name="paper.md" path="…" cursor="42:7" chars="12345">
+…source…
+</sciscraper:v1:document>
+```
+
+Truncation at `MAX_ATTACH_CHARS` (60 000 — the `@Key` cap) with an explicit `<truncated/>`
+marker and a transcript note; an empty/untitled tab attaches nothing. Transport: appended in
+`resolve_attachments`; it never counts against the three-paper `@Key` limit. Toggle: a chip
+above the composer (`◫ document: paper.md`), drawn by sciscraper; the existing
+`QueryAttachments` note gains the buffer line.
+
+**3. Focus mode.** The raw editor reports the primary selection's screen rect
+(`FerriteEditor::selection_rect()`, derived from the per-line galley cache and the existing
+`calculate_cursor_x` helper — generic, no RAG knowledge). A foreground overlay
+(`src/ui/focus_button.rs`, painted **after** the central panel from `render_ui`) puts a small
+button at the selection's corner, flipping inside the viewport when necessary; hidden when
+there is no selection, the panes are closed, or a run is active. The click captures
+`{tab id, range, digest, text}` into the panel's `pending_context`, shows the chip above the
+composer and focuses it (`Composer::input_id()` — verified public). Container sent:
+
+```text
+<sciscraper:v1:selection range="120..480" digest="b3:1f3c…">…</sciscraper:v1:selection>
+```
+
+**4. Co-Edit.** The prompt tells the agent: when the user asks for a change to a marked
+region, answer with prose plus at most one fenced block
+
+    ```sciscraper:v1:replace target="120..480"
+    …the replacement text…
+    ```
+
+Parsed on `QueryFinished` (never mid-stream) with `comrak` (already in the tree) by info
+string; the block is lifted out of the transcript prose and rendered as an *edit card*
+("−412 / +508 chars · applied · Ctrl+Z undoes it"). Apply path: the citation contract — check
+the region digest, then `TabState::set_content(replace_at(…))`, caret after the replacement.
+**Guards:** no pending region → note only, the document is untouched; digest mismatch (author
+edited meanwhile) → no write, keep the text with an "insert at cursor" action; more than one
+block → apply the first, report the rest; empty block → no-op note.
+
+#### Sprint breakdown
+
+- **Sprint 6.0 — Roundtrip foundations.** `src/rag/roundtrip.rs`: the protocol markers
+  (`sciscraper:v1:…`), the container writers and the `ContainerAttach` strategy (replacing
+  `PrependAttach`), plus `replace_at()` as the one char-indexed splice for editor edits.
+  `RoundtripContext` (buffer/selection extraction), the `sciscraper:v1:replace` parser,
+  `EditorEdit` and the protocol↔prompt marker checker ship in the sprint whose feature first
+  calls them (6.2/6.3/6.4/6.1) — a foundation without a caller would only be dead code.
+  Tests: containers (attributes, passthrough), merge blocks, `replace_at` (multi-byte,
+  clamping), and the end-to-end check that attachments reach the wire prompt as containers.
+- **Sprint 6.1 — Co-writer prompt.** The asset (`assets/prompts/sciscraper-cowriter.md`),
+  the both-prompts wiring in `build_session`, the hot-swap in the configure path, the Chat-menu
+  row, a README section ("What the agent knows about Sciscraper"), locales en/de. Tests:
+  default prompt applies without a file; a file wins; `{context}` survives; the no-docs variant
+  carries the same persona; the protocol section matches the module's markers.
+- **Sprint 6.2 — Buffer attachment.** Settings field, toggle chip above the composer, the
+  document in `resolve_attachments`, transcript note, README. Tests: extraction from the
+  active tab (untitled/empty/oversized), toggle persistence, and the container reaching the
+  wire prompt (asserted with ragrig's `prompt_hook` — hermetic, no model).
+- **Sprint 6.3 — Focus mode.** Editor accessor (with a generic doc comment for upstream),
+  overlay, pending-context state, chip, focus request, container transport. Tests: rect
+  derivation headless (no selection → none), overlay renders and hides, extraction bounds,
+  focus is requested on the composer id, the selection reaches the prompt.
+- **Sprint 6.4 — Co-Edit.** Parser wired into `QueryFinished`, digest guard, apply with one
+  undo step, edit card, README and prompt protocol update. Tests: parsing (fences, multiple
+  blocks, none), mismatch refuses, the exact range is replaced, the caret lands after it,
+  undo restores.
+
+**Phase acceptance.** With the panes open: (a) the agent answers a question about the open
+document without any `@Key`; (b) marking a paragraph and clicking the corner button puts the
+selection in front of the model and the caret in the composer; (c) "make this shorter" returns
+the region shortened in place, one Ctrl+Z away from the original; (d) with the toggle off,
+the document never leaves the editor.
+
+#### Open decisions (to confirm before 6.1)
+
+1. **Buffer default** — on (proposal: the point is that the agent sees the writing; one click
+   switches it off).
+2. **Toggle placement** — chip row above the composer (proposal); the component bars stay
+   "RAG components only".
+3. **Buffer scope** — markdown source incl. frontmatter plus the caret line/col (proposal); no
+   rendered-text variant in v1.
+4. **Co-Edit application** — automatic after the digest check, Ctrl+Z as the safety net (per
+   the user spec), edit card kept for review; alternatively apply-on-click (safer, one extra
+   gesture).
+5. **Several pending regions** — v1 tracks one; the `target` attribute is reserved so multiple
+   regions can follow without a format change.
+6. **Prompt language** — English asset (proposal); the persona answers in the document's
+   language.
+7. **Shortcut for focus mode** — none in v1 (the button is the entry point); a shortcut needs
+   a decision on clashes with the ribbon's Ctrl+Shift set.
+
 ## 5. Baseline health (found during Sprint 1)
 
 - **The fork's test suite does not compile at HEAD** (43 errors in 5 files:
@@ -547,6 +777,10 @@ lives in [`../UPSTREAM.md`](../UPSTREAM.md). Summary:
    includes the chunker). Hosts must `delete_corpus` — which drops *all* pipelines of that
    corpus. A `delete_pipeline(corpus, pipeline)` or a "replace" sync would make *Update*
    sufficient; see US-11.
+5. **ragrig** — `RagAgentBuilder::system_prompt` does not derive the no-docs fallback that
+   `Agent::set_system_prompt` builds from the same prompt, so a host persona disappears as
+   soon as retrieval yields no context; found while planning the "Editor Roundtrip" phase,
+   see US-14 (workaround: fill both builder fields).
 
 ## 7. crates.io inquiries performed
 
@@ -563,6 +797,9 @@ lives in [`../UPSTREAM.md`](../UPSTREAM.md). Summary:
 | URL/filter/watch/table | `url`, `fuzzy-matcher`, `notify`, `egui_extras` | first three already in tree (`SkimMatcherV2` for the palette, `notify` for the workspace watch); the library reuses both | reuse |
 | RAG stack | `ragrig` 1.1.1 | current, maintained | as planned |
 | Test doubles for `Embedder` | `async-trait` 0.1 (dev-dep) | ragrig declares its traits with `#[async_trait]`, so hermetic impls need the same attribute | dev-dependency only — not part of the published build |
+| Extract the `sciscraper:v1:replace` block from an answer | `comrak` 0.22 | already in the tree (Markdown rendering); it parses fenced blocks with arbitrary info strings, including nested fences | reuse — no new crate; the parser is a thin wrapper over `comrak`'s AST |
+| Region digest for safe in-place edits | — | `blake3` is already a dependency (Mermaid cache) | reuse for the region digest (`b3:…`), no new crate |
+| Diff view for an applied edit | `similar` 3.2.0 (2026-08, 217 M downloads, Apache-2.0, MSRV 1.85, mitsuhiko) | reputable and current; per the cascade the reputation settles it | **deferred**: v1 reports sizes ("−412 / +508 chars") and the replacement text; a diff card can adopt `similar` later without a protocol change |
 
 ## 8. Release blockers found in Sprint 2
 

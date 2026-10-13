@@ -28,7 +28,9 @@ every entry is filed and closed.
 | US-10 | ragrig (ergonomics) | low | Listing saved sessions requires a fully built agent | to file |
 | US-11 | ragrig (store API) | medium | No way to replace one pipeline's chunks; parser/chunker changes accumulate in the store | to file |
 | US-12 | grobid-bibtex (ergonomics) | low | `CiteEntry` (key + file) is too thin for a host list UI | to file |
-| US-13 | egui/winit (external) | low | Native drag-and-drop never delivers web URLs, so "drop a URL" needs a text fallback | informational |
+| US-13 | egui/winit (external) | low | Native drag-and-drop delivers neither web URLs nor drag positions | informational |
+| US-14 | ragrig (API asymmetry) | low | `RagAgentBuilder::system_prompt` does not reach the no-docs fallback | to file |
+| US-15 | ragrig (behaviour) | low | With embeddings disabled, a configured `AttachStrategy` is bypassed | to file |
 
 ## US-1 — Publish `grobid-bibtex` 0.2.1
 
@@ -299,6 +301,61 @@ every entry is filed and closed.
   when that lands, the pane hit test (and only that) needs to come back — the pipeline behind
   it is already position-independent.
 
+## US-14 — `RagAgentBuilder::system_prompt` does not reach the no-docs fallback
+
+- **Target:** `ragrig` (API asymmetry)
+- **Severity:** low (silent behaviour difference, easy to work around once known)
+- **Context.** The prompt a query runs on depends on whether context was assembled:
+  `Agent::build_prompt` substitutes `{context}` in `system_prompt` when chunks or attachments
+  exist, and otherwise falls back to `chat_without_docs`. The two setters that fill those
+  fields disagree:
+  - `Agent::set_system_prompt(prompt)` derives the fallback —
+    `self.chat_without_docs = strip_context_placeholder(&prompt)` (`agent.rs`, ~L1136);
+  - `RagAgentBuilder::system_prompt(prompt)` stores only `system_prompt`, and `build()` then
+    takes `chat_without_docs.unwrap_or_else(|| DEFAULT_CHAT_WITHOUT_DOCS.to_string())`
+    (~L1595) — the generic *"You are a helpful assistant. Answer the user's question."*
+- **Impact in sciscraper.** A host-configured persona (the "co-writer" system prompt of the
+  planned "Editor Roundtrip" phase) silently disappears whenever retrieval yields no context:
+  embeddings switched off, an empty store, or a query whose only context is an attachment.
+  The failure is easy to miss because the same configuration works as soon as *one* chunk is
+  retrieved.
+- **Workaround in sciscraper (done, Sprint 6.1).** The prompt is installed through
+  `RagAgent::set_system_prompt` *after* `build()` instead of the builder's `system_prompt`:
+  that setter appends the `{context}` section when a custom prompt lacks one and derives
+  `chat_without_docs` itself, so the persona survives a query without retrieved context
+  (`src/rag/worker.rs`, `build_session`/`apply_live_settings`). No ragrig logic is duplicated —
+  the bug is simply side-stepped by using the correct entry point.
+- **Suggested fix.** Derive the fallback in `build()` exactly as `set_system_prompt` does —
+  `chat_without_docs.unwrap_or_else(|| strip_context_placeholder(&system_prompt))`. The helper
+  exists and is already the setter's behaviour.
+
+## US-15 — With embeddings disabled, a configured `AttachStrategy` is bypassed
+
+- **Target:** `ragrig` (behaviour/documentation gap)
+- **Severity:** low
+- **Context.** `RagAgent::build_prompt` substitutes `{context}` through the host's
+  `AttachStrategy` only on its first branch (`embedding_on && !context_block.is_empty()`). With
+  a disabled embedder — `Embedder::is_enabled() == false`, e.g. `NoopEmbedder` when retrieval is
+  switched off — it takes the second branch and formats the attachments itself with
+  `format_attachments_for_prompt` (`[Attached: name]` …), so a host's strategy never runs and
+  its framing is silently replaced.
+- **Evidence.** `ragrig/src/agent.rs`, `build_prompt`: `let embedding_on =
+  self.embedder.is_enabled();` followed by the three-way
+  `if embedding_on && !context_block.is_empty() { … } else if let Some(docs) = attachments … else
+  …`. sciscraper builds `NoopEmbedder` when `embeddings_enabled == false`
+  (`src/rag/worker.rs`, `build_embedder`), and its worker test with an echo generator shows the
+  prompt containing `[Attached: @Key2024]` while `ContainerAttach` is wired as the strategy
+  (with an enabled embedder the same query shows the container markup — sprint 6.0).
+- **Impact in sciscraper.** Host-chosen framing is dropped in retrieval-off mode: the co-writer
+  prompt (sprint 6.1) must not promise containers there, and the buffer/selection containers
+  (6.2/6.3) end up nested inside ragrig's `[Attached: …]` header.
+- **Workaround in sciscraper.** The context builders pre-render their container into the
+  attachment *content* (`roundtrip::document_container`; `RoundtripContext` from 6.2 on), and
+  `ContainerAttach` passes such content through (`is_container`) instead of wrapping it twice —
+  so the container survives either framing.
+- **Suggested fix.** Route the no-retrieval branch through the strategy as well (with an empty
+  retrieved context), or document the bypass in the `AttachStrategy` module docs.
+
 ## Notes (monitoring — not issues to file)
 
 - **Tier-2 surface used.** sciscraper depends on `AgentSession`, the `progress` module and
@@ -331,6 +388,8 @@ every entry is filed and closed.
 | US-11 | Explicit *Rebuild* (`delete_corpus` + full sync) + staleness warning from the manifest | `src/rag/worker.rs`, `src/ui/agent_panel.rs` |
 | US-12 | Direct `biblatex` dependency + own field fallback chains | `src/rag/library.rs`, `Cargo.toml` |
 | US-13 | Position-free drop routing (whole window while the panes are open) + hover banner; add-from-URL row | `src/rag/ingest.rs`, `src/app/rag.rs`, `src/ui/agent_panel.rs`, `src/ui/library_panel.rs` |
+| US-14 | Install the prompt with `RagAgent::set_system_prompt` (appends `{context}`, derives the no-docs variant) instead of the builder setter | `src/rag/worker.rs`, `assets/prompts/sciscraper-cowriter.md` |
+| US-15 | Containers pre-rendered into the attachment content; `ContainerAttach` passes them through | `src/rag/roundtrip.rs` |
 
 ## Suggested filing order
 

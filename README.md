@@ -126,6 +126,30 @@ The first question opens (or restores) a conversation and loads the corpus from
 the workspace. The **index itself is never built automatically** — you decide
 when to index, from the component bar (see below).
 
+### What the agent knows about Sciscraper
+
+The agent runs on a built-in **co-writer** prompt
+(`assets/prompts/sciscraper-cowriter.md`, compiled into the binary). It sets the working
+principles for scientific writing — ground claims in the supplied context and name the
+source; cite with the document's own `@Key` syntax; never invent a key, author, year, quote
+or page number; keep your voice, terminology and language; separate what the evidence says
+from general knowledge and flag uncertainty; prefer the smallest edit over a rewrite; ask
+instead of guessing — and it explains the tool's own structure: the marked containers
+described under [Attaching papers to a question](#attaching-papers-to-a-question-key)
+(`source="creator"` for what you supply, `source="corpus"` for what retrieval found), the
+document buffer and marked regions the phase "Editor Roundtrip" adds, and the single
+replacement block the agent may answer with when it is asked to change a marked passage.
+
+The prompt is part of the protocol's implementation, not a loose document: a test requires it
+to name every marker the client knows, so a container change cannot leave the agent
+uninformed.
+
+**Bring your own:** the *Chat* component menu has a *System prompt* row showing the current
+source — *Use prompt file…* picks a Markdown file that replaces the built-in prompt (the
+`{context}` placeholder is appended automatically when your file does not contain it),
+*Reset to built-in* goes back. The switch reaches the running session immediately; without
+retrieved context (retrieval off, empty index) the persona stays in place either way.
+
 ### The component bars
 
 One icon per RAG component sits at the bottom of each pane, grouped by the work
@@ -257,6 +281,15 @@ Compare the sample size in @Kano2022 with @Smith2020.
 - Mentions are one-shot: every question naming a key attaches its paper again.
 - Misses (unknown key, no local file, unreadable document) are reported as a
   **Could not attach** note in the transcript; they never fail the question.
+
+Attached papers — and, with the *Editor Roundtrip* phase, the document buffer too — reach
+the model inside marked containers: `<sciscraper:v1:context source="creator">` wraps what
+*you* attached, each paper in its own `<sciscraper:v1:document name="@Key">` block so the
+agent knows which key to cite, and `<sciscraper:v1:context source="corpus">` wraps what
+retrieval found in your indexed literature. The built-in co-writer prompt explains these
+markers to the agent (see [What the agent knows about
+Sciscraper](#what-the-agent-knows-about-sciscraper)); the protocol itself is described in
+`.planning/sciscraper-ragrig.md` (phase "Editor Roundtrip").
 
 ### Tuning retrieval
 

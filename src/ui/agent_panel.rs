@@ -1261,6 +1261,34 @@ fn chat_menu(ui: &mut egui::Ui, settings: &mut RagSettings, dirty: &Cell<bool>) 
             dirty.set(true);
         }
     });
+
+    // The system prompt source: the built-in co-writer, or the author's file
+    // (sprint 6.1). Switching either way reaches the live session through the
+    // configure path, so the next question runs on the new prompt.
+    let source = match &settings.ragrig.chat.system_prompt_path {
+        Some(path) => file_label(path),
+        None => t!("agent.menu.system_prompt_builtin").to_string(),
+    };
+    ui.weak(format!("{}: {source}", t!("agent.menu.system_prompt")));
+    if ui
+        .button(t!("agent.menu.choose_system_prompt"))
+        .on_hover_text(t!("agent.menu.choose_system_prompt_hint"))
+        .clicked()
+    {
+        if let Some(file) = rfd::FileDialog::new()
+            .add_filter("Markdown", &["md", "markdown", "txt"])
+            .pick_file()
+        {
+            settings.ragrig.chat.system_prompt_path = Some(file);
+            dirty.set(true);
+        }
+    }
+    if settings.ragrig.chat.system_prompt_path.is_some()
+        && ui.button(t!("agent.menu.reset_system_prompt")).clicked()
+    {
+        settings.ragrig.chat.system_prompt_path = None;
+        dirty.set(true);
+    }
     note(ui, &t!("agent.menu.api_key_hint"));
 }
 
@@ -1735,6 +1763,18 @@ mod tests {
 
         let up_to_date = sync_summary(0, None);
         assert!(!up_to_date.text.contains("{count}"), "{}", up_to_date.text);
+
+        // The system-prompt row and its actions (sprint 6.1).
+        for text in [
+            t!("agent.menu.system_prompt").to_string(),
+            t!("agent.menu.system_prompt_builtin").to_string(),
+            t!("agent.menu.choose_system_prompt").to_string(),
+            t!("agent.menu.choose_system_prompt_hint").to_string(),
+            t!("agent.menu.reset_system_prompt").to_string(),
+        ] {
+            assert!(!text.contains("%{"), "unresolved placeholder: {text}");
+            assert!(!text.contains("agent."), "missing key: {text}");
+        }
     }
 
     #[test]

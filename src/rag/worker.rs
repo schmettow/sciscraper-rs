@@ -30,8 +30,8 @@ use ragrig::store::open_store;
 use ragrig::types::{ContextSizeMode, EmbeddingProvider, MemoryStrategyKind, Provider};
 use ragrig::{
     build_parsers, AgentSession, AttachedDocument, CancellationToken, ChatAgentSpec, ChunkConfig,
-    Corpus, Embedder, EmbedderSpec, FsSessionStore, Generator, LogHistory, PrependAttach, RagAgent,
-    SessionId, SessionManifest, SessionStore, SummaryHistory, TurnRole,
+    Corpus, Embedder, EmbedderSpec, FsSessionStore, Generator, LogHistory, RagAgent, SessionId,
+    SessionManifest, SessionStore, SummaryHistory, TurnRole,
 };
 
 #[cfg(feature = "grobid")]
@@ -40,7 +40,7 @@ use super::probe;
 use super::status::{
     ActivityKind, IndexInfo, IngestProgress, ProbeResults, ProbeScope, Reachability, SyncProgress,
 };
-use super::{cite, library, RagSettings, RagStatus, StatusInput};
+use super::{cite, library, roundtrip, RagSettings, RagStatus, StatusInput};
 use crate::rag::LibraryState;
 
 /// Builds the chat agent for a settings snapshot.
@@ -1414,7 +1414,7 @@ pub async fn build_session(
         .parsers(DocumentParsers::new(build_parsers()))
         .chunker(settings.chunker.build())
         .chunk_config(chunk_config(settings)?)
-        .attach_strategy(Box::new(PrependAttach))
+        .attach_strategy(Box::new(roundtrip::ContainerAttach))
         .context_tokens(config.chat.context_tokens)
         .top_k(config.embed.top_k)
         .similarity_threshold(config.embed.similarity_threshold);
@@ -1422,15 +1422,18 @@ pub async fn build_session(
     if let Some(rewriter) = build_rewriter(settings)? {
         builder = builder.rewriter(rewriter);
     }
-    if let Some(prompt) = system_prompt(settings)? {
-        builder = builder.system_prompt(prompt);
-    }
     if let Some(path) = &config.memory.rewrite_prompt_path {
         let prompt = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read the rewrite prompt {}", path.display()))?;
         builder = builder.rewrite_prompt(prompt);
     }
-    let agent = builder.build().context("cannot build the RAG agent")?;
+    let mut agent = builder.build().context("cannot build the RAG agent")?;
+    // The prompt goes in through the agent's setter, not the builder: the
+    // setter appends the `{context}` section when a custom prompt lacks one
+    // *and* derives the no-docs variant, so the persona survives a query that
+    // retrieves nothing (US-14 — the builder's `system_prompt` would leave
+    // ragrig's generic fallback in place).
+    agent.set_system_prompt(system_prompt(settings)?);
 
     let sessions_dir = workspace.join(".ragrig").join("sessions");
     let session_store =
@@ -1465,9 +1468,9 @@ fn apply_live_settings(
         agent.set_similarity_threshold(settings.ragrig.embed.similarity_threshold);
         agent.set_context_tokens(settings.ragrig.chat.context_tokens);
         agent.set_rewriter(rewriter);
-        if let Some(prompt) = prompt {
-            agent.set_system_prompt(prompt);
-        }
+        // Always: switching the prompt source (built-in ↔ file) is a menu
+        // action, and the setter derives the no-docs variant as well.
+        agent.set_system_prompt(prompt);
     }
     apply_memory_strategy(session, settings);
     Ok(())
@@ -1495,14 +1498,29 @@ fn build_rewriter(settings: &RagSettings) -> anyhow::Result<Option<Box<dyn Gener
         .map(Some)
 }
 
-/// The configured system prompt, when a file is set.
-fn system_prompt(settings: &RagSettings) -> anyhow::Result<Option<String>> {
-    let Some(path) = &settings.ragrig.chat.system_prompt_path else {
-        return Ok(None);
+/// The co-writer prompt shipped with sciscraper
+/// (`assets/prompts/sciscraper-cowriter.md`, embedded into the binary).
+pub const COWRITER_PROMPT: &str = include_str!("../../assets/prompts/sciscraper-cowriter.md");
+
+/// The system prompt for this settings snapshot.
+///
+/// A configured file wins over the built-in [`COWRITER_PROMPT`]. A prompt that
+/// does not explain the protocol's markers gets a warning — the agent only
+/// uses the containers it has been told about, and a custom file may have
+/// drifted away from `roundtrip`.
+fn system_prompt(settings: &RagSettings) -> anyhow::Result<String> {
+    let prompt = match &settings.ragrig.chat.system_prompt_path {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read the system prompt {}", path.display()))?,
+        None => COWRITER_PROMPT.to_string(),
     };
-    std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read the system prompt {}", path.display()))
-        .map(Some)
+    let missing = roundtrip::missing_markers(&prompt);
+    if !missing.is_empty() {
+        log::warn!(
+            "RAG: the system prompt does not mention {missing:?} — the agent may ignore those containers"
+        );
+    }
+    Ok(prompt)
 }
 
 /// Apply the declarative memory strategy (mirrors ragrig-cli).
@@ -1607,6 +1625,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use crate::rag::{ComponentState, RagComponent};
+    use ragrig::attach::AttachStrategy;
     use ragrig::{Embedding, MutexGenerator, NoopEmbedder, SimpleGenerator};
 
     /// A streaming-less generator that echoes its prompt.
@@ -1720,6 +1739,12 @@ mod tests {
         assert_eq!(session.agent().store().len(), 0);
         assert!(session.use_transcript(), "default memory is transcript");
         assert!(dir.path().join(".ragrig").join("sessions").exists());
+        // Attachments reach the model inside the protocol's containers
+        // (sprint 6.0) — the strategy is part of the session contract.
+        assert_eq!(
+            session.agent().attach_strategy().map(|s| s.name()),
+            Some("sciscraper-container")
+        );
     }
 
     #[tokio::test]
@@ -1877,6 +1902,162 @@ mod tests {
         wait_for_event(&worker, |event| {
             matches!(event, RagEvent::QueryFinished { .. })
         });
+    }
+
+    #[tokio::test]
+    async fn attachments_reach_the_model_inside_containers() {
+        // Sprint 6.0 end to end: `@Key` paper → ContainerAttach → the assembled
+        // prompt the generator sees. The echo generator answers with the prompt
+        // it was given, so the answer is the wire format.
+        //
+        // An *enabled* embedder is required: ragrig only runs the attach
+        // strategy when the embedder is on (see US-15 — with retrieval switched
+        // off it falls back to its own plain attachment formatting, which is
+        // why the buffer/selection builders pre-render their containers into
+        // the attachment content instead of relying on the strategy alone).
+        let dir = tempfile::tempdir().unwrap();
+        let settings = workspace_settings(dir.path());
+        write_library_file(dir.path(), "paper.md", "# Paper\n\nBody text.");
+        std::fs::write(
+            dir.path().join("library").join("library.bib"),
+            "@misc{Key2024,\n  file = {paper.md}\n}\n",
+        )
+        .unwrap();
+
+        let worker = RagrigWorker::spawn(settings, None, tiny_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::Query {
+            text: "Summarize @Key2024".into(),
+        });
+
+        let prompt = collect_answer(&worker);
+
+        assert!(
+            prompt.contains("<sciscraper:v1:context source=\"creator\">"),
+            "the attachment block is marked: {prompt}"
+        );
+        assert!(
+            prompt.contains("<sciscraper:v1:document name=\"@Key2024\">"),
+            "the paper keeps its name (the cite key, so the model knows what to cite): {prompt}"
+        );
+        assert!(
+            prompt.contains("Body text."),
+            "the paper is attached: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_built_in_prompt_makes_the_agent_a_sciscraper_co_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = RagSettings::default();
+        let chat = (echo_factories().chat)(&settings).unwrap();
+        let embed = (echo_factories().embed)(&settings).unwrap();
+        let session = build_session(&settings, dir.path(), chat, embed)
+            .await
+            .expect("session builds");
+
+        let prompt = session.agent().system_prompt();
+        assert!(prompt.contains("co-writer"), "{prompt}");
+        assert!(
+            prompt.contains("{context}"),
+            "the placeholder stays for retrieval to fill: {prompt}"
+        );
+        // The prompt is versioned with the protocol: it explains every marker
+        // `roundtrip` defines, so the agent knows what it is looking at.
+        assert_eq!(
+            roundtrip::missing_markers(prompt),
+            Vec::<&str>::new(),
+            "the built-in prompt explains the whole protocol"
+        );
+        // US-14: the persona must survive a query without retrieved context.
+        let no_docs = session.agent().chat_without_docs_prompt();
+        assert!(no_docs.contains("co-writer"), "{no_docs}");
+        assert!(!no_docs.contains("{context}"), "{no_docs}");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_file_wins_over_the_built_in_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("my-prompt.md");
+        std::fs::write(&custom, "CUSTOM-PROMPT persona\n\nContext:\n{context}\n").unwrap();
+        let mut settings = RagSettings::default();
+        settings.ragrig.chat.system_prompt_path = Some(custom);
+        let chat = (echo_factories().chat)(&settings).unwrap();
+        let embed = (echo_factories().embed)(&settings).unwrap();
+        let session = build_session(&settings, dir.path(), chat, embed)
+            .await
+            .expect("session builds");
+        let prompt = session.agent().system_prompt();
+        assert!(prompt.contains("CUSTOM-PROMPT"), "{prompt}");
+        assert!(
+            !prompt.contains("co-writer"),
+            "the file replaces the built-in prompt: {prompt}"
+        );
+
+        // A file without the placeholder still gets the context section, so
+        // retrieval is never silently switched off.
+        let bare = tempfile::tempdir().unwrap();
+        let stem = bare.path().join("bare.md");
+        std::fs::write(&stem, "BARE-PROMPT persona\n").unwrap();
+        settings.ragrig.chat.system_prompt_path = Some(stem);
+        let chat = (echo_factories().chat)(&settings).unwrap();
+        let embed = (echo_factories().embed)(&settings).unwrap();
+        let session = build_session(&settings, bare.path(), chat, embed)
+            .await
+            .expect("session builds");
+        let prompt = session.agent().system_prompt();
+        assert!(prompt.contains("BARE-PROMPT"), "{prompt}");
+        assert!(prompt.contains("{context}"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_change_reaches_the_live_session() {
+        // Switching the prompt source is a menu action: the echo generator
+        // returns the wire prompt, so this asserts the model's view.
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = workspace_settings(dir.path());
+        let worker = RagrigWorker::spawn(settings.clone(), None, tiny_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::Query {
+            text: "hello".into(),
+        });
+        let first = collect_answer(&worker);
+        assert!(first.contains("co-writer"), "the built-in prompt: {first}");
+
+        let custom = dir.path().join("hot-swap-prompt.md");
+        std::fs::write(&custom, "HOT-SWAP-PROMPT persona\n\nContext:\n{context}\n").unwrap();
+        settings.ragrig.chat.system_prompt_path = Some(custom);
+        worker.send(RagCommand::Configure {
+            settings: Box::new(settings),
+            editor_workspace: None,
+        });
+        worker.send(RagCommand::Query {
+            text: "again".into(),
+        });
+        let second = collect_answer(&worker);
+        assert!(
+            second.contains("HOT-SWAP-PROMPT"),
+            "the new prompt is live without a restart: {second}"
+        );
+    }
+
+    /// Wait for a finished query and return everything the generator streamed
+    /// (with the echo generator: the wire prompt).
+    fn collect_answer(worker: &RagrigWorker) -> String {
+        let mut answer = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        loop {
+            match worker.try_recv() {
+                Some(RagEvent::Token { delta }) => answer.push_str(&delta),
+                Some(RagEvent::QueryFinished { .. }) => return answer,
+                Some(RagEvent::QueryFailed { message }) => panic!("query failed: {message}"),
+                Some(_) => {}
+                None if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                None => panic!("no answer within 4 s; answer so far: {answer}"),
+            }
+        }
     }
 
     #[tokio::test]

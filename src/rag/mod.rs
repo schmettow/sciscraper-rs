@@ -24,6 +24,7 @@ pub mod cite;
 pub mod ingest;
 pub mod library;
 pub mod probe;
+pub mod roundtrip;
 pub mod status;
 pub mod worker;
 
