@@ -14,7 +14,7 @@ without features behaves exactly as before.
 
 | # | Decision |
 |---|---|
-| D1 | Right dock with stacked sections (**Agent above Library**); tabbed mode is a later extension for other panes. |
+| D1 | Right dock with stacked sections (**Agent above Library**); tabbed mode is a later extension for other panes. *Revised in Sprint 5.1:* the Library moved to a dedicated left pane — chat, composer, component bar and bibliography in one column crowded the right pane; tabbed mode stays a later extension for other panes. |
 | D2 | Citation insertion is fixed: inline `@key`; bracketed APA-style `[@key_1, @key_2, …]`. |
 | D3 | No workspace open ⇒ **Embeddings inactive**; the component menu offers *New folder* and recent folders. |
 | D4 | Backend defaults: **DeepSeek**, context window > 400 000 tokens, embeddings `top_k = 300`, `threshold = 0.03`, **transcript** memory. |
@@ -336,7 +336,8 @@ Verification: 1593 tests pass with the 3 pre-existing failures (+2 host tests);
 - **Known limitation (US-13).** Native drag-and-drop never delivers `http(s)` URLs (winit X11
   rejects non-file URI lists, Windows/macOS map neither `CFSTR_INETURL` nor `NSURL`), so the
   add-from-URL row is the dependable path; URL-looking dropped paths are still accepted for
-  future backends.
+  future backends. Sprint 5.2 found the other half of the same limitation — drag positions —
+  and replaced the pane hit test with position-free routing.
 - **Tests (18 new, hermetic).** Mock GROBID over TCP (shared with the worker round trip), a std
   download server, manifest/cache round trip (second drop = *nothing new*, no second parse),
   re-drop identity, cancellation marker error, corrupt-`.bib` fail-fast, stage progress, status
@@ -344,6 +345,60 @@ Verification: 1593 tests pass with the 3 pre-existing failures (+2 host tests);
 
 Verification: 1616 tests pass with the 3 pre-existing failures (`--all-features`); `rag`, and
 `rag,grobid` both compile; clippy reports nothing new in the sprint's files.
+
+### ✅ Sprint 5.1 — Library moves to a dedicated left pane (layout revision)
+
+Triggered by a user report: the right pane was over-crowded — chat, composer, component bar
+and bibliography shared one column.
+
+- **Layout.** The single right `SectionDock` became two: the **Agent** chat keeps the right
+  pane (`sciscraper_agent_dock`), the **Library** moved to a left pane
+  (`sciscraper_library_dock`) rendered after the navigation panels, so it sits directly left of
+  the editor. Host-side only — `egui_chat`'s `SectionDock` already supported `DockSide::Left`.
+- **Simplification.** The agent section's `library_reserve` (which kept a taller transcript
+  from squeezing the library out of the shared column) is gone: each pane owns its full
+  height. `RagSettings` gained `library_width` (`DEFAULT_LIBRARY_WIDTH = 320`), persisted next
+  to the agent's `width`; the panes collapse independently and share one visibility toggle
+  (ribbon/Ctrl+Shift+A), which now shows or hides both.
+- **Drop target (rect-based until 5.2).** The whole left pane — header included — was the
+  ingest drop target, with the rect taken from the pane's panel rect each rendered frame;
+  Sprint 5.2 removed the plumbing after the X11/Dolphin report showed the hit test could
+  never fire (see below).
+- Pinned by `library_pane_renders_left_of_the_agent_pane`: the pane lies in the left half,
+  has a usable size, collapse clears the drop target, and neither width is written on an idle
+  frame.
+
+Verification: 1616 tests pass with the 3 pre-existing failures (`--all-features`); `rag` and
+`rag,grobid` compile; clippy reports nothing new.
+
+### ✅ Sprint 5.2 — drop routing without pane positions (bug fix)
+
+Triggered by a user report: dropping a PDF from Dolphin onto the library did nothing (it was
+opened as a document tab instead).
+
+- **Root cause.** The host routed a drop by hit-testing the pointer against the library pane's
+  rect. That test can never pass on X11: winit decodes the `XdndPosition` coordinates only in
+  a comment and discards them, XDND grabs the pointer (so no cursor-motion events reach the
+  target and `pointer.latest_pos()` stays stale), and modifier state is refreshed by key
+  events, which go to the focused drag *source*. The Windows OLE handler has the same gap
+  (position received, not forwarded) and egui's `HoveredFile`/`DroppedFile` carry no position
+  at all — no platform can deliver a pane-targeted drop (recorded in US-13).
+- **Fix.** Position-free routing in `ingest::drop_sources`: while the panes are open *and* a
+  library workspace exists, a drop that contains a PDF or a URL-looking path is an ingest of
+  the whole drop (skips are reported in the transcript); a drop without one keeps the
+  editor's behaviour. `try_library_ingest` now only needs the paths — the rect plumbing
+  (`library_drop_rect`, the pane hit test, the pane highlight) is gone, so drops also work
+  with a collapsed library pane.
+- **Discoverability.** While PDFs hover and the drop would be ingested, a foreground-layer
+  banner at the top of the window announces it ("Drop: add N PDF(s) to the library"); the
+  ingest only copies, so a mis-drop costs nothing and *File → Open* remains the way to open a
+  PDF as a document.
+- Pinned by `drop_routing_keeps_non_pdf_drops_with_the_editor` (routing table incl. the mixed
+  drop), `hovering_a_pdf_renders_the_drop_banner`, and the workspace assertions in
+  `library_pane_renders_left_of_the_agent_pane`.
+
+Verification: 1614 tests pass with the 3 pre-existing failures (`rag,grobid`); `rag` and the
+feature-less build still compile; the drop-routing tests and the hover render are green.
 
 ## 5. Baseline health (found during Sprint 1)
 

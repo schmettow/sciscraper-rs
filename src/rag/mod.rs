@@ -51,6 +51,8 @@ pub const DEFAULT_TOP_K: usize = 300;
 pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.03;
 /// Default width of the agent dock in points.
 pub const DEFAULT_PANEL_WIDTH: f32 = 380.0;
+/// Default width of the library pane in points.
+pub const DEFAULT_LIBRARY_WIDTH: f32 = 320.0;
 
 /// Workspace conventions for the library (bibliography + source files).
 ///
@@ -222,8 +224,10 @@ impl ChunkerKind {
 pub struct RagSettings {
     /// Whether the agent dock is visible.
     pub enabled: bool,
-    /// Persisted dock width in points.
+    /// Persisted width of the agent dock (right pane) in points.
     pub width: f32,
+    /// Persisted width of the library pane (left pane) in points.
+    pub library_width: f32,
     /// Whether the agent section is collapsed.
     pub agent_collapsed: bool,
     /// Whether the library section is collapsed.
@@ -255,6 +259,7 @@ impl Default for RagSettings {
         Self {
             enabled: false,
             width: DEFAULT_PANEL_WIDTH,
+            library_width: DEFAULT_LIBRARY_WIDTH,
             agent_collapsed: false,
             library_collapsed: false,
             embeddings_enabled: true,
@@ -324,6 +329,7 @@ mod tests {
         assert!(settings.embeddings_enabled, "retrieval is on by default");
         assert_eq!(settings.chunker, ChunkerKind::Markdown);
         assert_eq!(settings.width, DEFAULT_PANEL_WIDTH);
+        assert_eq!(settings.library_width, DEFAULT_LIBRARY_WIDTH);
         assert_eq!(settings.ragrig.chat.provider, Provider::Deepseek);
         assert_eq!(settings.ragrig.chat.context_tokens, DEFAULT_CONTEXT_TOKENS);
         assert!(settings.ragrig.chat.context_tokens > 400_000);

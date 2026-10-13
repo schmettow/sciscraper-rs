@@ -1,17 +1,23 @@
-//! Agent dock (feature `rag`): chat pane, composer and component bar.
+//! Agent dock and library pane (feature `rag`): chat, composer, component bar,
+//! and the bibliography list.
 //!
 //! The panel is stateful (transcript, input buffer, worker handle) and is
 //! owned by `FerriteApp`; it is created lazily when the dock is first shown.
 //! All ragrig work happens in the worker thread — this file only renders and
 //! forwards events (`RagEvent` → transcript) and commands (`RagCommand`).
 //!
-//! Layout: one right-hand [`SectionDock`] with two stacked sections, the
-//! *Agent* chat above the *Library* (tabbed docks are a later extension for
-//! other panels). The agent bar with one icon per RAG component sits at the
-//! bottom of the agent section; clicking an icon slides up its control menu:
-//! backend settings, *Test connection* probes, and — for the Corpus and Store
-//! components — the index housekeeping (*Update* incrementally, *Rebuild* from
-//! scratch).
+//! Layout: two side panes facing the editor. The **Agent** chat dock is on the
+//! right (session row, transcript, composer, agent bar); the **Library** is a
+//! dedicated pane on the left — a working pane next to the document for
+//! drag-to-cite and drop-to-ingest, not a chat accessory (Sprint 5.1 moved it
+//! out of the right dock, which had become over-crowded). Both panes are
+//! collapsible and remember their width and state; one toggle shows or hides
+//! both.
+//!
+//! The agent bar with one icon per RAG component sits at the bottom of the
+//! agent pane; clicking an icon slides up its control menu: backend settings,
+//! *Test connection* probes, and — for the Corpus and Store components — the
+//! index housekeeping (*Update* incrementally, *Rebuild* from scratch).
 //!
 //! Menu edits mark the settings dirty; the caller hands the new snapshot to the
 //! worker, which applies it to the live session in place (the conversation
@@ -57,7 +63,7 @@ pub struct AgentPanelOutput {
     pub cite: Option<CitePayload>,
 }
 
-/// The agent dock as owned by `FerriteApp`.
+/// The agent dock and library pane as owned by `FerriteApp`.
 pub struct AgentPanel {
     transcript: Vec<ChatMessage>,
     input: String,
@@ -76,10 +82,6 @@ pub struct AgentPanel {
     /// replaces (feature `grobid`).
     #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
     ingest_note: Option<usize>,
-    /// Screen rect of the library section from the last rendered frame; the
-    /// host routes file drops inside it to ingestion (feature `grobid`).
-    #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
-    library_drop_rect: Option<egui::Rect>,
     last_workspace: Option<PathBuf>,
     sessions: Vec<SessionInfo>,
     session: Option<String>,
@@ -111,7 +113,6 @@ impl AgentPanel {
             syncing: false,
             ingesting: false,
             ingest_note: None,
-            library_drop_rect: None,
             last_workspace: editor_workspace,
             sessions: Vec::new(),
             session: None,
@@ -161,13 +162,6 @@ impl AgentPanel {
     ) -> AgentPanelOutput {
         let editor_ws: Option<PathBuf> = editor_workspace.map(Path::to_path_buf);
 
-        // The library drop target is re-established by every rendered frame
-        // (see the library section below).
-        #[cfg(feature = "grobid")]
-        {
-            self.library_drop_rect = None;
-        }
-
         // When the workspace tracks the editor, follow changes immediately.
         let mut settings_changed = false;
         if !settings.workspace_is_pinned() && editor_ws != self.last_workspace {
@@ -202,17 +196,32 @@ impl AgentPanel {
         // them would borrow all of `self` and clash with their field borrows.
         let working = self.is_working();
 
-        let dock = SectionDock::new("sciscraper_agent_dock", DockSide::Right, settings.width)
-            .width_range(300.0, 720.0);
+        // ── Left pane: the library ──────────────────────────────────────────
+        //
+        // A dedicated pane instead of a section of the agent dock: the
+        // bibliography is a working pane next to the document (drag-to-cite,
+        // drop-to-ingest), not a chat accessory. It renders after the
+        // navigation panels, so it sits directly left of the editor.
+        let library_action: RefCell<LibraryAction> = RefCell::new(LibraryAction::default());
+        let library_dock = SectionDock::new(
+            "sciscraper_library_dock",
+            DockSide::Left,
+            settings.library_width,
+        )
+        .width_range(240.0, 560.0)
+        .section(&mut self.library_section, |ui| {
+            self.library.show(ui, &mut library_action.borrow_mut());
+        });
 
-        // Section 1: conversation controls, transcript, composer, bar.
+        // ── Right pane: the agent ───────────────────────────────────────────
         //
         // Layout contract (mirrored by egui_chat's `dock_layout` tests): the
         // footer is anchored to the bottom of the section and the transcript
         // is placed *above* it, so a multi-line prompt grows upward instead of
-        // pushing the agent bar — and the library section below — out of the
-        // panel. Explicit rects keep every height bounded: the session row,
-        // the transcript, the footer, and the library's reserved share.
+        // pushing the agent bar out of the pane. Explicit rects keep every
+        // height bounded: the session row, the transcript, the footer.
+        let dock = SectionDock::new("sciscraper_agent_dock", DockSide::Right, settings.width)
+            .width_range(300.0, 720.0);
         let dock = dock.section(&mut self.agent_section, |ui| {
             session_row(
                 ui,
@@ -226,8 +235,9 @@ impl AgentPanel {
 
             let top = ui.cursor().min.y;
             let bounds = ui.available_rect_before_wrap();
-            let reserve = library_reserve(ui, settings.library_collapsed);
-            let section_bottom = (ui.max_rect().bottom() - reserve)
+            let section_bottom = ui
+                .max_rect()
+                .bottom()
                 .max(top + MIN_TRANSCRIPT_HEIGHT + min_footer_height(ui));
 
             // Footer first (bottom-anchored): composer and bar keep their
@@ -287,7 +297,7 @@ impl AgentPanel {
                     .show(ui);
             });
 
-            // The section ends at the footer's bottom; the library follows.
+            // The section ends at the footer's bottom.
             ui.allocate_rect(
                 egui::Rect::from_min_max(
                     egui::pos2(bounds.left(), top),
@@ -297,31 +307,19 @@ impl AgentPanel {
             );
         });
 
-        // Section 2: the bibliography list (drag a row into the document).
-        let library_action: RefCell<LibraryAction> = RefCell::new(LibraryAction::default());
-        let dock = dock.section(&mut self.library_section, |ui| {
-            // Drop target for ingestion (feature `grobid`): the whole section
-            // area below its header, including the empty space under the list.
-            #[cfg(feature = "grobid")]
-            let drop_top = ui.cursor().min.y - ui.spacing().interact_size.y;
-            self.library.show(ui, &mut library_action.borrow_mut());
-            #[cfg(feature = "grobid")]
-            {
-                let bounds = ui.max_rect();
-                self.library_drop_rect = Some(egui::Rect::from_min_max(
-                    egui::pos2(bounds.left(), drop_top),
-                    egui::pos2(bounds.right(), bounds.bottom()),
-                ));
-            }
-        });
-
+        let library_response = library_dock.show(ui);
         let response = dock.show(ui);
 
-        // Highlight the library while files hover over it (feature `grobid`).
+        // Announce a pending ingest while files hover over the window
+        // (feature `grobid`).
         #[cfg(feature = "grobid")]
-        self.paint_drop_hint(ui);
+        self.paint_drop_banner(ui);
 
         // Persist dock state.
+        if let Some(width) = library_response.width {
+            settings.library_width = width;
+            settings_changed = true;
+        }
         if let Some(width) = response.width {
             settings.width = width;
             settings_changed = true;
@@ -334,7 +332,7 @@ impl AgentPanel {
             settings.library_collapsed = self.library_section.collapsed;
             settings_changed = true;
         }
-        if response.close_requested {
+        if response.close_requested || library_response.close_requested {
             settings.enabled = false;
             settings_changed = true;
         }
@@ -444,11 +442,17 @@ impl AgentPanel {
         self.worker.send(RagCommand::Ingest { sources });
     }
 
-    /// Screen rect of the library section, when the dock rendered it in the
-    /// previous frame (feature `grobid`; the host routes drops that land there).
+    /// Whether the library has a workspace to ingest into (feature `grobid`).
+    ///
+    /// The host uses this to decide whether a dropped PDF belongs to the
+    /// library; without a workspace the drop keeps the editor's behaviour.
     #[cfg(feature = "grobid")]
-    pub fn library_drop_rect(&self) -> Option<egui::Rect> {
-        self.library_drop_rect
+    pub fn has_library_workspace(&self) -> bool {
+        self.last_workspace.is_some()
+            || self
+                .status
+                .as_ref()
+                .is_some_and(|status| status.workspace.is_some())
     }
 
     fn send_configure(&self, settings: &RagSettings, editor_ws: Option<PathBuf>) {
@@ -607,41 +611,61 @@ impl AgentPanel {
         self.transcript.extend(messages);
     }
 
-    /// Outline the library while files hover over it, so the drop target is
-    /// visible before the user releases the button (feature `grobid`).
+    /// Announce a pending ingest while files hover over the window
+    /// (feature `grobid`).
+    ///
+    /// No window backend reports *where* a drag is, so the drop target is the
+    /// whole window while the panes are open; the banner is what makes that
+    /// visible before the button is released. It only appears when the drop
+    /// would actually be ingested (workspace present, PDF among the hovered
+    /// files) — a drop without one stays an ordinary document drop and needs
+    /// no warning.
     #[cfg(feature = "grobid")]
-    fn paint_drop_hint(&self, ui: &mut egui::Ui) {
-        let Some(rect) = self.library_drop_rect else {
-            return;
-        };
-        let hovering = ui.ctx().input(|input| {
-            !input.raw.hovered_files.is_empty()
-                && input
-                    .pointer
-                    .hover_pos()
-                    .is_some_and(|position| rect.contains(position))
-        });
-        if !hovering {
+    fn paint_drop_banner(&self, ui: &egui::Ui) {
+        if !self.has_library_workspace() {
             return;
         }
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
-        let painter = ui.painter();
-        let highlight = ui.visuals().selection.bg_fill;
-        let rect = rect.shrink(1.5);
-        painter.rect_filled(rect, 4.0, highlight.gamma_multiply(0.15));
-        painter.rect_stroke(
-            rect,
-            4.0,
-            egui::Stroke::new(1.5, highlight),
-            egui::StrokeKind::Inside,
-        );
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            t!("agent.library.drop_hint"),
+        let pdfs = ui.ctx().input(|input| {
+            input
+                .raw
+                .hovered_files
+                .iter()
+                .filter(|file| {
+                    file.path
+                        .as_deref()
+                        .is_some_and(crate::rag::ingest::is_pdf_path)
+                })
+                .count()
+        });
+        if pdfs == 0 {
+            return;
+        }
+
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("sciscraper_drop_banner"),
+        ));
+        let text = t!("agent.library.drop_library", count = pdfs).to_string();
+        let galley = painter.layout_no_wrap(
+            text,
             egui::FontId::proportional(13.0),
             ui.visuals().strong_text_color(),
         );
+        let padding = egui::vec2(14.0, 8.0);
+        let size = galley.size() + padding * 2.0;
+        let window = ui.ctx().content_rect();
+        let rect = egui::Rect::from_center_size(
+            egui::pos2(window.center().x, window.top() + 16.0 + size.y / 2.0),
+            size,
+        );
+        painter.rect_filled(rect, 6.0, ui.visuals().window_fill.gamma_multiply(0.96));
+        painter.rect_stroke(
+            rect,
+            6.0,
+            egui::Stroke::new(1.5, ui.visuals().selection.bg_fill),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(rect.min + padding, galley, ui.visuals().strong_text_color());
     }
 
     /// Surface a failure: replace an empty streaming placeholder, append
@@ -922,25 +946,6 @@ fn sync_summary(indexed: usize, documents: Option<usize>) -> ChatMessage {
 
 /// Smallest height the transcript keeps, whatever else the section needs.
 const MIN_TRANSCRIPT_HEIGHT: f32 = 120.0;
-
-/// Height reserved under the agent pane for the library section.
-///
-/// The dock stacks its sections in one column without a per-section budget,
-/// so the agent section has to leave room for the library: without this
-/// reserve, the library's header, filter and rows are pushed below the panel
-/// (the very first thing a taller transcript would do). The reserve covers
-/// the section header plus the library chrome — file line, filter, count —
-/// and a couple of list rows; a collapsed library only needs its header.
-fn library_reserve(ui: &egui::Ui, collapsed: bool) -> f32 {
-    let spacing = ui.spacing().item_spacing.y;
-    if collapsed {
-        return ui.spacing().interact_size.y + 2.0 * spacing;
-    }
-    ui.spacing().interact_size.y * 3.0
-        + ui.text_style_height(&egui::TextStyle::Small) * 2.0
-        + ui.text_style_height(&egui::TextStyle::Body) * 2.0
-        + 8.0 * spacing
-}
 
 /// Smallest footer that still shows the capped composer and the agent bar.
 ///
@@ -1557,23 +1562,9 @@ mod tests {
     }
 
     #[test]
-    fn reserves_leave_room_for_the_library_and_the_footer() {
-        // The dock stacks sections in one column; these reserves are what keep
-        // the library from being pushed below the panel.
+    fn footer_reserve_leaves_room_for_the_composer_and_the_bar() {
         let ctx = egui::Context::default();
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let expanded = library_reserve(ui, false);
-            let collapsed = library_reserve(ui, true);
-            assert!(
-                collapsed < expanded,
-                "a collapsed library needs less room: {collapsed} vs {expanded}"
-            );
-            assert!(expanded <= 220.0, "library reserve is bounded: {expanded}");
-            assert!(
-                expanded >= 120.0,
-                "the library needs its chrome: {expanded}"
-            );
-
             let footer = min_footer_height(ui);
             let composer_cap = max_composer_height(ui);
             assert!(footer > composer_cap, "the agent bar adds height");
@@ -1610,6 +1601,76 @@ mod tests {
                 panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
             });
         }
+    }
+
+    #[test]
+    fn library_pane_renders_left_of_the_agent_pane() {
+        // Sprint 5.1: the library is a pane of its own, left of the editor,
+        // instead of a section squeezed under the chat.
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+        settings.ragrig.workspace = dir.path().to_path_buf();
+        let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..egui::RawInput::default()
+        };
+        for _ in 0..2 {
+            let _ = ctx.run_ui(input.clone(), |ui| {
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+            });
+        }
+
+        // Both panes keep their own width (unchanged while nobody resizes).
+        assert_eq!(settings.width, crate::rag::DEFAULT_PANEL_WIDTH);
+        assert_eq!(settings.library_width, crate::rag::DEFAULT_LIBRARY_WIDTH);
+
+        // Ingest into the library needs a workspace; the panel tracks the
+        // editor's one (the host routes dropped PDFs only when it has one).
+        #[cfg(feature = "grobid")]
+        {
+            assert!(
+                panel.has_library_workspace(),
+                "the editor workspace counts as the library workspace"
+            );
+            let bare = AgentPanel::new(&RagSettings::default(), None);
+            assert!(
+                !bare.has_library_workspace(),
+                "without a workspace a dropped PDF keeps the editor's behaviour"
+            );
+        }
+    }
+
+    #[cfg(feature = "grobid")]
+    #[test]
+    fn hovering_a_pdf_renders_the_drop_banner() {
+        // The banner is what makes the position-free drop target visible:
+        // the whole window ingests while the panes are open, so the hover
+        // frame has to render without panicking (and with the banner path
+        // taken).
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+        settings.ragrig.workspace = dir.path().to_path_buf();
+        let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            hovered_files: vec![egui::HoveredFile {
+                path: Some(dir.path().join("paper.pdf")),
+                mime: String::new(),
+            }],
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            panel.show_ui(ui, &mut settings, Some(dir.path()), &[]);
+        });
     }
 
     #[test]

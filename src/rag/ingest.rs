@@ -80,6 +80,19 @@ pub enum IngestSource {
     Url(String),
 }
 
+impl IngestSource {
+    /// Whether a run would actually process this source.
+    ///
+    /// PDFs and URLs are processed; folders and other files are skipped with
+    /// a note, so a drop that contains only those stays with the editor.
+    pub fn is_ingestible(&self) -> bool {
+        match self {
+            Self::Url(_) => true,
+            Self::File(path) => path.is_file() && is_pdf_path(path),
+        }
+    }
+}
+
 /// Classify dropped paths: URL-like paths become URLs (some platforms deliver
 /// web drops as a path-like string), everything else stays a file.
 pub fn sources_from_paths(paths: &[PathBuf]) -> Vec<IngestSource> {
@@ -94,6 +107,24 @@ pub fn sources_from_paths(paths: &[PathBuf]) -> Vec<IngestSource> {
             }
         })
         .collect()
+}
+
+/// The sources an ingest run should take from a drop of `paths`;
+/// `None` when the drop stays with the editor.
+///
+/// The routing is deliberately position-free: no window backend reports
+/// *where* a drag is (winit parses the X11 XdndPosition coordinates and
+/// discards them, the Windows drop handler drops the OLE point, egui's
+/// `DroppedFile` carries paths only), so a pane hit test cannot work. While
+/// the panes are open, a drop that contains a PDF or a URL is the library's
+/// — the hover banner announces it — and everything else is an ordinary
+/// document drop. A drop is one gesture and is never split between the two.
+pub fn drop_sources(paths: &[PathBuf]) -> Option<Vec<IngestSource>> {
+    let sources = sources_from_paths(paths);
+    sources
+        .iter()
+        .any(IngestSource::is_ingestible)
+        .then_some(sources)
 }
 
 /// Whether `value` is an `http(s)` URL with a host.
@@ -241,7 +272,7 @@ pub async fn run(
                 .push(format!("{} — folders are not ingested", path.display()));
             continue;
         }
-        if !is_pdf(path) {
+        if !is_pdf_path(path) {
             outcome.skipped.push(format!(
                 "{} — not a PDF (GROBID ingestion handles PDFs only)",
                 display_name(path)
@@ -530,7 +561,7 @@ fn find_identical_in_folder(source: &Path, folder: &Path) -> Result<Option<PathB
     let mut source_hash: Option<blake3::Hash> = None;
     for entry in entries.flatten() {
         let candidate = entry.path();
-        if !candidate.is_file() || !is_pdf(&candidate) {
+        if !candidate.is_file() || !is_pdf_path(&candidate) {
             continue;
         }
         let Ok(metadata) = std::fs::metadata(&candidate) else {
@@ -598,7 +629,8 @@ fn hash_file(path: &Path) -> Result<blake3::Hash> {
     Ok(hasher.finalize())
 }
 
-fn is_pdf(path: &Path) -> bool {
+/// Whether `path` names a PDF (extension check; also drop routing).
+pub fn is_pdf_path(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
 }
@@ -963,6 +995,37 @@ mod tests {
                 IngestSource::Url("https://example.org/paper.pdf".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn drop_routing_keeps_non_pdf_drops_with_the_editor() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("paper.pdf");
+        std::fs::write(&pdf, b"%PDF-1.4 x").unwrap();
+        let notes = dir.path().join("notes.md");
+        std::fs::write(&notes, "# Notes").unwrap();
+        let folder = dir.path().join("papers");
+        std::fs::create_dir_all(&folder).unwrap();
+        // A PDF-shaped path that does not exist is not ingestible either.
+        let ghost = dir.path().join("ghost.pdf");
+
+        // PDFs and URLs route to the library…
+        assert!(drop_sources(&[pdf.clone()]).is_some());
+        assert!(drop_sources(&[PathBuf::from("https://example.org/a.pdf")]).is_some());
+        // …a mixed drop is one gesture: everything goes to the run, which
+        // reports what it skipped.
+        let mixed = drop_sources(&[pdf.clone(), folder.clone()]).expect("pdf routes the drop");
+        assert_eq!(mixed.len(), 2);
+        assert!(
+            !mixed[1].is_ingestible(),
+            "the folder is reported as skipped"
+        );
+
+        // Documents, folders and missing files keep the editor's behaviour.
+        assert!(drop_sources(&[]).is_none());
+        assert!(drop_sources(&[notes]).is_none());
+        assert!(drop_sources(&[folder]).is_none());
+        assert!(drop_sources(&[ghost]).is_none());
     }
 
     #[test]

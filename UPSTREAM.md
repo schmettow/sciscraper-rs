@@ -264,27 +264,36 @@ every entry is filed and closed.
   pre-rendered for display) or re-export the `biblatex` types it hands out, so
   consumers depend on one crate instead of its internals.
 
-## US-13 — Native drag-and-drop does not deliver web URLs
+## US-13 — Native drag-and-drop delivers neither web URLs nor drag positions
 
 - **Target:** external (`winit` / `egui-winit` platform backends; informational for `ragrig`)
 - **Severity:** low (UX gap, not a defect — no upstream fix is expected soon)
-- **Context.** The drop-to-ingest story is "drop a PDF *or a URL* on the library". Files
-  arrive as `DroppedFile.path`, but a URL dragged from a browser never does:
-  - **X11:** winit parses only `text/uri-list` entries with the `file://` scheme and rejects
-    the whole drop with `DndDataParseError::UnexpectedProtocol` for `http(s)` URIs
-    (`winit-0.30::platform_impl::linux::x11::dnd`).
-  - **Windows/macOS:** browser drags use `CFSTR_INETURL`/`NSURL` flavors that the native
-    backends do not map to `DroppedFile`, and `egui`'s `DroppedFile` carries `path`/`bytes`
-    only — there is no "text dropped onto the window" event to read.
-  Consequence: no host can implement URL drop by listening to drop events alone, on any
-  platform.
-- **Workaround in sciscraper.** `IngestSource::Url` is still produced from any dropped
-  *path-like* value that parses as an `http(s)` URL (so a future backend that forwards URLs
-  works unchanged), and the Library section carries an explicit *add-from-URL* row — a link
-  icon that opens a one-line input — as the dependable path.
-- **Suggested fix / follow-up.** Track `egui` support for text drops
-  (`Event::Text`-style drops from external sources) or winit accepting non-file URI lists;
-  when that lands, only `sources_from_paths` needs to change.
+- **Context.** Drop-to-ingest wants "drop a PDF or a URL *on the library pane*". Neither
+  half of that promise is deliverable through the native drop events:
+  - **Web URLs never arrive.** X11: winit parses only `text/uri-list` entries with the
+    `file://` scheme and rejects the whole drop with `DndDataParseError::UnexpectedProtocol`
+    for `http(s)` URIs (`winit-0.30::platform_impl::linux::x11::dnd`). Windows/macOS:
+    browser drags use `CFSTR_INETURL`/`NSURL` flavors that the backends do not map to
+    `DroppedFile`, and egui's `DroppedFile` carries `path`/`bytes` only — there is no
+    "text dropped onto the window" event to read.
+  - **Drag positions never arrive either.** The X11 `XdndPosition` coordinates are decoded
+    in a comment and thrown away ("Note that coordinates are in desktop space…
+    // let packed_coordinates = xev.data.get_long(2);"), the Windows `IDropTarget`
+    handler receives the OLE `POINTL` and ignores it, and `HoveredFile`/`DroppedFile`
+    carry no position at all. During an XDND/OLE drag the target also gets no
+    cursor-motion events (the source owns the grab), so `pointer.latest_pos()` is stale —
+    and egui's `modifiers` are only refreshed by key events, which go to the focus window
+    (the drag source). Consequence: **no host can implement a pane-targeted drop, on any
+    platform**, and no modifier can disambiguate it at drop time.
+- **Workaround in sciscraper (Sprint 5.2).** The routing is position-free: while the panes
+  are open and a workspace exists, a drop that contains a PDF (or a URL-looking path) is an
+  ingest of the whole drop; everything else keeps the editor's drop behaviour. The ingest
+  only copies (never moves), and a hover banner announces the action *before* the button is
+  released. URLs have their own path: the Library pane's add-from-URL row, plus
+  `IngestSource::Url` in case a backend ever forwards them.
+- **Suggested fix / follow-up.** Track `egui` support for drag positions and text drops;
+  when that lands, the pane hit test (and only that) needs to come back — the pipeline behind
+  it is already position-independent.
 
 ## Notes (monitoring — not issues to file)
 
@@ -317,7 +326,7 @@ every entry is filed and closed.
 | US-10 | Worker builds `FsSessionStore` directly for listing | `src/rag/worker.rs` |
 | US-11 | Explicit *Rebuild* (`delete_corpus` + full sync) + staleness warning from the manifest | `src/rag/worker.rs`, `src/ui/agent_panel.rs` |
 | US-12 | Direct `biblatex` dependency + own field fallback chains | `src/rag/library.rs`, `Cargo.toml` |
-| US-13 | URL-looking dropped paths become URLs; explicit *add-from-URL* row | `src/rag/ingest.rs`, `src/ui/library_panel.rs` |
+| US-13 | Position-free drop routing (whole window while the panes are open) + hover banner; add-from-URL row | `src/rag/ingest.rs`, `src/app/rag.rs`, `src/ui/agent_panel.rs`, `src/ui/library_panel.rs` |
 
 ## Suggested filing order
 

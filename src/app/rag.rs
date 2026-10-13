@@ -12,20 +12,22 @@ use rust_i18n::t;
 
 #[cfg(feature = "rag")]
 impl FerriteApp {
-    /// Route a dropped-file event to the agent library when the pointer was
-    /// over its section (feature `grobid`); returns `true` when the drop was
-    /// consumed and must not be handled as a file/folder drop.
+    /// Route a dropped file set to the library (feature `grobid`); returns
+    /// `true` when the drop was consumed and must not also be handled as a
+    /// document/folder drop.
     ///
-    /// `handle_dropped_files` runs before the UI is rendered, so the drop
-    /// target comes from the previous frame's library section rect — the dock
-    /// layout is stable across frames, and an unknown rect (dock hidden, list
-    /// never rendered) falls through to the normal drop handling.
+    /// Panes cannot be targeted by position: no window backend forwards the
+    /// drag coordinates to the drop target (winit parses the X11
+    /// `XdndPosition` coordinates and discards them, the Windows drop handler
+    /// drops the OLE point, and egui's `DroppedFile` carries paths only) —
+    /// see `UPSTREAM.md`, US-13. The rule is therefore position-free: while
+    /// the panes are open and a library workspace exists, a drop that
+    /// contains a PDF or a URL belongs to the library; everything else keeps
+    /// the editor's drop behaviour. The hover banner announces the ingest
+    /// before the button is released, and the files are only copied, never
+    /// moved.
     #[cfg(feature = "grobid")]
-    pub(crate) fn try_library_ingest(
-        &mut self,
-        ctx: &egui::Context,
-        paths: &[std::path::PathBuf],
-    ) -> bool {
+    pub(crate) fn try_library_ingest(&mut self, paths: &[std::path::PathBuf]) -> bool {
         if !self.state.settings.rag.enabled {
             return false;
         }
@@ -33,19 +35,14 @@ impl FerriteApp {
         let Some(panel) = self.agent_panel.as_mut() else {
             return false;
         };
-        let Some(rect) = panel.library_drop_rect() else {
-            return false;
-        };
-        let Some(position) = ctx.input(|input| input.pointer.latest_pos()) else {
-            return false;
-        };
-        if !rect.contains(position) {
+        if !panel.has_library_workspace() {
+            // Nothing to ingest into yet; the comment bar explains where to
+            // choose a folder.
             return false;
         }
-        let sources = crate::rag::ingest::sources_from_paths(paths);
-        if sources.is_empty() {
+        let Some(sources) = crate::rag::ingest::drop_sources(paths) else {
             return false;
-        }
+        };
         panel.start_ingest(sources);
         true
     }

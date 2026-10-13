@@ -1145,7 +1145,7 @@ agent:
     add_url: "Add a PDF from a URL…"
     url_hint: "https://example.org/paper.pdf"
     url_add: "Add"
-    drop_hint: "Drop PDFs here to ingest them with GROBID"
+    drop_library: "Drop: add %{count} PDF(s) to the library"
   menu:
     provider: "Provider"
     model: "Model"

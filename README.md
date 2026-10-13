@@ -5,17 +5,18 @@ management and RAG writing assistance. It is a fork of
 [Ferrite](https://github.com/OlaProeis/Ferrite), a fast, lightweight editor for
 Markdown, JSON and more, built in Rust with egui.
 
-On top of the inherited editor, Sciscraper adds two panes on the right:
+On top of the inherited editor, Sciscraper adds a pane on each side:
 
-- **Agent** — a chat pane backed by the [`ragrig`](https://crates.io/crates/ragrig)
-  framework. It answers questions against your document corpus with hybrid
-  (BM25 + vector) retrieval, streams the answer, keeps conversations across
-  restarts, and lets you hot-swap the chat model, embeddings, memory and
-  chunking from a component bar.
-- **Library** — your BibTeX bibliography, one row per reference. Drag a row
-  into the document (or use its context menu) to cite it as `@key` or
-  `[@key]`, and mention `@Key` in a question to attach the full paper to that
-  query.
+- **Agent** (right) — a chat pane backed by the
+  [`ragrig`](https://crates.io/crates/ragrig) framework. It answers questions
+  against your document corpus with hybrid (BM25 + vector) retrieval, streams
+  the answer, keeps conversations across restarts, and lets you hot-swap the
+  chat model, embeddings, memory and chunking from a component bar.
+- **Library** (left) — your BibTeX bibliography, one row per reference — a
+  working pane next to the document. Drag a row into the document (or use its
+  context menu) to cite it as `@key` or `[@key]`, mention `@Key` in a question
+  to attach the full paper to that query, and drop PDFs anywhere on the window
+  (or add URLs with the link button) to ingest them (feature `grobid`).
 
 Both panes are behind the Cargo feature `rag` (see
 [Building and running](#building-and-running)); a build without it is the
@@ -45,7 +46,7 @@ Everything documented in the **Ferrite README** is still in the box — see
   integrated terminal, productivity hub (notes/snippets), command palette.
 - **Output:** HTML export, PDF generation (pure Rust).
 
-The Sciscraper dock is additive: on builds without the `rag` feature the
+The Sciscraper panes are additive: on builds without the `rag` feature the
 editor behaves exactly like the Ferrite revision it forked from.
 
 ## Building and running
@@ -87,24 +88,22 @@ Packaging metadata (`cargo deb`, `cargo generate-rpm`, `cargo wix`,
 | Cargo feature | Default | What it enables |
 |---|---|---|
 | `rag` | off | Agent pane, component bar, Library pane, `@Key` citations |
-| `grobid` | off | Drop-to-ingest: PDFs and URLs dropped on the Library are parsed by GROBID, renamed and merged into the bibliography |
+| `grobid` | off | Drop-to-ingest: PDFs dropped on the window (URLs via the link button) are parsed by GROBID, renamed and merged into the bibliography |
 
 ## Using the agent
 
-### Opening the pane
+### Opening the panes
 
-Toggle the agent dock with the robot button in the ribbon, the **Command
-Palette** entry *Toggle Agent Panel*, or **Ctrl+Shift+A**. The pane appears on
-the right and remembers its width, collapsed sections and visibility across
-restarts.
-
-The dock has two collapsible sections: **Agent** on top (session controls,
-transcript, composer, component bar) and **Library** below. Drag the divider
-between the dock and the editor to resize.
+Toggle both panes with the robot button in the ribbon, the **Command Palette**
+entry *Toggle Agent Panel*, or **Ctrl+Shift+A**. The **Agent** chat appears on
+the right, the **Library** on the left (between any file tree or outline pane
+and the editor); each pane remembers its own width, its collapsed state and the
+overall visibility across restarts. Drag the pane's inner edge to resize it, or
+use the arrow in its header to collapse it.
 
 ### Asking questions
 
-Type into the composer at the bottom of the Agent section:
+Type into the composer at the bottom of the Agent pane:
 
 - **Return** inserts a newline (compose multi-line prompts freely).
 - **Ctrl+Return** sends the question.
@@ -123,7 +122,7 @@ when to index, from the component bar (see below).
 
 ### The component bar
 
-At the very bottom of the Agent section sits one icon per RAG component. Each
+At the very bottom of the Agent pane sits one icon per RAG component. Each
 icon shows a status dot:
 
 | Dot | Meaning |
@@ -198,8 +197,8 @@ not silently re-embed; the status shows *stale* until you rebuild.
 
 Conversations are saved automatically under
 `<workspace>/.ragrig/sessions`, and the most recent one is restored when the
-agent pane opens (at startup, if the dock was left open). The row at the top
-of the Agent section shows the current conversation and offers:
+agent pane opens (at startup, if the pane was left open). The row at the top
+of the Agent pane shows the current conversation and offers:
 
 - a picker of saved conversations — each entry shows its number of turns,
 age, and (when available) a summary; **Refresh** inside the picker re-reads the
@@ -252,7 +251,7 @@ model name your backend serves can be typed in.
 
 ### The Library pane
 
-The Library section lists the entries of your BibTeX file. Each row shows a
+The Library pane lists the entries of your BibTeX file. Each row shows a
 meta line `Author · Year — Source` above the title, followed by the citation
 key on hover.
 
@@ -309,16 +308,30 @@ keep their renamed PDFs.
 
 ### Adding documents: drop a PDF or a URL
 
-With the `grobid` feature the Library section is also a drop target: expand it
-and drop one or more **PDFs** onto it. A highlight shows where they will land
-while the files hover; expand the section first — a collapsed Library is not a
-drop target.
+With the `grobid` feature, dropping **PDFs** on the window while the panes are
+open adds them to the library — wherever in the window they land. No window
+backend reports *where* a drag is (see `UPSTREAM.md`, US-13), so a pane hit test
+cannot work; instead the drop target is the whole window and a banner appears
+while the files hover — *Drop: add N PDF(s) to the library* — so releasing is
+never a surprise.
+
+The rule is position-free and predictable:
+
+- while the panes are open **and** a workspace is chosen, a drop that contains
+  at least one PDF (or URL) is an ingest — folders and other files in the same
+  drop are reported as skipped;
+- a drop without a PDF stays an ordinary document drop (the editor's file
+  drop), and so does any drop while the panes are closed or no workspace is
+  chosen;
+- to open a PDF *as a document* while the panes are open, use *File → Open*.
+
+Nothing is moved out of the user's folders — an accidental ingest costs nothing.
 
 The drop runs the same pipeline as `ragrig-cli --embed-rename --bibtex-merge`:
 
-1. Files from outside the library folder are **copied** in (the originals stay
-   where they are); a file whose content is already in the folder is recognized
-   and reused instead of duplicated.
+1. Files from outside the library folder are **copied** into it (the originals
+   stay where they are); a file whose content is already in the folder is
+   recognized and reused instead of duplicated.
 2. Every new or changed PDF is parsed by the GROBID server, completed against
    OpenAlex (DOI first, then title search) and renamed to
    `Key - Full authors - Full title - Year.pdf`.

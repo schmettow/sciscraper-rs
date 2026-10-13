@@ -1077,7 +1077,7 @@ agent:
     add_url: "PDF von einer URL hinzufügen…"
     url_hint: "https://example.org/paper.pdf"
     url_add: "Hinzufügen"
-    drop_hint: "PDFs hier ablegen, um sie mit GROBID einzulesen"
+    drop_library: "Ablegen: %{count} PDF(s) zur Bibliothek hinzufügen"
   menu:
     provider: "Anbieter"
     model: "Modell"

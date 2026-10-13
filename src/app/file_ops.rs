@@ -1574,10 +1574,11 @@ impl FerriteApp {
             return;
         }
 
-        // A drop that lands on the agent library is ingested (feature
-        // `grobid`): it must not also open documents or switch workspaces.
+        // A drop that carries PDFs (or URLs) belongs to the library while its
+        // panes are open (feature `grobid`); it must not also open documents
+        // or switch workspaces.
         #[cfg(feature = "grobid")]
-        if self.try_library_ingest(ctx, &dropped_files) {
+        if self.try_library_ingest(&dropped_files) {
             return;
         }
 
