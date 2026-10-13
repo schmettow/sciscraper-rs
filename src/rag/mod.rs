@@ -20,6 +20,7 @@
 //! [`AgentSession`]: ragrig::AgentSession
 
 pub mod cite;
+pub mod library;
 pub mod probe;
 pub mod status;
 pub mod worker;
@@ -31,6 +32,8 @@ use ragrig::types::{ContextSizeMode, MemoryStrategyKind, Provider, RagrigConfig}
 use ragrig::Chunker;
 use serde::{Deserialize, Serialize};
 
+pub use cite::CitePayload;
+pub use library::{LibraryEntry, LibraryState, LibraryView};
 pub use status::{ComponentState, RagComponent, RagStatus, StatusInput};
 pub use worker::{
     RagCommand, RagEvent, RagFactories, RagrigWorker, SessionInfo, SyncMode, TurnInfo,

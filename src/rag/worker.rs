@@ -36,7 +36,8 @@ use ragrig::{
 
 use super::probe;
 use super::status::{ActivityKind, IndexInfo, ProbeResults, Reachability, SyncProgress};
-use super::{cite, RagSettings, RagStatus, StatusInput};
+use super::{cite, library, RagSettings, RagStatus, StatusInput};
+use crate::rag::LibraryState;
 
 /// Builds the chat agent for a settings snapshot.
 ///
@@ -100,6 +101,8 @@ pub enum RagCommand {
         /// Incremental update or full rebuild.
         mode: SyncMode,
     },
+    /// Re-read the library bibliography (startup, watcher, settings change).
+    LoadLibrary,
     /// Probe the configured backends for reachability.
     Probe,
     /// Cancel the running query or ingestion.
@@ -188,6 +191,11 @@ pub enum RagEvent {
     SyncFailed {
         /// User-presentable reason.
         message: String,
+    },
+    /// The bibliography was (re-)read for the library pane.
+    Library {
+        /// What the pane should render.
+        state: Box<LibraryState>,
     },
     /// The saved-session list (and the current session id).
     Sessions {
@@ -364,6 +372,9 @@ struct WorkerState {
     editor_workspace: Option<PathBuf>,
     factories: RagFactories,
     shared: Arc<Shared>,
+    /// The bibliography path the last library load was built from, so a
+    /// settings edit that does not change it does not re-read the file.
+    library_path: Option<PathBuf>,
 }
 
 impl WorkerState {
@@ -438,6 +449,26 @@ impl WorkerState {
         }
     }
 
+    /// The bibliography the settings currently resolve to.
+    fn library_path(&self) -> Option<PathBuf> {
+        self.settings
+            .effective_workspace(self.editor_workspace.as_deref())
+            .and_then(|workspace| self.settings.library.resolve(&workspace).bibtex)
+    }
+
+    /// Reload the library when the resolved bibliography changed.
+    ///
+    /// Settings edits arrive on every menu keystroke, so the reload is keyed
+    /// on the path — re-reading a large `.bib` per keystroke would be a
+    /// stutter nobody asked for.
+    fn reload_library_if_changed(&mut self, events: &Sender<RagEvent>) {
+        let path = self.library_path();
+        if path != self.library_path {
+            self.library_path = path;
+            spawn_library_load(self.query_context(), events.clone());
+        }
+    }
+
     /// Directory holding the saved conversations.
     fn sessions_dir(&self) -> Option<PathBuf> {
         self.settings
@@ -493,6 +524,7 @@ async fn worker_main(
         editor_workspace,
         factories,
         shared: Arc::new(Shared::default()),
+        library_path: None,
     };
     state.emit_status(&events);
 
@@ -516,11 +548,13 @@ async fn worker_main(
                 } else {
                     state.hot_swap();
                 }
+                state.reload_library_if_changed(&events);
                 state.emit_status(&events);
             }
             RagCommand::SetWorkspace(workspace) => {
                 state.settings.ragrig.workspace = workspace;
                 state.invalidate_session();
+                state.reload_library_if_changed(&events);
                 state.emit_status(&events);
             }
             RagCommand::Query { text } => {
@@ -544,6 +578,10 @@ async fn worker_main(
                     state.shared.syncing.store(true, Ordering::SeqCst);
                     tokio::spawn(run_sync(state.query_context(), mode, events.clone()));
                 }
+            }
+            RagCommand::LoadLibrary => {
+                state.library_path = state.library_path();
+                spawn_library_load(state.query_context(), events.clone());
             }
             RagCommand::Probe => {
                 let context = state.query_context();
@@ -584,6 +622,35 @@ fn mark_probing(context: &QueryContext) {
     if context.settings.resolve_deepseek_api_key().is_some() {
         probes.deepseek = Reachability::Probing;
     }
+}
+
+/// Read the bibliography off the executor thread and report the result.
+///
+/// The library pane's model is derived data — nothing is cached in the
+/// worker, so a reload costs one file read and nothing else.
+fn spawn_library_load(context: QueryContext, events: Sender<RagEvent>) {
+    let workspace = context
+        .settings
+        .effective_workspace(context.editor_workspace.as_deref());
+    let settings = context.settings.library.clone();
+    tokio::spawn(async move {
+        let state = tokio::task::spawn_blocking(move || {
+            library::load_state(workspace.as_deref(), &settings)
+        })
+        .await;
+        let state = match state {
+            Ok(state) => state,
+            Err(err) => {
+                log::warn!("RAG: library load task failed: {err}");
+                LibraryState::Missing {
+                    reason: format!("cannot read the library: {err}"),
+                }
+            }
+        };
+        let _ = events.send(RagEvent::Library {
+            state: Box::new(state),
+        });
+    });
 }
 
 /// Probe the configured backends off the executor thread.
@@ -1875,6 +1942,54 @@ mod tests {
         assert_eq!(map_progress(&ProgressEvent::FileStored), None);
     }
 
+    #[tokio::test]
+    async fn library_loads_on_request_and_reports_its_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = workspace_settings(dir.path());
+        let library = dir.path().join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::write(
+            library.join("library.bib"),
+            "@book{Kahle2000,\n  author = {Kahle, Brewster},\n  title = {A dataset},\n  year = {2000}\n}\n",
+        )
+        .unwrap();
+
+        let worker = RagrigWorker::spawn(RagSettings::default(), None, echo_factories());
+        wait_for_status(&worker);
+
+        // A settings change that points at the bibliography loads it.
+        worker.send(RagCommand::Configure {
+            settings: Box::new(settings),
+            editor_workspace: None,
+        });
+        let state = wait_for_library(&worker);
+        let LibraryState::Ready { view, path, .. } = state else {
+            panic!("expected a ready library, got {state:?}");
+        };
+        assert!(path.ends_with("library.bib"));
+        assert_eq!(view.entries.len(), 1);
+        assert_eq!(view.entries[0].key, "Kahle2000");
+        assert_eq!(view.entries[0].authors, "Kahle");
+        assert_eq!(view.entries[0].source, "");
+
+        // An explicit reload reports the same thing again.
+        worker.send(RagCommand::LoadLibrary);
+        let state = wait_for_library(&worker);
+        assert!(matches!(state, LibraryState::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn library_without_a_workspace_explains_itself() {
+        let worker = RagrigWorker::spawn(RagSettings::default(), None, echo_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::LoadLibrary);
+        let state = wait_for_library(&worker);
+        let LibraryState::Missing { reason } = state else {
+            panic!("expected missing, got {state:?}");
+        };
+        assert!(reason.contains("workspace"), "unexpected reason: {reason}");
+    }
+
     /// Poll until `predicate` matches; panics after ~4 s.
     fn wait_for_event(worker: &RagrigWorker, predicate: impl Fn(&RagEvent) -> bool) -> RagEvent {
         for _ in 0..400 {
@@ -1910,6 +2025,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("no status event within 2 s");
+    }
+
+    fn wait_for_library(worker: &RagrigWorker) -> LibraryState {
+        let event = wait_for_event(worker, |event| matches!(event, RagEvent::Library { .. }));
+        let RagEvent::Library { state } = event else {
+            unreachable!()
+        };
+        *state
     }
 
     fn wait_for_failure(worker: &RagrigWorker) -> String {

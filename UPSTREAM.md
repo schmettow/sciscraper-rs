@@ -27,6 +27,7 @@ every entry is filed and closed.
 | US-9 | ragrig (ergonomics) | low | `AttachedDocument` lacks `PartialEq` | to file |
 | US-10 | ragrig (ergonomics) | low | Listing saved sessions requires a fully built agent | to file |
 | US-11 | ragrig (store API) | medium | No way to replace one pipeline's chunks; parser/chunker changes accumulate in the store | to file |
+| US-12 | grobid-bibtex (ergonomics) | low | `CiteEntry` (key + file) is too thin for a host list UI | to file |
 
 ## US-1 — Publish `grobid-bibtex` 0.2.1
 
@@ -242,6 +243,24 @@ every entry is filed and closed.
   `sync_corpus_with_pipeline` already stamps a pipeline id, so an accompanying delete would
   complete the primitive.
 
+## US-12 — `CiteEntry` is too thin for a host list UI
+
+- **Target:** `grobid-bibtex` (ergonomics)
+- **Severity:** low
+- **Context.** `Collection::cite_entries()` yields `CiteEntry { key, file }` —
+  enough for `@Key` attachment, not enough for a library pane that lists
+  authors, year, title and venue. The raw `biblatex::Entry` values *are*
+  reachable through `Collection::iter()`, so a host can build rows itself, but
+  then it must (a) add a direct `biblatex` dependency pinned to whatever
+  version the crate uses and (b) re-invent the field fallback chains
+  (`journaltitle`/`journal`, `date`/`year`, authors/editors, protection-brace
+  cleanup) that the crate already knows about internally.
+- **Impact in sciscraper.** `src/rag/library.rs` does exactly that; if
+  `grobid-bibtex` changes its `biblatex` version, this fork has to follow.
+- **Suggested fix.** Either enrich `CiteEntry` (authors, title, year, venue —
+  pre-rendered for display) or re-export the `biblatex` types it hands out, so
+  consumers depend on one crate instead of its internals.
+
 ## Notes (monitoring — not issues to file)
 
 - **Tier-2 surface used.** sciscraper depends on `AgentSession`, the `progress` module and
@@ -272,6 +291,7 @@ every entry is filed and closed.
 | US-7 | Status derived from settings + host state; own probes (Ollama `/api/tags`, DeepSeek `/models`) | `src/rag/status.rs`, `src/rag/probe.rs` |
 | US-10 | Worker builds `FsSessionStore` directly for listing | `src/rag/worker.rs` |
 | US-11 | Explicit *Rebuild* (`delete_corpus` + full sync) + staleness warning from the manifest | `src/rag/worker.rs`, `src/ui/agent_panel.rs` |
+| US-12 | Direct `biblatex` dependency + own field fallback chains | `src/rag/library.rs`, `Cargo.toml` |
 
 ## Suggested filing order
 
@@ -282,4 +302,5 @@ every entry is filed and closed.
 5. **US-5**, then US-6 (bibliography interop) — pairs naturally with the library sprint.
 6. **US-11** (pipeline replacement) — a small store API addition with direct UX payoff for
    every settings change; pairs with the ingestion sprint.
-7. **US-7 → US-10** (ergonomics/docs) — file together, low traffic.
+7. **US-12** (cite entry fields) — one struct away from removing a dependency; pairs with US-6.
+8. **US-7 → US-10** (ergonomics/docs) — file together, low traffic.

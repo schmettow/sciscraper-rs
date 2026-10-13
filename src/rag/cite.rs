@@ -94,6 +94,70 @@ fn is_key_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '+' | '-')
 }
 
+/// What the library pane hands to the editor (decision D2).
+///
+/// The formats are fixed: an inline citation is `@key`, a bracketed
+/// APA-style citation is `[@key_1, @key_2, …]`. The payload is what travels
+/// through egui's drag-and-drop, so it must be cheap to clone and
+/// `Send + Sync`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CitePayload {
+    /// Canonical citation keys, in the order they should appear.
+    pub keys: Vec<String>,
+    /// `true` for the bracketed APA form, `false` for inline `@key`.
+    pub bracketed: bool,
+}
+
+impl CitePayload {
+    /// One inline citation.
+    pub fn inline(key: impl Into<String>) -> Self {
+        Self {
+            keys: vec![key.into()],
+            bracketed: false,
+        }
+    }
+
+    /// A bracketed citation (APA style) over `keys`.
+    pub fn bracketed(keys: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            keys: keys.into_iter().collect(),
+            bracketed: true,
+        }
+    }
+
+    /// The text to insert (see [`format_citation`]).
+    pub fn text(&self) -> String {
+        format_citation(&self.keys, self.bracketed)
+    }
+}
+
+/// Render citation keys in the fixed formats (decision D2).
+///
+/// - inline: `@key`
+/// - bracketed (APA style): `[@key]`, `[@key_1, @key_2]`
+///
+/// Empty key lists render as an empty string; keys are never modified, so
+/// what the library shows is exactly what the document gets.
+pub fn format_citation(keys: &[String], bracketed: bool) -> String {
+    let keys: Vec<&str> = keys
+        .iter()
+        .map(|key| key.as_str())
+        .filter(|key| !key.is_empty())
+        .collect();
+    if keys.is_empty() {
+        return String::new();
+    }
+    if !bracketed {
+        return format!("@{}", keys[0]);
+    }
+    let joined = keys
+        .iter()
+        .map(|key| format!("@{key}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{joined}]")
+}
+
 /// Resolve `keys` against the library of `workspace`.
 pub fn resolve(workspace: &Path, library: &LibrarySettings, keys: &[String]) -> CiteResolution {
     let mut resolution = CiteResolution::default();
@@ -542,5 +606,39 @@ mod tests {
         );
         assert_eq!(resolution.attachments.len(), 1);
         assert_eq!(resolution.resolved, vec!["Alias1", "Alias2"]);
+    }
+
+    #[test]
+    fn citation_formats_follow_the_decisions() {
+        assert_eq!(CitePayload::inline("Caspar2021").text(), "@Caspar2021");
+        assert_eq!(
+            CitePayload::bracketed(vec!["A2021".into(), "B2019".into()]).text(),
+            "[@A2021, @B2019]"
+        );
+        assert_eq!(
+            CitePayload::bracketed(vec!["A2021".into()]).text(),
+            "[@A2021]",
+            "an explicit APA citation keeps its brackets"
+        );
+    }
+
+    #[test]
+    fn format_citation_ignores_empty_keys() {
+        assert_eq!(format_citation(&[], true), "");
+        assert_eq!(format_citation(&[], false), "");
+        assert_eq!(format_citation(&[String::new()], true), "");
+        assert_eq!(format_citation(&["A".into(), String::new()], true), "[@A]");
+    }
+
+    #[test]
+    fn inserted_citations_are_recognised_by_the_mention_scanner() {
+        // What the library inserts must be what the chat attach scanner
+        // (and the reader) sees as a citation.
+        let bracketed = CitePayload::bracketed(vec!["A2021".into(), "B2019".into()]).text();
+        assert_eq!(cite_keys(&bracketed), vec!["A2021", "B2019"]);
+        assert_eq!(
+            cite_keys(&CitePayload::inline("C1999").text()),
+            vec!["C1999"]
+        );
     }
 }

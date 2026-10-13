@@ -14,6 +14,8 @@ mod file_tree;
 pub mod format_toolbar;
 mod frontmatter_panel;
 mod icons;
+#[cfg(feature = "rag")]
+pub(crate) mod library_panel;
 mod nav_buttons;
 mod outline_panel;
 pub mod phosphor_icons;
@@ -30,7 +32,7 @@ mod window;
 
 pub use about::AboutPanel;
 #[cfg(feature = "rag")]
-pub use agent_panel::AgentPanel;
+pub use agent_panel::{AgentPanel, AgentPanelOutput};
 pub use backlinks_panel::BacklinksPanel;
 pub use command_palette::CommandPalette;
 pub use dialogs::{FileOperationDialog, FileOperationResult, GoToLineDialog, GoToLineResult};

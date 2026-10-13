@@ -2109,6 +2109,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-trait",
+ "biblatex",
  "blake3",
  "chardetng",
  "chrono",

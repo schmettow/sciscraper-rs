@@ -31,11 +31,12 @@ use ragrig::types::Provider;
 use ragrig::MemoryStrategyKind;
 use rust_i18n::t;
 
-use crate::rag::{ChunkerKind, LibrarySettings};
+use crate::rag::ComponentState;
 use crate::rag::{
-    ComponentState, RagCommand, RagComponent, RagEvent, RagFactories, RagSettings, RagStatus,
-    RagrigWorker, SessionInfo, SyncMode, TurnInfo,
+    ChunkerKind, CitePayload, LibrarySettings, RagCommand, RagComponent, RagEvent, RagFactories,
+    RagSettings, RagStatus, RagrigWorker, SessionInfo, SyncMode, TurnInfo,
 };
+use crate::ui::library_panel::{LibraryAction, LibrarySection};
 
 /// Deferred actions produced while rendering (applied after the borrows end).
 enum PanelAction {
@@ -45,6 +46,15 @@ enum PanelAction {
     FollowEditorWorkspace,
 }
 
+/// What one dock frame produced for the host.
+#[derive(Default)]
+pub struct AgentPanelOutput {
+    /// Settings changed and should be persisted.
+    pub settings_changed: bool,
+    /// A citation to insert into the active document (one undo step).
+    pub cite: Option<CitePayload>,
+}
+
 /// The agent dock as owned by `FerriteApp`.
 pub struct AgentPanel {
     transcript: Vec<ChatMessage>,
@@ -52,6 +62,7 @@ pub struct AgentPanel {
     open_menu: Option<String>,
     agent_section: SectionState,
     library_section: SectionState,
+    library: LibrarySection,
     worker: RagrigWorker,
     status: Option<RagStatus>,
     busy: bool,
@@ -71,7 +82,8 @@ impl AgentPanel {
         );
         // Continue where the user left off (no-op when nothing is saved yet).
         worker.send(RagCommand::RestoreLatest);
-        // Real Ready/Error states from the first frame on.
+        // Read the bibliography and probe the backends for the first frame.
+        worker.send(RagCommand::LoadLibrary);
         worker.send(RagCommand::Probe);
         Self {
             transcript: Vec::new(),
@@ -79,6 +91,7 @@ impl AgentPanel {
             open_menu: None,
             agent_section: SectionState::new(t!("agent.section.agent").to_string()),
             library_section: SectionState::new(t!("agent.section.library").to_string()),
+            library: LibrarySection::default(),
             worker,
             status: None,
             busy: false,
@@ -96,6 +109,12 @@ impl AgentPanel {
             got_event = true;
             self.handle_event(event);
         }
+        let mut commands = Vec::new();
+        self.library.poll_watcher(&mut commands);
+        for command in commands {
+            self.worker.send(command);
+            got_event = true;
+        }
         if self.busy || self.syncing {
             // Keep polling the channel while a query streams or an index run
             // progresses.
@@ -105,22 +124,25 @@ impl AgentPanel {
         }
     }
 
-    /// Ask the worker for a fresh status snapshot and a backend probe (e.g.
-    /// after re-opening the dock).
+    /// Ask the worker for a fresh status snapshot and a backend probe, and
+    /// re-read the bibliography (e.g. after re-opening the dock).
     pub fn refresh_status(&self) {
         self.worker.send(RagCommand::Ping);
         self.worker.send(RagCommand::Probe);
+        self.worker.send(RagCommand::LoadLibrary);
     }
 
-    /// Render the dock. Returns `true` when the settings changed and should
-    /// be persisted by the caller.
+    /// Render the dock.
+    ///
+    /// Returns what the host should do: persist the settings when they
+    /// changed, insert a citation into the active document.
     pub fn show_ui(
         &mut self,
         ui: &mut egui::Ui,
         settings: &mut RagSettings,
         editor_workspace: Option<&Path>,
         recent_workspaces: &[PathBuf],
-    ) -> bool {
+    ) -> AgentPanelOutput {
         let editor_ws: Option<PathBuf> = editor_workspace.map(Path::to_path_buf);
 
         // When the workspace tracks the editor, follow changes immediately.
@@ -211,10 +233,10 @@ impl AgentPanel {
             });
         });
 
-        // Section 2: library (bibliography arrives with the library sprint).
+        // Section 2: the bibliography list (drag a row into the document).
+        let library_action: RefCell<LibraryAction> = RefCell::new(LibraryAction::default());
         let dock = dock.section(&mut self.library_section, |ui| {
-            ui.add_space(2.0);
-            ui.weak(t!("agent.library.empty"));
+            self.library.show(ui, &mut library_action.borrow_mut());
         });
 
         let response = dock.show(ui);
@@ -277,7 +299,24 @@ impl AgentPanel {
             self.worker.send(command);
         }
 
-        settings_changed
+        // Library actions: a chosen bibliography reconfigures the Corpus
+        // component (and the worker reloads the list); insertions travel back
+        // to the host, which applies them to the editor with one undo step.
+        let library_action = library_action.into_inner();
+        let cite = library_action.insert;
+        if let Some(bib) = library_action.choose_bib {
+            settings.library.bibtex = Some(bib);
+            self.send_configure(settings, editor_ws.clone());
+            settings_changed = true;
+        }
+        for command in library_action.commands {
+            self.worker.send(command);
+        }
+
+        AgentPanelOutput {
+            settings_changed,
+            cite,
+        }
     }
 
     /// Start a query with the current input buffer.
@@ -359,6 +398,7 @@ impl AgentPanel {
                 self.sessions = sessions;
                 self.session = current;
             }
+            RagEvent::Library { state } => self.library.apply(*state),
             RagEvent::SyncFinished {
                 indexed,
                 failed,
@@ -1212,8 +1252,47 @@ mod tests {
         let mut panel = AgentPanel::new(&settings, None);
         let mut changed = false;
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            changed = panel.show_ui(ui, &mut settings, None, &[]);
+            changed = panel.show_ui(ui, &mut settings, None, &[]).settings_changed;
         });
         assert!(!changed, "idle frame must not touch the settings");
+    }
+
+    #[test]
+    fn library_section_renders_every_state_headless() {
+        use crate::rag::{library, LibraryState};
+        let dir = tempfile::tempdir().unwrap();
+        let bib = dir.path().join("library.bib");
+        std::fs::write(
+            &bib,
+            "@article{Caspar2021,\n  author = {Caspar, Martin},\n  title = {The Cell model},\n  journaltitle = {Ecological Economics},\n  year = {2021}\n}\n\n@book{Kahle2000,\n  title = {A dataset},\n  year = {2000}\n}\n",
+        )
+        .unwrap();
+        let view = library::load(&bib).unwrap();
+        let states = [
+            LibraryState::Missing {
+                reason: "no bibliography".into(),
+            },
+            LibraryState::Ambiguous {
+                candidates: vec![dir.path().join("a.bib"), dir.path().join("b.bib")],
+            },
+            LibraryState::Corrupt {
+                path: bib.clone(),
+                error: "parse error".into(),
+            },
+            LibraryState::Ready {
+                path: bib,
+                discovered: true,
+                view,
+            },
+        ];
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+        let mut panel = AgentPanel::new(&settings, None);
+        for state in states {
+            panel.library.apply(state);
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                panel.show_ui(ui, &mut settings, None, &[]);
+            });
+        }
     }
 }

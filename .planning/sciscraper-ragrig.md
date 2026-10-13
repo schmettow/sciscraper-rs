@@ -222,7 +222,59 @@ Verification: 70 feature tests green (25 new); full suite 1567 passed with the
 3 pre-existing failures (baseline was 1542 + 3). Clippy has no warnings in the
 feature files; `cargo check` without the feature unchanged.
 
-### Sprint 4 — Library + drag-to-cite (next)
+### ✅ Sprint 4 — Library + drag-to-cite (done)
+
+Delivered:
+
+- **Bibliography view model** (`src/rag/library.rs`): one row per entry as
+  Au–Yr–Ti–Source, built from the raw `biblatex::Entry` values
+  (`Collection::iter`) — `CiteEntry` carries only key + file (US-12), so the
+  crate now depends on `biblatex` 0.12 directly, the version `grobid-bibtex`
+  uses. Field chains: authors → editors (1 / 2 / 3+ forms), `year` → the year
+  part of `date`, venue = `journaltitle` → `journal` → `booktitle` → `series`
+  → `publisher` → `institution`; protection braces and line breaks are
+  cleaned for display. Entries without an author sort last — a list that
+  starts with them reads unsorted.
+- **States** (`LibraryState`): `Missing { reason }` (no workspace, nothing
+  found, file gone — the reason names the fix), `Ambiguous` (several `.bib`
+  files, one-click choice instead of a guess), `Corrupt { path, error }`
+  (parser message + *choose another*), `Ready { path, discovered, view }`.
+- **Library section** (`src/ui/library_panel.rs`, behind `rag`): header with
+  the file in use and a refresh action, fuzzy filter (`SkimMatcherV2` — the
+  command palette's matcher; per-row haystack pre-lower-cased), count line
+  (`n entries` / `shown of total`), virtualised rows
+  (`ScrollArea::show_rows` with a fixed two-line height), hover tooltip with
+  the citation line. Click selects, Ctrl/⌘-click toggles, double-click
+  inserts, `+` inserts, the context menu offers *Insert @key*,
+  *Insert [@key]* and *Copy key* (with a transient copied hint).
+- **Drag-to-cite**: rows are `click_and_drag` widgets (the tab-bar pattern)
+  publishing a `CitePayload`. Four editor surfaces accept the drop — raw,
+  split-left, split-rendered and full rendered — through `cite_drop_target`,
+  which queries the payload in the *caller's layer*: a drop over the dock can
+  never land in the document. Hovering paints a highlight and the copy
+  cursor; releasing inserts. Formats are fixed (D2): `@key`, `[@k1, @k2]`; a
+  drag of a row inside a multi-selection carries the whole selection in view
+  order.
+- **Insertion is one undo step**: `FerriteApp::insert_citation` goes through
+  `TabState::set_content` (the TOC path), so `Ctrl+Z` restores the
+  pre-citation text and the dirty state follows. The range is the selection
+  or the caret, char-indexed (multi-byte safe), caret after the inserted text.
+- **Watcher**: `notify` on the bibliography's directory, filtered by file
+  name and gated on the *mtime* — an inotify storm cannot re-parse the
+  bibliography per event. The worker reloads on `Configure`/`SetWorkspace`
+  only when the resolved path changed (settings arrive per menu keystroke).
+- **No new feature flag.** Reading a `.bib`, filtering it and inserting text
+  are local operations; the `grobid` feature stays Sprint 5's (server
+  ingestion).
+
+Verified against the model-workspace layout (bibliography + renamed PDFs in
+one folder): `LibraryState::Ready` lists the entries, filtering by author,
+year, title, venue or key narrows them, and the drag payload round-trips
+through `cite_keys` (what the library inserts is what the chat attach scanner
+sees). 1591 tests pass with the 3 pre-existing failures (+24 feature tests);
+`cargo check` with and without `rag` is clean; clippy adds no warnings.
+
+### Sprint 5 — Ingestion (feature `grobid`) (next)
 
 - `grobid` feature (server-dependent paths gated separately); `.bib` view model
   (the `rag` feature already carries `grobid-bibtex` for `@Key` resolution),
@@ -230,7 +282,7 @@ feature files; `cargo check` without the feature unchanged.
 - Typed cite-drag payload → editor insertion with undo; formats fixed per D2
   (`@key` inline, `[@k1, @k2]` bracketed); accessible non-drag path.
 
-### Sprint 5 — Ingestion (feature `grobid`)
+### Sprint 5 — Ingestion (feature `grobid`) (next)
 
 - Drop files/URLs on the library; GROBID pre-pass re-orchestration (manifest → extract →
   OpenAlex complete → rename → merge into `.bib`) mirroring ragrig-cli semantics, then sync.
@@ -279,14 +331,15 @@ lives in [`../UPSTREAM.md`](../UPSTREAM.md). Summary:
 
 | Need | Crate | Result | Decision |
 |---|---|---|---|
-| Chat/agent widgets | `egui_chat` (own repo) | 0.1 + 0.2 here | reuse across hosts |
+| Chat/agent widgets | `egui_chat` (own repo) | 0.1 + 0.2 + 0.3 here | reuse across hosts |
 | Rich text in bubbles | `egui_commonmark` | exists, reputable, **but 0.24 needs egui 0.35 and 0.25 needs Rust 1.95** — incompatible with the pinned egui 0.34 / Rust 1.92 | in-house renderer via `pulldown-cmark` 0.13 |
 | Setting rows / notes in menus | — | nothing in the pinned egui ecosystem fits better than five lines of `Ui` code | `egui_chat::form` (0.3), reused by the host |
 | Bibliography model | `grobid-bibtex` | crates.io has 0.2.0 only, which lacks `Collection::cite_entries`; local repo is 0.2.1 | **path + version dependency** (same co-development pattern as ragrig-cli); publish 0.2.1 before dropping the path |
+| Entry fields for the library rows | `biblatex` 0.12 | crate of record for BibTeX/BibLaTeX parsing; already in the tree through `grobid-bibtex`, which however only surfaces key + file | **direct dependency at the same version** (US-12 asks for a richer `CiteEntry` or a re-export) |
 | Composer/icons/menus | — | egui built-ins + `egui-phosphor` (host) | no new deps |
 | Connectivity probes | `ureq` 2 | already a (non-optional) dependency for update checks, TLS included | reuse; no `reqwest` pulled in for two GETs |
 | RAG progress/cancel seams | `ragrig::progress` | `Progress`/`Cancel` are exactly the GUI seams | used in-process |
-| URL/filter/watch/table | `url`, `fuzzy-matcher`, `notify`, `egui_extras` | first three already in tree; `egui_extras` from the egui authors | reuse |
+| URL/filter/watch/table | `url`, `fuzzy-matcher`, `notify`, `egui_extras` | first three already in tree (`SkimMatcherV2` for the palette, `notify` for the workspace watch); the library reuses both | reuse |
 | RAG stack | `ragrig` 1.1.1 | current, maintained | as planned |
 | Test doubles for `Embedder` | `async-trait` 0.1 (dev-dep) | ragrig declares its traits with `#[async_trait]`, so hermetic impls need the same attribute | dev-dependency only — not part of the published build |
 

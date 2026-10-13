@@ -1,0 +1,702 @@
+//! Library section of the agent dock (feature `rag`): the bibliography list.
+//!
+//! Rows are **Au–Yr–Ti–Source** ([`crate::rag::library`] builds them from the
+//! `.bib` the Corpus component points at). Every row is a drag source
+//! carrying a [`CitePayload`] — dragging it into the document inserts the
+//! citation (decision D2: inline `@key`, bracketed `[@k1, @k2]`). Click
+//! selects, Ctrl/⌘-click toggles; double-click, the `+` button and the
+//! context menu insert without dragging (the accessible path). The section
+//! never writes to the editor or the settings: it returns a [`LibraryAction`]
+//! that the agent panel turns into commands and insertions.
+//!
+//! A `notify` watcher on the bibliography's *directory* reloads the list when
+//! the file changes on disk (ragrig-cli merging into it, another tool
+//! rewriting it) — and only when the modification time actually moved;
+//! re-parsing the whole bibliography per inotify event would be a stutter.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
+use std::time::SystemTime;
+
+use egui_chat::form::{note, warning};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use rust_i18n::t;
+
+use crate::rag::{CitePayload, LibraryEntry, LibraryState, LibraryView, RagCommand};
+use crate::ui::phosphor_icons::{ARROWS_CLOCKWISE, COPY, MAGNIFYING_GLASS, PLUS, X};
+
+/// What one frame of the library section produced.
+#[derive(Default)]
+pub struct LibraryAction {
+    /// A citation the user asked for without dragging.
+    pub insert: Option<CitePayload>,
+    /// A bibliography chosen in the missing/ambiguous/corrupt states.
+    pub choose_bib: Option<PathBuf>,
+    /// Worker commands (reload; the panel forwards them).
+    pub commands: Vec<RagCommand>,
+}
+
+/// State of the library section, owned by `AgentPanel`.
+#[derive(Default)]
+pub struct LibrarySection {
+    /// Search box contents.
+    filter: String,
+    /// Selected citation keys (kept across reloads while the keys exist).
+    selected: BTreeSet<String>,
+    /// Latest bibliography state from the worker.
+    state: Option<LibraryState>,
+    /// Watcher over the bibliography file.
+    watcher: Option<LibraryWatcher>,
+    /// Modification time of the file the current state was built from.
+    loaded_mtime: Option<SystemTime>,
+    /// Last copied key and when (for the transient "copied" hint).
+    copied: Option<(String, f64)>,
+}
+
+impl LibrarySection {
+    /// Record a fresh state and keep the watcher in step.
+    pub fn apply(&mut self, state: LibraryState) {
+        // Drop selections of entries that no longer exist.
+        if let LibraryState::Ready { view, .. } = &state {
+            let keys: BTreeSet<&str> = view.entries.iter().map(|e| e.key.as_str()).collect();
+            self.selected.retain(|key| keys.contains(key.as_str()));
+        }
+        let path: Option<&Path> = match &state {
+            LibraryState::Ready { path, .. } | LibraryState::Corrupt { path, .. } => Some(path),
+            _ => None,
+        };
+        self.loaded_mtime = path.and_then(|path| mtime_of(path));
+        self.watch(path);
+        self.state = Some(state);
+    }
+
+    /// Watch the bibliography file (recreated when the path changes).
+    fn watch(&mut self, path: Option<&Path>) {
+        let current = self.watcher.as_ref().map(|watcher| watcher.file.clone());
+        if current.as_deref() == path {
+            return;
+        }
+        self.watcher = path.and_then(LibraryWatcher::new);
+    }
+
+    /// Reload when the file changed on disk; call once per frame.
+    pub fn poll_watcher(&mut self, commands: &mut Vec<RagCommand>) {
+        let Some(watcher) = self.watcher.as_ref() else {
+            return;
+        };
+        let mut touched = false;
+        while let Ok(event) = watcher.events.try_recv() {
+            match event {
+                Ok(event) => {
+                    let name = watcher.file.file_name();
+                    touched |= event.paths.is_empty()
+                        || event.paths.iter().any(|path| path.file_name() == name);
+                }
+                Err(_) => touched = true,
+            }
+        }
+        if !touched {
+            return;
+        }
+        // Only a real change is worth re-parsing the bibliography.
+        if mtime_of(&watcher.file) != self.loaded_mtime {
+            commands.push(RagCommand::LoadLibrary);
+        }
+    }
+
+    /// Render the section.
+    pub fn show(&mut self, ui: &mut egui::Ui, action: &mut LibraryAction) {
+        ui.add_space(2.0);
+        match self.state.as_ref() {
+            None => note(ui, &t!("agent.library.loading")),
+            Some(LibraryState::Missing { reason }) => {
+                note(ui, reason);
+                choose_bibliography_button(ui, action);
+            }
+            Some(LibraryState::Ambiguous { candidates }) => {
+                warning(ui, &t!("agent.library.ambiguous"));
+                for candidate in candidates.iter().take(4) {
+                    if ui.button(file_label(candidate)).clicked() {
+                        action.choose_bib = Some(candidate.clone());
+                    }
+                }
+            }
+            Some(LibraryState::Corrupt { path, error }) => {
+                warning(ui, &t!("agent.library.corrupt", file = file_label(path)));
+                note(ui, error);
+                choose_bibliography_button(ui, action);
+            }
+            Some(LibraryState::Ready {
+                path,
+                discovered,
+                view,
+            }) => {
+                let mut reload = false;
+                header(ui, path, *discovered, &mut reload);
+                show_list(
+                    ui,
+                    view,
+                    &mut self.filter,
+                    &mut self.selected,
+                    &mut self.copied,
+                    action,
+                );
+                if let Some((key, at)) = &self.copied {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(250));
+                    if ui.ctx().input(|input| input.time) - at < 2.0 {
+                        note(ui, &t!("agent.library.copied", key = key.as_str()));
+                    } else {
+                        self.copied = None;
+                    }
+                }
+                if reload {
+                    action.commands.push(RagCommand::LoadLibrary);
+                }
+            }
+        }
+    }
+}
+
+/// Header line: the file in use, its discovery state and a refresh action.
+fn header(ui: &mut egui::Ui, path: &Path, discovered: bool, reload: &mut bool) {
+    ui.horizontal(|ui| {
+        let mut label = file_label(path);
+        if discovered {
+            label.push_str(&format!(" {}", t!("agent.menu.found_automatically")));
+        }
+        ui.add(egui::Label::new(egui::RichText::new(label).weak().small()).truncate())
+            .on_hover_text(path.display().to_string());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button(ARROWS_CLOCKWISE)
+                .on_hover_text(t!("agent.library.refresh"))
+                .clicked()
+            {
+                *reload = true;
+            }
+        });
+    });
+}
+
+/// Filter box, count line and the (virtualised) row list.
+fn show_list(
+    ui: &mut egui::Ui,
+    view: &LibraryView,
+    filter: &mut String,
+    selected: &mut BTreeSet<String>,
+    copied: &mut Option<(String, f64)>,
+    action: &mut LibraryAction,
+) {
+    ui.horizontal(|ui| {
+        let clear_width = ui.spacing().interact_size.x + 4.0;
+        let width = (ui.available_width() - clear_width).max(80.0);
+        ui.add(
+            egui::TextEdit::singleline(filter)
+                .desired_width(width)
+                .hint_text(format!(
+                    "{} {}",
+                    MAGNIFYING_GLASS,
+                    t!("agent.library.filter")
+                )),
+        );
+        if !filter.is_empty() && ui.small_button(X).clicked() {
+            filter.clear();
+        }
+    });
+
+    let visible = view.filter(filter);
+    let total = view.entries.len();
+    if visible.is_empty() {
+        note(ui, &t!("agent.library.no_matches"));
+        return;
+    }
+    let count = if visible.len() == total {
+        t!("agent.library.count", count = total).to_string()
+    } else {
+        t!(
+            "agent.library.count_filtered",
+            shown = visible.len(),
+            total = total
+        )
+        .to_string()
+    };
+    note(ui, &count);
+
+    let row_height = ui.text_style_height(&egui::TextStyle::Small)
+        + ui.text_style_height(&egui::TextStyle::Body)
+        + 6.0;
+    let copied_row: Option<String> = egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show_rows(ui, row_height, visible.len(), |ui, range| {
+            let mut copied = None;
+            for row in range {
+                let entry = &view.entries[visible[row]];
+                let is_selected = selected.contains(&entry.key);
+                let grouped = selected.len() > 1 && is_selected;
+                let drag = payload_for(entry, grouped, view, &visible, selected);
+                let outcome = show_row(ui, entry, row_height, is_selected, &drag);
+                if let Some(key) = &outcome.copied {
+                    copied = Some(key.clone());
+                }
+                if outcome.insert || outcome.double_clicked {
+                    action.insert = Some(CitePayload::inline(entry.key.clone()));
+                }
+                if outcome.insert_bracketed {
+                    action.insert = Some(payload_for(entry, true, view, &visible, selected));
+                }
+                if outcome.clicked {
+                    if outcome.command_clicked {
+                        if is_selected {
+                            selected.remove(&entry.key);
+                        } else {
+                            selected.insert(entry.key.clone());
+                        }
+                    } else if selected.len() == 1 && is_selected {
+                        // Clicking the only selected row clears the selection,
+                        // so a stray drag afterwards cannot cite the group.
+                        selected.clear();
+                    } else {
+                        selected.clear();
+                        selected.insert(entry.key.clone());
+                    }
+                }
+            }
+            copied
+        })
+        .inner;
+    if let Some(key) = copied_row {
+        let now = ui.ctx().input(|input| input.time);
+        *copied = Some((key, now));
+    }
+}
+
+/// What the user did with one row this frame.
+#[derive(Default)]
+struct RowOutcome {
+    clicked: bool,
+    command_clicked: bool,
+    double_clicked: bool,
+    insert: bool,
+    insert_bracketed: bool,
+    copied: Option<String>,
+}
+
+/// Render one two-line row and collect its interactions.
+///
+/// The row is a `click_and_drag` widget (the tab-bar pattern): clicking
+/// selects, dragging publishes `drag` as the egui payload, and the `+` button
+/// and context menu produce explicit insert requests.
+fn show_row(
+    ui: &mut egui::Ui,
+    entry: &LibraryEntry,
+    row_height: f32,
+    selected: bool,
+    drag: &CitePayload,
+) -> RowOutcome {
+    let mut outcome = RowOutcome::default();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), row_height),
+        egui::Sense::click_and_drag(),
+    );
+    let response = response.on_hover_text(format!("{}\n@{}", entry.citation_line(), entry.key));
+
+    if selected {
+        ui.painter().rect_filled(
+            rect,
+            3.0,
+            ui.visuals().selection.bg_fill.gamma_multiply(0.25),
+        );
+    }
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 3.0, ui.visuals().widgets.hovered.bg_fill);
+    }
+    if response.dragged() {
+        egui::DragAndDrop::set_payload(ui.ctx(), drag.clone());
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    }
+
+    // Layout: meta line (Au · Yr — Source) above the title, `+` on the right.
+    let button_width = 20.0;
+    let mut text_rect = rect.shrink2(egui::vec2(4.0, 2.0));
+    text_rect.max.x = (text_rect.max.x - button_width).max(text_rect.min.x + 20.0);
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(text_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    row_ui.add(egui::Label::new(egui::RichText::new(meta_line(entry)).small().weak()).truncate());
+    let title = if entry.title.is_empty() {
+        egui::RichText::new(t!("agent.library.untitled"))
+            .italics()
+            .weak()
+    } else {
+        egui::RichText::new(&entry.title)
+    };
+    row_ui.add(egui::Label::new(title).truncate());
+
+    let button_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.max.x - 2.0 - button_width / 2.0, rect.center().y),
+        egui::vec2(button_width, button_width),
+    );
+    if ui
+        .put(button_rect, egui::Button::new(PLUS).small().frame(false))
+        .on_hover_text(t!("agent.library.insert_hint"))
+        .clicked()
+    {
+        outcome.insert = true;
+    }
+
+    outcome.clicked = response.clicked();
+    outcome.command_clicked = ui.input(|input| input.modifiers.command);
+    outcome.double_clicked = response.double_clicked();
+    response.context_menu(|ui| {
+        if ui.button(t!("agent.library.insert_inline")).clicked() {
+            outcome.insert = true;
+            ui.close();
+        }
+        if ui.button(t!("agent.library.insert_bracketed")).clicked() {
+            outcome.insert_bracketed = true;
+            ui.close();
+        }
+        if ui
+            .button(format!("{} {}", COPY, t!("agent.library.copy_key")))
+            .clicked()
+        {
+            ui.ctx().copy_text(entry.key.clone());
+            outcome.copied = Some(entry.key.clone());
+            ui.close();
+        }
+    });
+    outcome
+}
+
+/// The payload a row should carry.
+///
+/// `bracketed` requests the APA form; the *group* decision is made here: a
+/// bracketed citation covers the whole selection when the row is part of a
+/// multi-selection (in view order), and is the row alone otherwise. Inline
+/// citations are always the row itself.
+fn payload_for(
+    entry: &LibraryEntry,
+    bracketed: bool,
+    view: &LibraryView,
+    visible: &[usize],
+    selected: &BTreeSet<String>,
+) -> CitePayload {
+    if !bracketed {
+        return CitePayload::inline(entry.key.clone());
+    }
+    if selected.len() > 1 && selected.contains(&entry.key) {
+        let keys: Vec<String> = visible
+            .iter()
+            .map(|index| &view.entries[*index])
+            .filter(|entry| selected.contains(&entry.key))
+            .map(|entry| entry.key.clone())
+            .collect();
+        if !keys.is_empty() {
+            return CitePayload::bracketed(keys);
+        }
+    }
+    CitePayload::bracketed(vec![entry.key.clone()])
+}
+
+fn choose_bibliography_button(ui: &mut egui::Ui, action: &mut LibraryAction) {
+    if ui.button(t!("agent.library.choose_bibliography")).clicked() {
+        if let Some(file) = rfd::FileDialog::new()
+            .add_filter("BibTeX", &["bib"])
+            .pick_file()
+        {
+            action.choose_bib = Some(file);
+        }
+    }
+}
+
+/// `Au · Yr — Source` (the meta line of a row); unknown parts are omitted.
+fn meta_line(entry: &LibraryEntry) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if !entry.authors.is_empty() {
+        parts.push(&entry.authors);
+    }
+    if !entry.year.is_empty() {
+        parts.push(&entry.year);
+    }
+    let mut meta = parts.join(" · ");
+    if !entry.source.is_empty() {
+        if meta.is_empty() {
+            meta = entry.source.clone();
+        } else {
+            meta.push_str(" — ");
+            meta.push_str(&entry.source);
+        }
+    }
+    meta
+}
+
+/// Short file name for labels.
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn mtime_of(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+}
+
+/// Handle a citation drop over `rect` (an editor area).
+///
+/// Paints a highlight while a citation payload hovers and returns it when the
+/// user releases it here. The interact rect lives in the caller's layer, so a
+/// drop over the side dock (its own layer) can never land here — returning a
+/// row to the library is not an insertion.
+pub fn cite_drop_target(ui: &mut egui::Ui, rect: egui::Rect) -> Option<CitePayload> {
+    if !egui::DragAndDrop::has_payload_of_type::<CitePayload>(ui.ctx()) {
+        return None;
+    }
+    let response = ui.interact(
+        rect,
+        ui.id().with("sciscraper_cite_drop"),
+        egui::Sense::hover(),
+    );
+    if response.dnd_hover_payload::<CitePayload>().is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+        ui.painter().rect_stroke(
+            rect.shrink(1.5),
+            4.0,
+            egui::Stroke::new(1.5, ui.visuals().selection.bg_fill),
+            egui::StrokeKind::Inside,
+        );
+    }
+    response
+        .dnd_release_payload::<CitePayload>()
+        .map(|payload| (*payload).clone())
+}
+
+/// Watches the bibliography's directory (non-recursive).
+struct LibraryWatcher {
+    _watcher: RecommendedWatcher,
+    events: Receiver<notify::Result<notify::Event>>,
+    /// The file the watcher is about (used to filter events and to stat).
+    file: PathBuf,
+}
+
+impl LibraryWatcher {
+    fn new(file: &Path) -> Option<Self> {
+        let dir = file.parent()?.to_path_buf();
+        let (tx, events) = std::sync::mpsc::channel();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                let _ = tx.send(event);
+            })
+            .ok()?;
+        watcher.watch(&dir, RecursiveMode::NonRecursive).ok()?;
+        Some(Self {
+            _watcher: watcher,
+            events,
+            file: file.to_path_buf(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view_of(sample: &str, dir: &Path) -> LibraryView {
+        let bib = dir.join("library.bib");
+        std::fs::write(&bib, sample).unwrap();
+        crate::rag::library::load(&bib).unwrap()
+    }
+
+    const SAMPLE: &str = "@article{Caspar2021,\n  author = {Caspar, Martin},\n  title = {The Cell model},\n  journaltitle = {Ecological Economics},\n  year = {2021}\n}\n\n@book{Kahle2000,\n  title = {A dataset},\n  year = {2000}\n}\n";
+
+    #[test]
+    fn meta_lines_follow_the_au_yr_source_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let caspar = view
+            .entries
+            .iter()
+            .find(|entry| entry.key == "Caspar2021")
+            .unwrap();
+        assert_eq!(meta_line(caspar), "Caspar · 2021 — Ecological Economics");
+        let kahle = view
+            .entries
+            .iter()
+            .find(|entry| entry.key == "Kahle2000")
+            .unwrap();
+        assert_eq!(meta_line(kahle), "2000");
+    }
+
+    #[test]
+    fn payloads_follow_the_selection_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let visible: Vec<usize> = (0..view.entries.len()).collect();
+        let caspar = view
+            .entries
+            .iter()
+            .find(|entry| entry.key == "Caspar2021")
+            .unwrap();
+
+        // No selection: a drag is a single inline citation.
+        let none = BTreeSet::new();
+        assert_eq!(
+            payload_for(caspar, false, &view, &visible, &none),
+            CitePayload::inline("Caspar2021")
+        );
+
+        // A multi-selection the row belongs to drags the group (APA form,
+        // view order — here sorted by author: Caspar before Kahle).
+        let both: BTreeSet<String> = ["Caspar2021".to_string(), "Kahle2000".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            payload_for(caspar, true, &view, &visible, &both),
+            CitePayload::bracketed(vec!["Caspar2021".into(), "Kahle2000".into()])
+        );
+
+        // A row outside the multi-selection stays a single bracketed cite.
+        let only_kahle: BTreeSet<String> = ["Kahle2000".to_string()].into_iter().collect();
+        assert_eq!(
+            payload_for(caspar, true, &view, &visible, &only_kahle),
+            CitePayload::bracketed(vec!["Caspar2021".into()])
+        );
+    }
+
+    #[test]
+    fn library_strings_interpolate() {
+        // Guard against typos in keys/placeholders (a missing key renders as
+        // the key itself, an unresolved placeholder as `%{...}`).
+        let count = t!("agent.library.count", count = 7).to_string();
+        assert!(count.contains('7'), "{count}");
+        assert!(!count.contains("%{"), "{count}");
+
+        let filtered = t!("agent.library.count_filtered", shown = 2, total = 9).to_string();
+        assert!(
+            filtered.contains('2') && filtered.contains('9'),
+            "{filtered}"
+        );
+        assert!(!filtered.contains("%{"), "{filtered}");
+
+        let corrupt = t!("agent.library.corrupt", file = "x.bib").to_string();
+        assert!(corrupt.contains("x.bib"), "{corrupt}");
+
+        let copied = t!("agent.library.copied", key = "Caspar2021").to_string();
+        assert!(copied.contains("Caspar2021"), "{copied}");
+
+        let inserted = t!("notification.citation_inserted", text = "@X").to_string();
+        assert!(inserted.contains("@X"), "{inserted}");
+    }
+
+    #[test]
+    fn section_renders_every_state_and_filter_headless() {
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let bib = dir.path().join("library.bib");
+        let view = view_of(SAMPLE, dir.path());
+        let mut section = LibrarySection::default();
+
+        // Nothing loaded yet.
+        render(&ctx, &mut section);
+
+        let states = [
+            LibraryState::Missing {
+                reason: "no bibliography".into(),
+            },
+            LibraryState::Ambiguous {
+                candidates: vec![dir.path().join("a.bib")],
+            },
+            LibraryState::Corrupt {
+                path: bib.clone(),
+                error: "parse error".into(),
+            },
+            LibraryState::Ready {
+                path: bib,
+                discovered: true,
+                view,
+            },
+        ];
+        for state in states {
+            section.apply(state);
+            render(&ctx, &mut section);
+        }
+
+        // A filter that matches nothing; then one that matches one row.
+        section.filter = "zzz-nothing".to_string();
+        render(&ctx, &mut section);
+        section.filter = "Caspar".to_string();
+        render(&ctx, &mut section);
+    }
+
+    fn render(ctx: &egui::Context, section: &mut LibrarySection) {
+        let mut action = LibraryAction::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            section.show(ui, &mut action);
+        });
+    }
+
+    #[test]
+    fn selections_are_pruned_when_entries_disappear() {
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let mut section = LibrarySection::default();
+        section.selected.insert("Caspar2021".into());
+        section.selected.insert("Gone1999".into());
+        section.apply(LibraryState::Ready {
+            path: dir.path().join("library.bib"),
+            discovered: false,
+            view,
+        });
+        assert_eq!(
+            section.selected.iter().collect::<Vec<_>>(),
+            vec![&"Caspar2021".to_string()]
+        );
+    }
+
+    #[test]
+    fn watcher_reloads_only_when_the_file_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let bib = dir.path().join("library.bib");
+        std::fs::write(&bib, SAMPLE).unwrap();
+        let mut section = LibrarySection::default();
+        section.apply(LibraryState::Ready {
+            path: bib.clone(),
+            discovered: false,
+            view: crate::rag::library::load(&bib).unwrap(),
+        });
+        assert!(section.watcher.is_some(), "the bibliography is watched");
+
+        // Unchanged file: events (if any) must not trigger a reload.
+        let mut commands = Vec::new();
+        for _ in 0..10 {
+            section.poll_watcher(&mut commands);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(commands.is_empty());
+
+        // A real change moves the mtime; polling picks it up. Watcher events
+        // are asynchronous, so allow a moment for the notification.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&bib, format!("{SAMPLE}\n@misc{{Extra, title = {{x}}}}\n")).unwrap();
+        let mut commands = Vec::new();
+        for _ in 0..200 {
+            section.poll_watcher(&mut commands);
+            if !commands.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, RagCommand::LoadLibrary)),
+            "expected a reload request"
+        );
+    }
+}

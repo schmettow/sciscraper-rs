@@ -26,7 +26,7 @@ lsp = []
 # RAG integration (sciscraper): agent chat pane, component bar and library,
 # backed by the `ragrig` framework. Off by default so a plain Ferrite build
 # is unchanged; see .planning/sciscraper-ragrig.md.
-rag = ["dep:ragrig", "dep:egui_chat", "dep:grobid-bibtex", "dep:anyhow", "async-workers"]
+rag = ["dep:ragrig", "dep:egui_chat", "dep:grobid-bibtex", "dep:biblatex", "dep:anyhow", "async-workers"]
 
 [dependencies]
 egui = { version = "0.34", features = ["serde"] }
@@ -140,6 +140,10 @@ egui_chat = { version = "0.3.0", path = "../egui_chat", optional = true }
 # serves local co-development: crates.io carries only 0.2.0, which lacks
 # `Collection::cite_entries`; publish 0.2.1 before dropping the path.
 grobid-bibtex = { version = "0.2.1", path = "../grobid-bibtex", optional = true }
+# Entry fields (authors, year, title, source) for the library rows. The same
+# version grobid-bibtex uses, so `Collection`-produced `Entry` values need no
+# conversion; `CiteEntry` (key + file only) is too thin for a list UI (US-12).
+biblatex = { version = "0.12", optional = true }
 # Error contexts for the RAG worker; ragrig's public API returns anyhow::Result.
 anyhow = { version = "1", optional = true }
 [target.'cfg(windows)'.dependencies]

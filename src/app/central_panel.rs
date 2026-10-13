@@ -246,6 +246,10 @@ impl FerriteApp {
         let zen_mode = self.state.is_zen_mode();
         let mut deferred_format_action: Option<DeferredFormatAction> = None;
         let mut pending_wikilink_target: Option<String> = None;
+        // A citation dragged from the library and released over an editor
+        // area; applied after all UI borrows end (feature `rag`).
+        #[cfg(feature = "rag")]
+        let mut cite_drop: Option<crate::rag::CitePayload> = None;
 
         let overlay_blocks_nav = self.quick_switcher.is_open()
             || self.command_palette.is_open()
@@ -930,6 +934,16 @@ impl FerriteApp {
 
                                 let editor_output = editor.show(&mut editor_ui);
 
+                                #[cfg(feature = "rag")]
+                                if let Some(cite) =
+                                    crate::ui::library_panel::cite_drop_target(
+                                        &mut editor_ui,
+                                        editor_rect,
+                                    )
+                                {
+                                    cite_drop = Some(cite);
+                                }
+
                                 vim_label_for_status = editor_output.vim_mode_label;
 
                                 // NOTE: Fold toggle is handled internally by FerriteEditor and synced
@@ -1536,6 +1550,16 @@ impl FerriteApp {
 
                                     let editor_output = editor.show(&mut left_ui);
 
+                                    #[cfg(feature = "rag")]
+                                    if let Some(cite) =
+                                        crate::ui::library_panel::cite_drop_target(
+                                            &mut left_ui,
+                                            left_rect,
+                                        )
+                                    {
+                                        cite_drop = Some(cite);
+                                    }
+
                                     split_vim_label = editor_output.vim_mode_label;
 
                                     // Capture scroll metrics for sync scrolling
@@ -1914,6 +1938,16 @@ impl FerriteApp {
                                         }
                                         let md_editor_output = md_editor.show(&mut right_ui);
 
+                                        #[cfg(feature = "rag")]
+                                        if let Some(cite) =
+                                            crate::ui::library_panel::cite_drop_target(
+                                                &mut right_ui,
+                                                right_rect,
+                                            )
+                                        {
+                                            cite_drop = Some(cite);
+                                        }
+
                                         tab.apply_rendered_commit_undo_entries(
                                             crate::markdown::rendered_commit_undo::take_pending_commits(
                                                 right_ui.ctx(),
@@ -2280,6 +2314,16 @@ impl FerriteApp {
                                     }
                                     let editor_output = md_editor.show(ui);
 
+                                    #[cfg(feature = "rag")]
+                                    if let Some(cite) =
+                                        crate::ui::library_panel::cite_drop_target(
+                                            ui,
+                                            ui.max_rect(),
+                                        )
+                                    {
+                                        cite_drop = Some(cite);
+                                    }
+
                                     tab.apply_rendered_commit_undo_entries(
                                         crate::markdown::rendered_commit_undo::take_pending_commits(
                                             ui.ctx(),
@@ -2568,6 +2612,12 @@ impl FerriteApp {
         // Handle wikilink navigation (deferred until after UI rendering completes)
         if let Some(target) = pending_wikilink_target {
             self.navigate_wikilink(&target);
+        }
+
+        // A citation dropped onto an editor area becomes one undo step.
+        #[cfg(feature = "rag")]
+        if let Some(cite) = cite_drop {
+            self.insert_citation(&cite);
         }
 
         // Return deferred format action to be handled after editor has captured selection
@@ -3259,43 +3309,31 @@ impl FerriteApp {
             .stroke(egui::Stroke::new(1.0, warn_color))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("\u{26A0}").size(16.0).color(warn_color));
                     ui.label(
-                        egui::RichText::new("\u{26A0}")
-                            .size(16.0)
-                            .color(warn_color),
-                    );
-                    ui.label(
-                        egui::RichText::new(
-                            t!("recovery.conflict.banner_text").to_string(),
-                        )
-                        .strong(),
+                        egui::RichText::new(t!("recovery.conflict.banner_text").to_string())
+                            .strong(),
                     );
 
                     // Push the buttons to the right edge of the frame.
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            if ui
-                                .button(t!("recovery.conflict.reload_disk").to_string())
-                                .on_hover_text(
-                                    t!("recovery.conflict.reload_disk_tooltip").to_string(),
-                                )
-                                .clicked()
-                            {
-                                reload = true;
-                            }
-                            if ui
-                                .button(t!("recovery.conflict.keep_recovered").to_string())
-                                .on_hover_text(
-                                    t!("recovery.conflict.keep_recovered_tooltip")
-                                        .to_string(),
-                                )
-                                .clicked()
-                            {
-                                keep = true;
-                            }
-                        },
-                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(t!("recovery.conflict.reload_disk").to_string())
+                            .on_hover_text(t!("recovery.conflict.reload_disk_tooltip").to_string())
+                            .clicked()
+                        {
+                            reload = true;
+                        }
+                        if ui
+                            .button(t!("recovery.conflict.keep_recovered").to_string())
+                            .on_hover_text(
+                                t!("recovery.conflict.keep_recovered_tooltip").to_string(),
+                            )
+                            .clicked()
+                        {
+                            keep = true;
+                        }
+                    });
                 });
             });
 
