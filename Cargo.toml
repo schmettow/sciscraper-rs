@@ -144,7 +144,7 @@ ragrig = { version = "1", default-features = false, features = ["internal", "oll
 # caps the composer height and wraps Markdown list items/quotes; 0.3 adds the
 # `form` helpers (setting rows, note/warning lines). The directory is still
 # named `egui_chat` until the repo rename lands.
-ragrig-egui = { version = "0.4.0", path = "../egui_chat", optional = true }
+ragrig-egui = { version = "0.4.0", path = "../ragrig_egui", optional = true }
 # Bibliography model for `@Key` resolution and the library pane. The path
 # serves local co-development: crates.io carries only 0.2.0, which lacks
 # `Collection::cite_entries`; publish 0.2.1 before dropping the path.

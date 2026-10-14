@@ -411,6 +411,14 @@ fn show_row(
     );
     let response = response.on_hover_text(format!("{}\n@{}", entry.citation_line(), entry.key));
 
+    // One hover notion for the highlight *and* the buttons: the pointer within
+    // the row (`rect_contains_pointer` — immediate, and still true while the
+    // pointer is on the row's own text or buttons, which take `Response::hovered`
+    // away), or the row being egui's hovered widget — which also covers the few
+    // pixels between two rows, where egui picks the closest interactive widget
+    // within its interact radius.
+    let hovering = ui.rect_contains_pointer(rect) || response.hovered();
+
     if selected {
         ui.painter().rect_filled(
             rect,
@@ -418,7 +426,7 @@ fn show_row(
             ui.visuals().selection.bg_fill.gamma_multiply(0.25),
         );
     }
-    if response.hovered() {
+    if hovering {
         ui.painter()
             .rect_filled(rect, 3.0, ui.visuals().widgets.hovered.bg_fill);
     }
@@ -437,7 +445,17 @@ fn show_row(
             .max_rect(text_rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    row_ui.add(egui::Label::new(egui::RichText::new(meta_line(entry)).small().weak()).truncate());
+    // The labels must not sense interaction: selectable labels sense clicks
+    // (egui's default `selectable_labels`), and sitting on top of the row they
+    // took its hover away — so the highlight and the buttons only appeared in
+    // the bands the text did not cover. The row's own tooltip already carries
+    // the full citation, so an elided label needs none of its own.
+    row_ui.add(
+        egui::Label::new(egui::RichText::new(meta_line(entry)).small().weak())
+            .truncate()
+            .selectable(false)
+            .show_tooltip_when_elided(false),
+    );
     let title = if entry.title.is_empty() {
         egui::RichText::new(t!("agent.library.untitled"))
             .italics()
@@ -445,40 +463,51 @@ fn show_row(
     } else {
         egui::RichText::new(&entry.title)
     };
-    row_ui.add(egui::Label::new(title).truncate());
+    row_ui.add(
+        egui::Label::new(title)
+            .truncate()
+            .selectable(false)
+            .show_tooltip_when_elided(false),
+    );
 
-    if ui.rect_contains_pointer(rect) {
-        if action_button(
-            ui,
-            insert_rect,
-            &entry.key,
-            "insert",
-            PLUS,
-            &t!("agent.library.insert_hint"),
-        ) {
-            outcome.insert = true;
-        }
-        if action_button(
-            ui,
-            bracketed_rect,
-            &entry.key,
-            "bracketed",
-            BRACKETS_SQUARE,
-            &t!("agent.library.insert_bracketed"),
-        ) {
-            outcome.insert_bracketed = true;
-        }
-        if action_button(
-            ui,
-            copy_rect,
-            &entry.key,
-            "copy",
-            COPY,
-            &t!("agent.library.copy_key"),
-        ) {
-            ui.ctx().copy_text(entry.key.clone());
-            outcome.copied = Some(entry.key.clone());
-        }
+    // The buttons are laid out in every frame and *shown* only while the
+    // pointer is on the row. Skipping them entirely would consume their auto
+    // ids only sometimes, renumbering every widget of the rows below — egui
+    // flags that as a widget id change between passes (red debug frames) and
+    // the rows' hover state flickers with it.
+    if action_button(
+        ui,
+        insert_rect,
+        &entry.key,
+        "insert",
+        PLUS,
+        &t!("agent.library.insert_hint"),
+        hovering,
+    ) {
+        outcome.insert = true;
+    }
+    if action_button(
+        ui,
+        bracketed_rect,
+        &entry.key,
+        "bracketed",
+        BRACKETS_SQUARE,
+        &t!("agent.library.insert_bracketed"),
+        hovering,
+    ) {
+        outcome.insert_bracketed = true;
+    }
+    if action_button(
+        ui,
+        copy_rect,
+        &entry.key,
+        "copy",
+        COPY,
+        &t!("agent.library.copy_key"),
+        hovering,
+    ) {
+        ui.ctx().copy_text(entry.key.clone());
+        outcome.copied = Some(entry.key.clone());
     }
 
     outcome.clicked = response.clicked();
@@ -503,6 +532,16 @@ fn action_buttons(rect: egui::Rect) -> [egui::Rect; 3] {
 
 /// One row action button, with a per-row stable id: a recycled auto id could
 /// shift between press and release while the list scrolls.
+///
+/// The button lives in a child ui placed at `rect` — deliberately *not*
+/// `Ui::scope_builder`, which advances the list's layout cursor to the button's
+/// bottom edge, a few pixels above the row's. That pulled every row below the
+/// hovered one up while the pointer rested on it.
+///
+/// `shown` controls visibility: the button is *laid out* in every frame (its
+/// child ui consumes an auto id of the list, so creating it conditionally would
+/// renumber every widget of the rows below) and painted and interactive only
+/// while the pointer is on the row.
 fn action_button(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -510,14 +549,17 @@ fn action_button(
     action: &str,
     icon: &str,
     hint: &str,
+    shown: bool,
 ) -> bool {
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(rect).id_salt((action, key)),
-        |ui| ui.add(egui::Button::new(icon).small().frame(false)),
-    )
-    .inner
-    .on_hover_text(hint)
-    .clicked()
+    let mut builder = egui::UiBuilder::new().max_rect(rect).id_salt((action, key));
+    if !shown {
+        builder = builder.invisible();
+    }
+    let mut button_ui = ui.new_child(builder);
+    button_ui
+        .add(egui::Button::new(icon).small().frame(false))
+        .on_hover_text(hint)
+        .clicked()
 }
 
 /// The payload a row should carry.
@@ -804,6 +846,250 @@ mod tests {
         assert!(outcome.insert, "the primary button inserts at the cursor");
         assert!(outcome.copied.is_none());
         assert!(!outcome.clicked, "a button click is not a row click");
+    }
+
+    #[test]
+    fn hovering_a_row_leaves_the_rows_below_in_place() {
+        // Regression: the action buttons were laid out with `scope_builder`,
+        // which advances the *list's* cursor to the button — a few pixels above
+        // the hovered row's bottom edge — so every row below slid up while the
+        // pointer rested on a row.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let row_height = 36.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+
+        // Top edge of the second row and the item spacing after one frame.
+        let run = |events: Vec<egui::Event>| {
+            let mut second_top = f32::NAN;
+            let mut spacing = f32::NAN;
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                spacing = ui.spacing().item_spacing.y;
+                for (index, entry) in view.entries.iter().enumerate() {
+                    if index == 1 {
+                        second_top = ui.cursor().min.y;
+                    }
+                    let drag = CitePayload::inline(entry.key.clone());
+                    let _ = show_row(ui, entry, row_height, false, &drag);
+                }
+            });
+            (second_top, spacing)
+        };
+
+        let (resting, _) = run(vec![]);
+        let (hovering, spacing) = run(vec![egui::Event::PointerMoved(egui::pos2(
+            160.0,
+            row_height / 2.0,
+        ))]);
+        assert_eq!(
+            hovering,
+            resting,
+            "the row below the hovered one moved {} px",
+            resting - hovering
+        );
+        assert_eq!(resting, row_height + spacing, "rows are one row apart");
+    }
+
+    /// Every widget of the background layer, as `(id, rect)` pairs sorted by
+    /// position — comparable between two frames.
+    fn background_widgets(ctx: &egui::Context) -> Vec<(egui::Id, egui::Rect)> {
+        let mut widgets: Vec<(egui::Id, egui::Rect)> = ctx.viewport(|viewport| {
+            viewport
+                .prev_pass
+                .widgets
+                .layers()
+                .filter(|(layer, _)| **layer == egui::LayerId::background())
+                .flat_map(|(_, widgets)| widgets.iter().map(|widget| (widget.id, widget.rect)))
+                .collect()
+        });
+        widgets.sort_by(|a, b| {
+            let key = |rect: egui::Rect| (rect.min.y, rect.min.x, rect.max.y, rect.max.x);
+            key(a.1).partial_cmp(&key(b.1)).unwrap()
+        });
+        widgets
+    }
+
+    #[test]
+    fn hovering_a_row_does_not_renumber_the_rows_below() {
+        // Regression: the action buttons were only *created* while the pointer
+        // was on a row, and creating a child ui consumes an auto id of the list
+        // — so hovering one row renumbered every widget of the rows below.
+        // egui reports that as "widget rect changed id between passes" and
+        // paints those rects with a red debug frame; the hover of the rows
+        // below flickered with the renumbering.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let row_height = 36.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+
+        let frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                for entry in view.entries.iter() {
+                    let drag = CitePayload::inline(entry.key.clone());
+                    let _ = show_row(ui, entry, row_height, false, &drag);
+                }
+            });
+            background_widgets(&ctx)
+        };
+
+        let resting = frame(vec![]);
+        // On the second row, so a renumbering would move the first row's widgets.
+        let hovering = frame(vec![egui::Event::PointerMoved(egui::pos2(
+            40.0,
+            row_height * 1.75,
+        ))]);
+        assert_eq!(
+            hovering, resting,
+            "hovering one row renumbered the widgets of another"
+        );
+        // Sanity check that the rows were there to begin with: two row-height
+        // widgets (`click_and_drag` rows), the smallest are the three buttons.
+        assert_eq!(
+            resting
+                .iter()
+                .filter(|(_, rect)| rect.height() == row_height)
+                .count(),
+            2
+        );
+    }
+
+    /// All shapes of a frame, nested `Shape::Vec`s flattened.
+    fn painted_shapes(full: &egui::FullOutput) -> Vec<egui::Shape> {
+        fn push(shape: &egui::Shape, out: &mut Vec<egui::Shape>) {
+            match shape {
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        push(shape, out);
+                    }
+                }
+                shape => out.push(shape.clone()),
+            }
+        }
+        let mut shapes = Vec::new();
+        for clipped in &full.shapes {
+            push(&clipped.shape, &mut shapes);
+        }
+        shapes
+    }
+
+    #[test]
+    fn hovering_the_row_text_highlights_the_row_and_shows_its_buttons() {
+        // Regression (user report): the row's labels were selectable — and thus
+        // click-sensing — and sat above the row, so they took its hover away:
+        // the highlight and the buttons appeared only in the thin bands the two
+        // text lines left over.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let entry = &view.entries[0];
+        let drag = CitePayload::inline(entry.key.clone());
+        let row_height = 36.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+        // On the title line, away from the buttons and from both row edges.
+        let on_the_title = egui::pos2(40.0, row_height * 0.75);
+
+        let row_frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            };
+            let full = ctx.run_ui(input, |ui| {
+                let _ = show_row(ui, entry, row_height, false, &drag);
+            });
+            painted_shapes(&full)
+        };
+
+        let hover_fill = ctx.global_style().visuals.widgets.hovered.bg_fill;
+        let hover_painted = |shapes: &[egui::Shape]| {
+            shapes
+                .iter()
+                .any(|shape| matches!(shape, egui::Shape::Rect(rect) if rect.fill == hover_fill))
+        };
+        let glyphs = [PLUS, BRACKETS_SQUARE, COPY];
+        let painted_glyphs = |shapes: &[egui::Shape]| {
+            shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(shape, egui::Shape::Text(text) if glyphs.contains(&text.galley.text()))
+                })
+                .count()
+        };
+
+        let resting = row_frame(vec![]);
+        assert!(!hover_painted(&resting), "highlight while resting");
+        assert_eq!(painted_glyphs(&resting), 0, "buttons while resting");
+
+        // The hit test runs on the previous frame's widgets, so hover in two
+        // frames and read the second.
+        let _ = row_frame(vec![egui::Event::PointerMoved(on_the_title)]);
+        let hovering = row_frame(vec![egui::Event::PointerMoved(on_the_title)]);
+        assert!(
+            hover_painted(&hovering),
+            "the pointer on the row text painted no highlight"
+        );
+        assert_eq!(
+            painted_glyphs(&hovering),
+            3,
+            "the pointer on the row text showed no buttons"
+        );
+    }
+
+    #[test]
+    fn dragging_from_the_row_text_publishes_the_citation() {
+        // Regression: the row's labels are selectable by default and therefore
+        // sense drags — sitting above the row, they took the drag-to-cite
+        // gesture away from it: dragging from a row's *text* selected the label
+        // instead of starting a citation drag.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let entry = &view.entries[0];
+        let drag = CitePayload::inline(entry.key.clone());
+        let row_height = 36.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+        let on_the_title = egui::pos2(40.0, row_height * 0.75);
+
+        let frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                let _ = show_row(ui, entry, row_height, false, &drag);
+            });
+        };
+
+        frame(vec![egui::Event::PointerMoved(on_the_title)]);
+        frame(vec![egui::Event::PointerButton {
+            pos: on_the_title,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        }]);
+        // Move far enough to be a drag, staying on the row.
+        for step in 1..=4 {
+            let pos = egui::pos2(on_the_title.x + step as f32 * 8.0, on_the_title.y);
+            frame(vec![egui::Event::PointerMoved(pos)]);
+        }
+
+        assert!(
+            egui::DragAndDrop::payload::<CitePayload>(&ctx).is_some(),
+            "dragging from the row text started no citation drag"
+        );
     }
 
     #[test]

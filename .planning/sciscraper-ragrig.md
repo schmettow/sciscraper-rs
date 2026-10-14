@@ -776,6 +776,64 @@ Verification: 1674 tests pass with the 3 pre-existing failures (`rag,grobid`), 1
 integration, 6 doctests). `cargo check` clean for all feature sets, touched files
 rustfmt-clean and clippy-clean.
 
+### 🔧 Sprint 6.6 — fixes round (user round)
+
+User report, three findings in a row (the round's bug hunt): *“When hovering over an entry X,
+the stack of entries below jump up a few pixel.”* → fixed; then *“flickering red frames …
+precisely when I cross a bib entry's border”* and *“the hover-over effect on bib entries,
+including the buttons, activates only when the pointer is precisely between the two rows.”*
+
+- **Hovering a library row no longer moves the list.** The row action buttons were laid out
+  with `Ui::scope_builder`, and egui advances the *parent's* layout cursor to every child rect
+  a scope hands back (`Layout::advance_after_rects` sets `cursor.min.y = rect.max.y +
+  item_spacing` for a top-down layout, unconditionally). A button sits inside its row, so its
+  bottom edge (24 px) lies *above* the row's (36 px): while the pointer was on a row, the
+  cursor — and with it every row after it, because `ScrollArea::show_rows` places rows from
+  that one cursor — was pulled up by 12 px (the row below the pointer sat at 27 px instead of
+  39 px). `action_button` now puts the button in a child ui via `Ui::new_child` (explicit
+  rect, no cursor advance). Pinned by `hovering_a_row_leaves_the_rows_below_in_place` (the
+  second row's top edge with and without the pointer on the first row; failed with a 12 px
+  delta before the fix).
+- **The red frames are egui's id-change detector, and the fix is to keep the ids steady.**
+  The buttons were also only *created* while the pointer was on a row — and creating a child
+  ui consumes an auto id of the list ui (`Ui::new_child` bumps `next_auto_id_salt`). Hovering
+  one row therefore renumbered every widget of the rows below; egui compares widget rects
+  across passes and paints a 2 px pure-red frame around any rect whose id changed while its
+  parent id stayed (`context.rs`, “widget rect changed id between passes”), plus a `log::warn`
+  — so the frames appeared exactly on a border crossing, when the hover moved from one row to
+  the next. A shape dump pinned it: the red strokes outlined the *second* row's rect and its
+  two label galleys. `action_button` now takes `shown`: the button (and its id) is laid out in
+  *every* frame and only painted and interactive while the pointer is on the row
+  (`UiBuilder::invisible` also disables it, so it neither paints nor steals the hover). Pinned
+  by `hovering_a_row_does_not_renumber_the_rows_below` (all background widgets, id + rect,
+  identical with and without the pointer; fails again if the buttons become conditional).
+- **The row's text stole its hover — and its drag.** egui's `Style::interaction.selectable_labels`
+  defaults to true, which makes every `Label` sense `click_and_drag` (text selection). Sitting
+  on top of the row, the two labels won the hit test: `Response::hovered` was false over the
+  text, so the highlight and (via the layer-free geometry check) the hover state were only
+  live in the thin bands the meta and title lines left over — “between the two rows” in the
+  report. They also *took the drag*: dragging from a row's text started a label text selection
+  instead of the citation drag (the row's primary gesture). The labels are now
+  `.selectable(false)` and `.show_tooltip_when_elided(false)` — the row's own tooltip already
+  carries the full citation line and key, so the elided-label tooltip only stacked on top of
+  it. Pinned by `dragging_from_the_row_text_publishes_the_citation` (press on the title, drag
+  32 px, the `CitePayload` must be in the air; failed before because the label took the drag)
+  and `hovering_the_row_text_highlights_the_row_and_shows_its_buttons` (the painted shapes of
+  a frame: no highlight and no button glyphs at rest, the hover fill and all three glyphs with
+  the pointer on the title).
+- **One hover notion for highlight and buttons.** They were drawn from different sources —
+  `Response::hovered` for the fill, `Ui::rect_contains_pointer` for the buttons — which drift
+  apart by a frame and while the pointer is on the row's own buttons (an interactive widget
+  above the row takes `hovered` away). Both now use `rect_contains_pointer(rect) ||
+  response.hovered()`: the geometry check is immediate and stays true over the row's own text
+  and buttons, `hovered` adds the few pixels between two rows, where egui picks the closest
+  interactive widget within its interact radius.
+
+Verification: 1660 tests pass with the 3 known pre-existing failures (`rag`), 11/11 in
+`library_panel`; the five stale test modules that keep the test target from compiling at HEAD
+(§5) were quarantined for the run and restored. Touched file rustfmt-clean; clippy reports
+nothing new in it (the pre-existing `f32` fallback in `cite_drop_target` aside).
+
 ### 🚧 Phase "Editor Roundtrip" (6.0–6.4 landed) — chat ⇄ editor
 
 The RAG↔bibliography round trip works (sprints 4–5). The open gap is the *editor*: the agent
