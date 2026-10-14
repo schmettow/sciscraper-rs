@@ -2,7 +2,7 @@
 
 **Scope:** Ferrite fork (`sciscraper-rs`) gains the functionality of `ragrig-cli`
 as a GUI: agent chat pane, RAG component bar, bibliographic library, drag-to-cite,
-and drop-to-ingest (GROBID). A second, co-developed repository — **`egui_chat`** —
+and drop-to-ingest (GROBID). A second, co-developed repository — **`ragrig-egui`** —
 hosts the reusable chat/agent-panel widgets.
 **Hard rule:** touch nothing in `ragrig-cli` / `grobid-bibtex`; work around, report upstream.
 **Merge-request rule:** every new capability sits behind a Cargo feature; the editor
@@ -42,8 +42,10 @@ without features behaves exactly as before.
 ## 2. Where new code lives
 
 ```
-egui_chat/                       side project (own repo, own releases)
-  src/dock.rs                    SectionDock: side panel, stacked collapsible sections
+ragrig-egui/                       side project (own repo, own releases; the local
+                                 directory keeps the old name `egui_chat` for now)
+  src/dock.rs                    SectionDock: side panel, stacked sections, horizontal
+                                 collapse to a strip
   src/chat_view.rs               transcript bubbles, streaming/error states, meta footer
   src/composer.rs                Return = newline, Ctrl/⌘+Return = submit, send/stop
   src/agent_bar.rs               component icons, status dots, slide-up menus
@@ -56,22 +58,27 @@ sciscraper-rs  (feature `rag`, off by default)
   src/rag/ingest.rs              GROBID pre-pass re-orchestration + URL download
                                  (feature `grobid`)
   src/rag/roundtrip.rs           protocol: containers in, edits out (phase "Editor
-                                 Roundtrip", planned)
+                                 Roundtrip")
   src/ui/agent_panel.rs          dock composition, menus, transcript↔worker glue
   src/ui/library_panel.rs        bibliography rows, drag-to-cite, add-PDFs/URL toolbar
-  src/ui/focus_button.rs         selection overlay → chat (planned)
+  src/ui/focus_button.rs         selection overlay → chat
   src/app/rag.rs                 FerriteApp glue: toggle, lazy init, polling, rendering
-  src/app/roundtrip.rs           overlay painting + applying edits (planned)
+  src/app/roundtrip.rs           overlay painting + applying edits
   assets/prompts/sciscraper-cowriter.md   the built-in co-writer prompt (embedded)
   hooks                          settings field, ribbon button, Ctrl+Shift+A, palette,
                                  locales (en/de); all `#[cfg(feature = "rag")]`
 ```
 
-**Split contract:** `egui_chat` knows nothing about RAG/ragrig and depends only on `egui`;
-`sciscraper-rs` owns all domain logic. New chat UX (markdown, actions, splitters) lands in
-`egui_chat`; new RAG behaviour lands in `sciscraper-rs`.
+**Split contract:** `ragrig-egui` links neither `ragrig` nor an async runtime and depends
+only on `egui`, but its vocabulary is ragrig's (components with health, retrieval metadata,
+streaming answers): new agent-interface UX (markdown, actions, splitters) lands there; new
+RAG behaviour lands in `sciscraper-rs`.
 
-## 3. `egui_chat` side project — roadmap
+## 3. `ragrig-egui` side project — roadmap
+
+**Naming.** Renamed from `egui_chat` to **`ragrig-egui`** (2026-10-14): the crate is the
+ragrig agent interface, not a general chat toolkit. The GitHub repo follows under the new
+name; the records below use the current name throughout.
 
 | Version | Content | Status |
 |---|---|---|
@@ -81,7 +88,7 @@ sciscraper-rs  (feature `rag`, off by default)
 | 0.4 | Message actions (copy feedback, retry), clickable links, draggable splitter between dock sections. | next |
 | 0.5 | Tabbed dock mode; theme presets; publish on crates.io. | planned |
 
-Sprint 5.3 needed **no** `egui_chat` change: `SectionDock` already takes a `DockSide`, and the
+Sprint 5.3 needed **no** `ragrig-egui` change: `SectionDock` already takes a `DockSide`, and the
 agent bar is simply instantiated twice with different component lists — the split contract held.
 
 The "Editor Roundtrip" phase reuses that discipline: focus requests work today through the
@@ -92,11 +99,11 @@ A first-class attachment API (`Composer::chips([…])`, `Composer::context_row(�
 Crate inquiry (Sprint 2): `egui_commonmark` was the candidate for editor-side
 Markdown rendering, but 0.24 requires **egui 0.35** (sciscraper pins 0.34) and
 0.25 requires Rust 1.95 (> pinned 1.92) — hence the renderer lives in
-`egui_chat` behind the `markdown` feature, built on `pulldown-cmark` 0.13
+`ragrig-egui` behind the `markdown` feature, built on `pulldown-cmark` 0.13
 (the de-facto Rust CommonMark parser).
 
-Until 0.2, `sciscraper-rs` depends on `egui_chat` by path + version
-(`{ version = "0.1.0", path = "../egui_chat" }`); publishing `egui_chat` before an
+Until 0.2, `sciscraper-rs` depends on `ragrig-egui` by path + version
+(`{ version = "0.1.0", path = "../ragrig-egui" }`); publishing `ragrig-egui` before an
 upstream Ferrite MR is a prerequisite (or vendoring the widget code).
 
 ## 4. Sprint plan
@@ -105,8 +112,8 @@ upstream Ferrite MR is a prerequisite (or vendoring the widget code).
 
 Delivered (scope was extended from "shell" to a usable slice so the feature can be tried):
 
-- `egui_chat` 0.1 bootstrapped (forms the reusable UI base for everything after).
-- `rag` feature, optional deps (`ragrig` with `internal` + `ollama-embed`, `egui_chat`, `anyhow`).
+- `ragrig-egui` 0.1 bootstrapped (forms the reusable UI base for everything after).
+- `rag` feature, optional deps (`ragrig` with `internal` + `ollama-embed`, `ragrig-egui`, `anyhow`).
 - `RagSettings` embedding `RagrigConfig`, with the D4 defaults; serde round-trips; `"."`
   workspace tracks the editor workspace, pins on explicit choice (D3).
 - Worker: status/query/cancel/configure commands; streaming tokens; context-overflow
@@ -158,7 +165,7 @@ Delivered:
   fallback (`<key> - …`), parses the document and attaches it as one-shot
   context; misses/ambiguity are reported as a system note, never guessing.
   Caps: 3 attachments, 60 000 chars each.
-- **Markdown**: `egui_chat` 0.2 renders assistant bubbles as light Markdown
+- **Markdown**: `ragrig-egui` 0.2 renders assistant bubbles as light Markdown
   (see §3).
 
 Deferred (stretch, not urgent): attaching the current editor selection as a
@@ -294,7 +301,7 @@ through `cite_keys` (what the library inserts is what the chat attach scanner
 sees). 1591 tests pass with the 3 pre-existing failures (+24 feature tests);
 `cargo check` with and without `rag` is clean; clippy adds no warnings.
 
-### ✅ Sprint 4.1 — dock layout and bubble wrapping (cosmetic fix, egui_chat 0.3.1)
+### ✅ Sprint 4.1 — dock layout and bubble wrapping (cosmetic fix, ragrig-egui 0.3.1)
 
 Triggered by a user report: chat bubbles ran too wide (cut off at the panel
 edge) and a multi-line query pushed the composer, the agent bar and the
@@ -315,12 +322,12 @@ library section off the panel.
   library's share is reserved below (a collapsed library reserves only its
   header). Every height is bounded, nothing depends on the previous frame, and
   no widget is clamped.
-- The recipe is pinned by `egui_chat`'s `tests/dock_layout.rs` (short *and*
+- The recipe is pinned by `ragrig-egui`'s `tests/dock_layout.rs` (short *and*
   multi-line prompts: no overlap, nothing pushed out) and documented in the
   composer module.
 
 Verification: 1593 tests pass with the 3 pre-existing failures (+2 host tests);
-`egui_chat` 0.3.1 is green (34 unit + 2 layout tests + 6 doctests, clippy
+`ragrig-egui` 0.3.1 is green (34 unit + 2 layout tests + 6 doctests, clippy
 `-D warnings` clean).
 
 ### ✅ Sprint 5 — Ingestion (feature `grobid`) (done)
@@ -370,7 +377,7 @@ and bibliography shared one column.
 - **Layout.** The single right `SectionDock` became two: the **Agent** chat keeps the right
   pane (`sciscraper_agent_dock`), the **Library** moved to a left pane
   (`sciscraper_library_dock`) rendered after the navigation panels, so it sits directly left of
-  the editor. Host-side only — `egui_chat`'s `SectionDock` already supported `DockSide::Left`.
+  the editor. Host-side only — `ragrig-egui`'s `SectionDock` already supported `DockSide::Left`.
 - **Simplification.** The agent section's `library_reserve` (which kept a taller transcript
   from squeezing the library out of the shared column) is gone: each pane owns its full
   height. `RagSettings` gained `library_width` (`DEFAULT_LIBRARY_WIDTH = 320`), persisted next
@@ -718,8 +725,8 @@ rustfmt-clean, clippy reports nothing in the new code. A headless click test nee
   The offer exists exactly when a replacement was *not* written (mismatch, closed document,
   no marked passage); an empty block or extra blocks are cards without an offer.
 - **Scope note.** The plan promised an *edit card* in the transcript, not an action button:
-  `egui_chat`'s transcript has no message actions, so the recovery action lives in the
-  panel's own composer-footer chip — no `egui_chat` change needed, and no upstream issue to
+  `ragrig-egui`'s transcript has no message actions, so the recovery action lives in the
+  panel's own composer-footer chip — no `ragrig-egui` change needed, and no upstream issue to
   file (recorded in UPSTREAM.md's monitoring notes).
 - Pinned by eight `Replacement` tests (lift before/after, only ours, tilde + spaced info,
   quoted example stays, garbled target, empty, order) and five panel tests (handover carries
@@ -751,7 +758,7 @@ only, 1497 with no features (the new tests are all `rag`-gated); all three featu
   to. The agent bar keeps *Chat · Memory · Embed*. Both the Corpus and the Vector store menu
   keep the workspace picker and *Update/Rebuild index*, so the library pane now carries the
   whole corpus-and-index story; the bar test asserts the exact order and membership.
-- **Panes collapse horizontally (egui_chat 0.4.0).** The per-section fold (headers stacked,
+- **Panes collapse horizontally (ragrig-egui 0.4.0).** The per-section fold (headers stacked,
   bodies hidden) was a relict of hosting both panes in one dock. Now the *dock* collapses to
   a `COLLAPSED_WIDTH` (28 px) strip at its window edge with a chevron that expands it again;
   `DockResponse::collapsed` reports the toggle, the host owns and persists the flag, and no
@@ -759,13 +766,13 @@ only, 1497 with no features (the new tests are all `rag`-gated); all three featu
   `SectionState::collapsed` is gone — a breaking change, hence 0.4.0; sciscraper passes
   `settings.{agent,library}_collapsed` and localizes the control with
   `collapse_hint`/`expand_hint` (`agent.pane.*`). The focus-mode button hides while the
-  agent pane is a strip (there is nowhere to type). Pinned in egui_chat by five dock tests
+  agent pane is a strip (there is nowhere to type). Pinned in ragrig-egui by five dock tests
   (strip skips the bodies, header click collapses, strip click expands, no bogus width, the
   arrow convention) and in sciscraper by `a_collapsed_pane_reopens_through_its_strip` (the
   host round trip: flag in, strip out, toggle back into the settings).
 
 Verification: 1674 tests pass with the 3 pre-existing failures (`rag,grobid`), 1656 with
-`rag` only, 1497 with no features; egui_chat 0.4.0 passes its 45 tests (37 unit, 2 layout
+`rag` only, 1497 with no features; ragrig-egui 0.4.0 passes its 45 tests (37 unit, 2 layout
 integration, 6 doctests). `cargo check` clean for all feature sets, touched files
 rustfmt-clean and clippy-clean.
 
@@ -785,7 +792,7 @@ additive.
 | **One context extractor** — `(tab, name, range, digest, text)` from the active tab | 2 (whole buffer), 3 (selection), 4 (selection identity) | `buffer()` and `selection()` are the same extraction with different ranges; feature 4 adds only the digest that makes an applied edit safe |
 | **One attachment transport** — `AttachedDocument` + `AttachStrategy` | 2, 3 | Both ride the existing `chat_streaming_detailed_with_attachments` seam; sciscraper replaces `PrependAttach` with a `ContainerAttach` so *every* attachment (papers, buffer, selection) arrives inside a marked container |
 | **One apply path** — `citation_range`/`insert_at`/`set_content`, one undo step | 4 | Reuses the citation contract (D2, sprint 3): `CitePayload` generalises into an `EditorEdit` enum instead of growing a second mechanism |
-| **One pending-context model + composer strip** | 2 (toggle), 3 (chip), 4 (tracked region) | Panel-owned state, host-drawn chips above the composer — `Composer::input_id()` is public, so no `egui_chat` change is needed |
+| **One pending-context model + composer strip** | 2 (toggle), 3 (chip), 4 (tracked region) | Panel-owned state, host-drawn chips above the composer — `Composer::input_id()` is public, so no `ragrig-egui` change is needed |
 | **One geometry/overlay seam** | 3 only | The phase's only touch outside the panel: a *generic* `selection_rect()` accessor in the forked editor, read through the existing editor registry — additive, feature-free, MR-friendly |
 
 **Not shared (boundaries).** The system prompt (1) is content plus configuration, not
@@ -964,9 +971,9 @@ lives in [`../UPSTREAM.md`](../UPSTREAM.md). Summary:
 
 | Need | Crate | Result | Decision |
 |---|---|---|---|
-| Chat/agent widgets | `egui_chat` (own repo) | 0.1 + 0.2 + 0.3 here | reuse across hosts |
+| Chat/agent widgets | `ragrig-egui` (own repo) | 0.1 + 0.2 + 0.3 here | reuse across hosts |
 | Rich text in bubbles | `egui_commonmark` | exists, reputable, **but 0.24 needs egui 0.35 and 0.25 needs Rust 1.95** — incompatible with the pinned egui 0.34 / Rust 1.92 | in-house renderer via `pulldown-cmark` 0.13 |
-| Setting rows / notes in menus | — | nothing in the pinned egui ecosystem fits better than five lines of `Ui` code | `egui_chat::form` (0.3), reused by the host |
+| Setting rows / notes in menus | — | nothing in the pinned egui ecosystem fits better than five lines of `Ui` code | `ragrig_egui::form` (0.3), reused by the host |
 | Bibliography model | `grobid-bibtex` | crates.io has 0.2.0 only, which lacks `Collection::cite_entries`; local repo is 0.2.1 | **path + version dependency** (same co-development pattern as ragrig-cli); publish 0.2.1 before dropping the path |
 | Entry fields for the library rows | `biblatex` 0.12 | crate of record for BibTeX/BibLaTeX parsing; already in the tree through `grobid-bibtex`, which however only surfaces key + file | **direct dependency at the same version** (US-12 asks for a richer `CiteEntry` or a re-export) |
 | Composer/icons/menus | — | egui built-ins + `egui-phosphor` (host) | no new deps |

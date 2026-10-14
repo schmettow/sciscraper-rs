@@ -683,5 +683,5 @@ Sciscraper is MIT-licensed, like the projects it builds on:
   and terminal front end.
 - [`grobid-bibtex`](https://github.com/schmettow/grobid-bibtex) — BibTeX
   extraction from GROBID metadata.
-- [`egui_chat`](https://crates.io/crates/egui_chat) — the chat and agent-bar
-  widgets.
+- [`ragrig-egui`](https://crates.io/crates/ragrig-egui) — the agent pane
+  widgets (transcript, composer, component bars, dockable panes)

@@ -3,7 +3,7 @@
 //! [`RagStatus::derive`] turns the persistent [`RagSettings`] plus a few
 //! runtime facts (workspace, store state, busy flag) into one
 //! [`ComponentStatus`] per RAG component. The UI maps these to
-//! `egui_chat::agent_bar` items — no egui types leak in here, which keeps
+//! `ragrig_egui::agent_bar` items — no egui types leak in here, which keeps
 //! the derivation unit-testable without a UI.
 
 use std::path::Path;

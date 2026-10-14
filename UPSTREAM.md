@@ -372,7 +372,7 @@ every entry is filed and closed.
 - **Two-bibliography ambiguity is by design here.** When discovery finds several `.bib` files,
   sciscraper lists them and lets the user choose rather than guessing — not an upstream
   problem, recorded so it is not "fixed" by mistake.
-- **`egui_chat`'s transcript has no message actions.** Co-Edit's "insert at cursor" recovery
+- **`ragrig-egui`'s transcript has no message actions.** Co-Edit's "insert at cursor" recovery
   could have been a button on the edit card; sciscraper keeps the action in its own
   composer-footer chip instead (the panel draws its chrome, the transcript stays passive). If
   the transcript ever grows interactive cards, that chip is the first thing to move.

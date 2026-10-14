@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::SystemTime;
 
-use egui_chat::form::{note, warning};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use ragrig_egui::form::{note, warning};
 use rust_i18n::t;
 
 use crate::rag::{CitePayload, LibraryEntry, LibraryState, LibraryView, RagCommand};

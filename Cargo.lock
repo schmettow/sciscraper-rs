@@ -1787,14 +1787,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui_chat"
-version = "0.4.0"
-dependencies = [
- "egui",
- "pulldown-cmark 0.13.4",
-]
-
-[[package]]
 name = "egui_glow"
 version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5153,6 +5145,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ragrig-egui"
+version = "0.4.0"
+dependencies = [
+ "egui",
+ "pulldown-cmark 0.13.4",
+]
+
+[[package]]
 name = "rand"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5879,7 +5879,6 @@ dependencies = [
  "eframe",
  "egui",
  "egui-phosphor",
- "egui_chat",
  "embed-resource",
  "encoding_rs",
  "env_logger",
@@ -5900,6 +5899,7 @@ dependencies = [
  "poll-promise",
  "portable-pty",
  "ragrig",
+ "ragrig-egui",
  "regex",
  "rfd",
  "ropey",

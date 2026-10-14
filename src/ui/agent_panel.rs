@@ -11,7 +11,7 @@
 //! dedicated pane on the left — a working pane next to the document for
 //! drag-to-cite, add-from-disk and drop-to-ingest, not a chat accessory
 //! (Sprint 5.1 moved it out of the right dock, which had become over-crowded).
-//! Collapsing a pane is **horizontal** (sprint 6.5, egui_chat 0.4): it shrinks
+//! Collapsing a pane is **horizontal** (sprint 6.5, ragrig-egui 0.4): it shrinks
 //! to a narrow strip at its window edge with one control to bring it back, so a
 //! collapsed pane gives its width to the editor. The host owns the flags and
 //! persists them; one toggle shows or hides both.
@@ -44,13 +44,13 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use egui_chat::agent_bar::{AgentBar, AgentBarStyle, Component, ComponentStatus as BarStatus};
-use egui_chat::chat_view::{ChatMessage, ChatRole, ChatView, MessageMeta, MessageState};
-use egui_chat::composer::{max_composer_height, Composer};
-use egui_chat::dock::{DockSide, SectionDock, SectionState};
-use egui_chat::form::{note, setting_row, warning};
 use ragrig::types::Provider;
 use ragrig::MemoryStrategyKind;
+use ragrig_egui::agent_bar::{AgentBar, AgentBarStyle, Component, ComponentStatus as BarStatus};
+use ragrig_egui::chat_view::{ChatMessage, ChatRole, ChatView, MessageMeta, MessageState};
+use ragrig_egui::composer::{max_composer_height, Composer};
+use ragrig_egui::dock::{DockSide, SectionDock, SectionState};
+use ragrig_egui::form::{note, setting_row, warning};
 use rust_i18n::t;
 
 use crate::rag::roundtrip::{self, EditorBuffer, EditorEdit, Replacement, RoundtripContext};
@@ -362,7 +362,7 @@ impl AgentPanel {
         // bottom-anchored with the same recipe as the agent pane's: the
         // list gets everything above the footer, whatever the list's length.
         // Collapsed, the whole pane shrinks to a strip at the window edge
-        // (egui_chat 0.4); the host owns and persists the flag.
+        // (ragrig-egui 0.4); the host owns and persists the flag.
         let library_action: RefCell<LibraryAction> = RefCell::new(LibraryAction::default());
         let library_dock =
             SectionDock::new("sciscraper_library_dock", DockSide::Left, library_width)
@@ -428,7 +428,7 @@ impl AgentPanel {
 
         // ── Right pane: the agent ───────────────────────────────────────────
         //
-        // Layout contract (mirrored by egui_chat's `dock_layout` tests): the
+        // Layout contract (mirrored by ragrig-egui's `dock_layout` tests): the
         // footer is anchored to the bottom of the section and the transcript
         // is placed *above* it, so a multi-line prompt grows upward instead of
         // pushing the agent bar out of the pane. Explicit rects keep every
@@ -2171,9 +2171,9 @@ mod tests {
 
     #[test]
     fn a_collapsed_pane_reopens_through_its_strip() {
-        // Sprint 6.5: panes collapse horizontally (egui_chat 0.4). The host
+        // Sprint 6.5: panes collapse horizontally (ragrig-egui 0.4). The host
         // persists the flag; the strip's chevron flips it straight back into
-        // the settings. egui_chat's dock tests pin the strip's control
+        // the settings. ragrig-egui's dock tests pin the strip's control
         // position, so this only has to find the top of the strip.
         let ctx = egui::Context::default();
         let mut settings = RagSettings {
@@ -2183,7 +2183,7 @@ mod tests {
         let mut panel = AgentPanel::new(&settings, None);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
         let target = egui::pos2(
-            screen.right() - egui_chat::dock::COLLAPSED_WIDTH / 2.0,
+            screen.right() - ragrig_egui::dock::COLLAPSED_WIDTH / 2.0,
             screen.top() + 12.0,
         );
         let press = |pressed| egui::Event::PointerButton {
@@ -2323,7 +2323,7 @@ mod tests {
     #[test]
     fn a_multi_line_prompt_renders_within_the_dock() {
         // Layout smoke test: a tall prompt with a long transcript must render
-        // without panicking (the geometry contract lives in egui_chat's
+        // without panicking (the geometry contract lives in ragrig-egui's
         // `dock_layout` tests, which mirror this recipe).
         let ctx = egui::Context::default();
         let dir = tempfile::tempdir().unwrap();
