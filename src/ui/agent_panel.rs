@@ -34,6 +34,12 @@
 //! survives). The bar renders one status snapshot per component, so every
 //! action the menus offer has a visible state.
 //!
+//! The library header is the roundtrip's way into the *bibliography* (RX,
+//! sprint 6.7): the section renders its file toggle from the host's tabs and
+//! asks for an editor tab to open or close ([`EditorFileAction`]), and its
+//! attach toggle feeds [`RagSettings::bib_attached`] — on by request, the
+//! `.bib` then rides along with every question like the document buffer does.
+//!
 //! The bar is automatic: the panel re-checks the backends on a cadence driven
 //! by the last result — every two seconds while something is down, booting or
 //! being checked, and a thirty-second heartbeat once everything answers (see
@@ -62,6 +68,7 @@ use crate::rag::{
 };
 #[cfg(feature = "grobid")]
 use crate::rag::{IngestOutcome, IngestSource};
+use crate::state::Tab;
 use crate::ui::library_panel::{LibraryAction, LibrarySection};
 
 /// Deferred actions produced while rendering (applied after the borrows end).
@@ -82,6 +89,23 @@ pub struct AgentPanelOutput {
     /// An edit an agent answer asked for (sprint 6.4): a digest-guarded
     /// replacement of the marked passage, or its insert-at-cursor fallback.
     pub edit: Option<EditorEdit>,
+    /// The library header's file toggle (RX, sprint 6.7): open the bibliography
+    /// in an editor tab, or close the tab that holds it.
+    pub editor_file: Option<EditorFileAction>,
+}
+
+/// Open or close one file in the editor (RX, sprint 6.7) — today only the
+/// bibliography's toggle produces one.
+///
+/// Closing deliberately goes through the editor's own close path: a modified
+/// file still prompts, and the toggle simply stays where it was until the tab
+/// is really gone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditorFileAction {
+    /// Show the file in an editor tab (focus it when it is already open).
+    Open(PathBuf),
+    /// Close the file's editor tab.
+    Close(PathBuf),
 }
 
 /// A marked passage waiting for its question (sprint 6.3), with the tab it
@@ -284,7 +308,9 @@ impl AgentPanel {
     ///
     /// `buffer` is the host's view of the active document (sprint 6.2),
     /// borrowed for this frame only: the panel decides whether it rides along
-    /// with the next question.
+    /// with the next question. `tabs` is the host's tab list (sprint 6.7),
+    /// read by the library header's file toggle — which of the open documents
+    /// is the bibliography is not this pane's business.
     ///
     /// Returns what the host should do: persist the settings when they
     /// changed, insert a citation into the active document.
@@ -294,6 +320,7 @@ impl AgentPanel {
         settings: &mut RagSettings,
         editor_workspace: Option<&Path>,
         recent_workspaces: &[PathBuf],
+        tabs: &[Tab],
         buffer: Option<EditorBuffer<'_>>,
     ) -> AgentPanelOutput {
         let editor_ws: Option<PathBuf> = editor_workspace.map(Path::to_path_buf);
@@ -337,6 +364,7 @@ impl AgentPanel {
         let library_collapsed = settings.library_collapsed;
         let agent_collapsed = settings.agent_collapsed;
         let buffer_attached = settings.buffer_attached;
+        let bib_attached = settings.bib_attached;
         let buffer_toggled = Cell::new(false);
         let selection_dropped = Cell::new(false);
         let insert_requested = Cell::new(false);
@@ -413,7 +441,8 @@ impl AgentPanel {
                         egui::pos2(bounds.right(), list_bottom),
                     );
                     ui.scope_builder(egui::UiBuilder::new().max_rect(list_rect), |ui| {
-                        self.library.show(ui, &mut library_action.borrow_mut());
+                        self.library
+                            .show(ui, tabs, bib_attached, &mut library_action.borrow_mut());
                     });
 
                     ui.allocate_rect(
@@ -617,7 +646,10 @@ impl AgentPanel {
 
         // Library actions: a chosen bibliography reconfigures the Corpus
         // component (and the worker reloads the list); insertions travel back
-        // to the host, which applies them to the editor with one undo step.
+        // to the host, which applies them to the editor with one undo step;
+        // the header's file toggle asks the host to open or close the `.bib`
+        // (RX, sprint 6.7) — the editor's close policy decides about unsaved
+        // text, never this pane.
         let library_action = library_action.into_inner();
         let cite = library_action.insert;
         if let Some(bib) = library_action.choose_bib {
@@ -625,6 +657,15 @@ impl AgentPanel {
             self.send_configure(settings, editor_ws.clone());
             settings_changed = true;
         }
+        if let Some(attached) = library_action.attach_bib {
+            settings.bib_attached = attached;
+            settings_changed = true;
+        }
+        let editor_file = match (library_action.open_bib, library_action.close_bib) {
+            (Some(path), _) => Some(EditorFileAction::Open(path)),
+            (None, Some(path)) => Some(EditorFileAction::Close(path)),
+            (None, None) => None,
+        };
         for command in library_action.commands {
             self.worker.send(command);
         }
@@ -657,6 +698,7 @@ impl AgentPanel {
             settings_changed,
             cite,
             edit,
+            editor_file,
         }
     }
 
@@ -700,6 +742,7 @@ impl AgentPanel {
         // is written back to it.
         let mut contexts = Vec::new();
         contexts.extend(buffer_context(settings, buffer));
+        contexts.extend(bib_context(settings, self.library.bibliography_path()));
         self.in_flight = self.pending.take();
         contexts.extend(
             self.in_flight
@@ -1279,6 +1322,22 @@ fn buffer_context(
         return None;
     }
     RoundtripContext::document(buffer?)
+}
+
+/// The bibliography attachment for the next question (RX, sprint 6.7): on
+/// while the library header's attach toggle is on, and only when the file
+/// reads. The bib is plain input — no cursor, no edits come back from it.
+fn bib_context(settings: &RagSettings, path: Option<&Path>) -> Option<RoundtripContext> {
+    if !settings.bib_attached {
+        return None;
+    }
+    let path = path?;
+    let content = std::fs::read_to_string(path)
+        .inspect_err(|error| {
+            log::warn!("Cannot attach the bibliography {}: {error}", path.display())
+        })
+        .ok()?;
+    RoundtripContext::file(path, &content)
 }
 
 /// The composer's context chip: which document rides along with the next
@@ -2202,7 +2261,7 @@ mod tests {
             },
             |ui| {
                 changed = panel
-                    .show_ui(ui, &mut settings, None, &[], None)
+                    .show_ui(ui, &mut settings, None, &[], &[], None)
                     .settings_changed;
             },
         );
@@ -2221,7 +2280,7 @@ mod tests {
             },
             |ui| {
                 changed = panel
-                    .show_ui(ui, &mut settings, None, &[], None)
+                    .show_ui(ui, &mut settings, None, &[], &[], None)
                     .settings_changed;
             },
         );
@@ -2303,7 +2362,7 @@ mod tests {
         for component in RagComponent::all() {
             panel.open_menu = Some(component.id().to_string());
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[], &[], None);
             });
         }
         assert!(panel.open_menu.is_some(), "no clicks, menu stays open");
@@ -2346,7 +2405,7 @@ mod tests {
         };
         for _ in 0..2 {
             let _ = ctx.run_ui(input.clone(), |ui| {
-                panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[], &[], None);
             });
         }
     }
@@ -2373,7 +2432,7 @@ mod tests {
         for _ in 0..2 {
             let _ = ctx.run_ui(input.clone(), |ui| {
                 let full = ui.max_rect();
-                let _ = panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
+                let _ = panel.show_ui(ui, &mut settings, Some(dir.path()), &[], &[], None);
                 let editor = ui.available_rect_before_wrap();
                 assert!(
                     editor.width() > 0.0,
@@ -2407,7 +2466,7 @@ mod tests {
         let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
         for _ in 0..2 {
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
+                panel.show_ui(ui, &mut settings, Some(dir.path()), &[], &[], None);
             });
         }
 
@@ -2451,7 +2510,7 @@ mod tests {
             ..egui::RawInput::default()
         };
         let _ = ctx.run_ui(input, |ui| {
-            panel.show_ui(ui, &mut settings, Some(dir.path()), &[], None);
+            panel.show_ui(ui, &mut settings, Some(dir.path()), &[], &[], None);
         });
     }
 
@@ -2567,6 +2626,47 @@ mod tests {
     }
 
     #[test]
+    fn the_bibliography_rides_along_when_attached() {
+        // RX (sprint 6.7): the attach toggle decides, and the context is the
+        // file as the model sees it — name, path, no cursor. Unreadable or
+        // blank files attach nothing, whatever the toggle says.
+        let dir = tempfile::tempdir().unwrap();
+        let bib = dir.path().join("library.bib");
+        std::fs::write(&bib, "@misc{a}\n").unwrap();
+
+        let mut settings = RagSettings::default();
+        assert!(
+            bib_context(&settings, Some(&bib)).is_none(),
+            "the bibliography is attached on request only"
+        );
+
+        settings.bib_attached = true;
+        let context = bib_context(&settings, Some(&bib)).expect("attached");
+        let container = context.container();
+        assert!(container.contains("name=\"library.bib\""), "{container}");
+        assert!(
+            container.contains(&format!("path=\"{}\"", bib.display())),
+            "{container}"
+        );
+        assert!(
+            !container.contains("cursor="),
+            "the bibliography is not the active document: {container}"
+        );
+
+        assert!(
+            bib_context(&settings, None).is_none(),
+            "nothing to attach yet"
+        );
+        let blank = dir.path().join("blank.bib");
+        std::fs::write(&blank, "  \n\t").unwrap();
+        assert!(bib_context(&settings, Some(&blank)).is_none());
+        assert!(
+            bib_context(&settings, Some(&dir.path().join("gone.bib"))).is_none(),
+            "a missing file is not attached"
+        );
+    }
+
+    #[test]
     fn the_context_chip_renders_with_and_without_a_document() {
         // Render smoke test: the chip is drawn above the composer with a
         // document and hidden without one; an idle frame never flips the
@@ -2582,7 +2682,7 @@ mod tests {
         };
         for editor in [Some(buffer), None] {
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                panel.show_ui(ui, &mut settings, None, &[], editor);
+                panel.show_ui(ui, &mut settings, None, &[], &[], editor);
             });
         }
         assert!(
@@ -2664,7 +2764,7 @@ mod tests {
     ) -> AgentPanelOutput {
         let mut output = AgentPanelOutput::default();
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            output = panel.show_ui(ui, settings, None, &[], None);
+            output = panel.show_ui(ui, settings, None, &[], &[], None);
         });
         output
     }
@@ -2834,7 +2934,7 @@ mod tests {
         let mut changed = false;
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             changed = panel
-                .show_ui(ui, &mut settings, None, &[], None)
+                .show_ui(ui, &mut settings, None, &[], &[], None)
                 .settings_changed;
         });
         assert!(!changed, "idle frame must not touch the settings");
@@ -2874,7 +2974,7 @@ mod tests {
         for state in states {
             panel.library.apply(state);
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                panel.show_ui(ui, &mut settings, None, &[], None);
+                panel.show_ui(ui, &mut settings, None, &[], &[], None);
             });
         }
     }

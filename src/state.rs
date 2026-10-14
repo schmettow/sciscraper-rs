@@ -3875,14 +3875,17 @@ impl AppState {
         self.tabs.get(self.active_tab_index)
     }
 
-    /// The settings and the active tab together.
+    /// The settings, all tabs and the active tab together.
     ///
-    /// Split borrows of the two fields: the agent pane renders with a mutable
-    /// settings borrow while the same frame borrows the active document for
-    /// the roundtrip context (sprint 6.2). [`Self::active_tab`] alone would
-    /// hand out a borrow of the whole state and rule that out.
-    pub fn settings_and_active_tab(&mut self) -> (&mut Settings, Option<&Tab>) {
-        (&mut self.settings, self.tabs.get(self.active_tab_index))
+    /// Split borrows of the three fields: the agent pane renders with a mutable
+    /// settings borrow while the same frame borrows the host's tabs — the open
+    /// paths for the bibliography's editor toggle (sprint 6.7) — and the
+    /// active document for the roundtrip context (sprint 6.2).
+    /// [`Self::tabs`]/[`Self::active_tab`] alone would each hand out a borrow
+    /// of the whole state and rule that out.
+    pub fn settings_tabs_and_active_tab(&mut self) -> (&mut Settings, &[Tab], Option<&Tab>) {
+        let active = self.tabs.get(self.active_tab_index);
+        (&mut self.settings, &self.tabs, active)
     }
 
     /// Get a mutable reference to the active tab.

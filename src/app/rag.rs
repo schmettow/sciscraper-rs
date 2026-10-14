@@ -196,16 +196,18 @@ impl FerriteApp {
         self.ensure_agent_panel();
         let editor_workspace = self.state.workspace_root().cloned();
         let recent_workspaces = self.state.settings.recent_workspaces.clone();
-        // The active document is borrowed for this frame only; the settings
-        // borrow comes from the same split (see `settings_and_active_tab`).
-        let (settings, buffer) = self.state.settings_and_active_tab();
-        let buffer = buffer.and_then(Self::document_buffer);
+        // The active document is borrowed for this frame only; the settings and
+        // the open tabs come from the same split (see
+        // `settings_tabs_and_active_tab`).
+        let (settings, tabs, active) = self.state.settings_tabs_and_active_tab();
+        let buffer = active.and_then(Self::document_buffer);
         let output = match &mut self.agent_panel {
             Some(panel) => panel.show_ui(
                 ui,
                 &mut settings.rag,
                 editor_workspace.as_deref(),
                 &recent_workspaces,
+                tabs,
                 buffer,
             ),
             None => crate::ui::AgentPanelOutput::default(),
@@ -220,6 +222,39 @@ impl FerriteApp {
             if let Some(report) = self.apply_editor_edit(edit) {
                 if let Some(panel) = self.agent_panel.as_mut() {
                     panel.push_edit_report(report);
+                }
+            }
+        }
+        if let Some(action) = output.editor_file {
+            self.apply_editor_file(action);
+        }
+    }
+
+    /// Apply the library header's file toggle (RX, sprint 6.7).
+    ///
+    /// Opening goes through [`Self::open_file_smart`] — a file that is already
+    /// open is focused, not opened twice. Closing goes through
+    /// [`AppState::close_tab`], the editor's own close path: a modified
+    /// bibliography still prompts, and nothing is dropped behind the user's
+    /// back.
+    pub(crate) fn apply_editor_file(&mut self, action: crate::ui::EditorFileAction) {
+        use crate::ui::EditorFileAction;
+        match action {
+            EditorFileAction::Open(path) => {
+                let time = self.get_app_time();
+                if let Err(error) = self.open_file_smart(path.clone(), true, Some(time)) {
+                    log::warn!("Cannot open the bibliography {}: {error}", path.display());
+                    let time = self.get_app_time();
+                    self.state.show_toast(
+                        t!("error.open_file_failed", error = error.to_string()).to_string(),
+                        time,
+                        3.0,
+                    );
+                }
+            }
+            EditorFileAction::Close(path) => {
+                if let Some(index) = self.state.find_tab_by_path(&path) {
+                    self.state.close_tab(index);
                 }
             }
         }

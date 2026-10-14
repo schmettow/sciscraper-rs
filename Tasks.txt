@@ -1,0 +1,29 @@
+1. In this round we further improve the Roundtrip Experience (RX).
+
+Use cases:
+1. The user wants to manually add or edit an entry.
+2. The user wants the Chat agent to use the Bibtex file as input, for example to replace literal citations by their bibtex keys.
+
+Make the element showing the current bibtex file active.
+- The label is itself a toggle button that opens the bibtex file in the editor, or closes it. Not over-riding the editors close policy! Since the user may close the window, or open it manually, the toggle button reacts to (or polls in 2s intervals) the paths of editor tabs. When closing the bibtex editor tab with
+- The the left the Refresh button.
+- To right of the toggle an Attach button.
+- To its right a Copy Path button
+- To the right an attach button, which attaches teh bibtex file to the query.
+
+2. Two small fixes
+
+- When citing a reference use the Markdown form @key.
+- When citing while the Chat input is active (blue frame cursor), send the citation to the chat, not the editor.
+
+
+
+3. Special Library marker
+
+Use Case 2, again. Alternative way to do the task.
+
+In Agent pane: Place a button <Library> next to to document attach toggle with the same semantics. 
+Update the schema rules and instructions for the agent
+
+ 
+

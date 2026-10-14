@@ -209,6 +209,35 @@ impl RoundtripContext {
         })
     }
 
+    /// A file the author attached by reference (RX, sprint 6.7), or `None`
+    /// when it holds no text.
+    ///
+    /// Like [`Self::document`] — name, path, truncation — but without a
+    /// cursor: the file is not the buffer being edited. The co-writer prompt
+    /// tells the model to read a `.bib` document as the bibliography and to
+    /// take its citation keys as the only citable ones.
+    #[must_use]
+    pub fn file(path: &Path, content: &str) -> Option<Self> {
+        if content.trim().is_empty() {
+            return None;
+        }
+        let (text, chars, truncated) = excerpt(content);
+        Some(Self {
+            kind: RoundtripKind::Document,
+            name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string()),
+            path: Some(path.to_path_buf()),
+            cursor: None,
+            range: None,
+            digest: digest(content),
+            chars,
+            truncated,
+            text,
+        })
+    }
+
     /// A passage the author marked, or `None` when the marked text is blank.
     ///
     /// `range` is char-indexed and doc-relative, like every editor edit in the
@@ -744,6 +773,33 @@ mod tests {
                 truncated: false,
             }
         );
+    }
+
+    #[test]
+    fn a_file_attachment_carries_name_and_path_without_a_cursor() {
+        let context =
+            RoundtripContext::file(Path::new("library/library.bib"), "@misc{a}").expect("text");
+        assert_eq!(
+            context.container(),
+            "<sciscraper:v1:document name=\"library.bib\" path=\"library/library.bib\" chars=\"8\">\n\
+             @misc{a}\n\
+             </sciscraper:v1:document>"
+        );
+        assert_eq!(
+            context.note(),
+            ContextNote {
+                kind: RoundtripKind::Document,
+                name: "library.bib".to_string(),
+                chars: 8,
+                truncated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn a_blank_file_attaches_nothing() {
+        assert!(RoundtripContext::file(Path::new("library.bib"), "").is_none());
+        assert!(RoundtripContext::file(Path::new("library.bib"), " \n\t").is_none());
     }
 
     #[test]

@@ -171,6 +171,20 @@ this fit the argument above?" work without pasting anything.
 - The buffer never counts against the three-paper `@Key` limit, and with the chip off the
   document never leaves the editor.
 
+### The bibliography as input
+
+The Library's file line carries a paperclip. While it is on, every question carries your
+`.bib` — name, path and text, no cursor — as a `<sciscraper:v1:document …>` container next to
+the document buffer, and the agent is told to treat a `.bib` file as the bibliography: its
+entries are the only citable keys. That is what lets *"replace the literal citations in this
+section with the right keys"* work without pasting entries.
+
+- The attachment is **off by default** and remembered across restarts; attach it for a
+  citation pass, click again to detach. The transcript notes *"Document attached:
+  library.bib (4210 chars)"* per question, so you can always see what rode along.
+- A bibliography longer than 60 000 characters is attached as an excerpt like any document
+  (the container names the full length and carries the truncation marker).
+
 ### Focus mode — ask about a marked passage
 
 Mark a passage in the raw editor (single or split view) and a small round button appears at
@@ -374,6 +388,15 @@ The Library pane lists the entries of your BibTeX file. Each row shows a
 meta line `Author · Year — Source` above the title, followed by the citation
 key on hover.
 
+- **The file line** at the top is the way into the bibliography itself:
+  - the **file name** is a toggle — clicking it opens the `.bib` in an editor tab (syntax to
+    fix, an entry to add by hand), clicking it again closes that tab. It never overrides the
+    editor's close policy: a modified file still asks before it is dropped, and the toggle
+    simply follows your tabs, so a tab you opened or closed by hand stays in step.
+  - *⟳* re-reads the file; the list also reloads automatically when the `.bib` changes on disk.
+  - *⧉* copies the file's full path (the button flashes a check).
+  - the **paperclip** attaches the bibliography to your questions — see
+    [The bibliography as input](#the-bibliography-as-input).
 - **Add PDFs…** — the toolbar button opens the system file browser; the chosen
   PDFs go through the same pipeline as a drop (copy → GROBID → rename → merge →
   index). The link icon next to it adds a PDF from a URL. Both need a build
@@ -390,8 +413,6 @@ key on hover.
   - `[ ]` *Insert [@key] (APA)* — for a multi-selection this expands to
     `[@Kano2022, @Smith2020]`
   - `⧉` *Copy citation key*
-- **Refresh** — the circular-arrow button re-reads the file. The list also
-  reloads automatically when the `.bib` file changes on disk.
 
 ### Drag a source into the document
 

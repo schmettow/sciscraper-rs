@@ -15,19 +15,28 @@
 //! the file changes on disk (ragrig-cli merging into it, another tool
 //! rewriting it) — and only when the modification time actually moved;
 //! re-parsing the whole bibliography per inotify event would be a stutter.
+//!
+//! The header line is the roundtrip's way into the bibliography (RX, sprint
+//! 6.7): the file name is itself a toggle that opens or closes the `.bib` in
+//! an editor tab, with *refresh*, *copy path* and *attach* around it. The
+//! toggle is derived from the host's tabs — polled every two seconds, so a
+//! tab the user opened or closed by hand lands on the next frame — and it
+//! never overrides the editor's close policy: a modified file still prompts.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ragrig_egui::form::{note, warning};
 use rust_i18n::t;
 
 use crate::rag::{CitePayload, LibraryEntry, LibraryState, LibraryView, RagCommand};
+use crate::state::{Tab, TabKind};
 use crate::ui::phosphor_icons::{
-    ARROWS_CLOCKWISE, BRACKETS_SQUARE, COPY, MAGNIFYING_GLASS, PLUS, UPLOAD_SIMPLE, X,
+    ARROWS_CLOCKWISE, BRACKETS_SQUARE, CHECK, COPY, MAGNIFYING_GLASS, PAPERCLIP, PLUS,
+    UPLOAD_SIMPLE, X,
 };
 
 /// What one frame of the library section produced.
@@ -45,6 +54,15 @@ pub struct LibraryAction {
     /// URLs typed into the add-from-URL row (feature `grobid`).
     #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
     pub ingest_urls: Vec<String>,
+    /// The header's file toggle asked to open the bibliography in the editor
+    /// (RX, sprint 6.7).
+    pub open_bib: Option<PathBuf>,
+    /// …or to close the tab that holds it. The host goes through the editor's
+    /// own close path, so a modified file still prompts.
+    pub close_bib: Option<PathBuf>,
+    /// The header's attach toggle was clicked, with the value it now asks
+    /// for: the bibliography then rides along with every question.
+    pub attach_bib: Option<bool>,
 }
 
 /// State of the library section, owned by `AgentPanel`.
@@ -62,6 +80,9 @@ pub struct LibrarySection {
     loaded_mtime: Option<SystemTime>,
     /// Last copied key and when (for the transient "copied" hint).
     copied: Option<(String, f64)>,
+    /// When the header's copy-path button was last clicked: it shows a check
+    /// until two seconds later (RX, sprint 6.7).
+    copied_path: Option<f64>,
     /// Buffer of the add-from-URL row; `None` keeps the row closed
     /// (feature `grobid`).
     #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
@@ -83,6 +104,16 @@ impl LibrarySection {
         self.loaded_mtime = path.and_then(mtime_of);
         self.watch(path);
         self.state = Some(state);
+    }
+
+    /// The bibliography in use, when the state knows one (`Ready` or
+    /// `Corrupt`). The panel reads it to attach the `.bib` to a query (RX,
+    /// sprint 6.7).
+    pub fn bibliography_path(&self) -> Option<&Path> {
+        match self.state.as_ref()? {
+            LibraryState::Ready { path, .. } | LibraryState::Corrupt { path, .. } => Some(path),
+            _ => None,
+        }
     }
 
     /// Toolbar row: add sources to the corpus.
@@ -211,9 +242,21 @@ impl LibrarySection {
     }
 
     /// Render the section.
-    pub fn show(&mut self, ui: &mut egui::Ui, action: &mut LibraryAction) {
+    ///
+    /// `tabs` is the host's tab list for this frame (RX, sprint 6.7): the
+    /// header's file toggle is *derived* from it. The section never tracks
+    /// editor state itself — it reacts to the tabs, and the host applies what
+    /// it asks for.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        tabs: &[Tab],
+        attached: bool,
+        action: &mut LibraryAction,
+    ) {
         ui.add_space(2.0);
         self.show_toolbar(ui, action);
+        self.show_header(ui, tabs, attached, action);
         match self.state.as_ref() {
             None => note(ui, &t!("agent.library.loading")),
             Some(LibraryState::Missing { reason }) => {
@@ -233,13 +276,7 @@ impl LibrarySection {
                 note(ui, error);
                 choose_bibliography_button(ui, action);
             }
-            Some(LibraryState::Ready {
-                path,
-                discovered,
-                view,
-            }) => {
-                let mut reload = false;
-                header(ui, path, *discovered, &mut reload);
+            Some(LibraryState::Ready { view, .. }) => {
                 show_list(
                     ui,
                     view,
@@ -249,41 +286,187 @@ impl LibrarySection {
                     action,
                 );
                 if let Some((key, at)) = &self.copied {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_millis(250));
+                    ui.ctx().request_repaint_after(Duration::from_millis(250));
                     if ui.ctx().input(|input| input.time) - at < 2.0 {
                         note(ui, &t!("agent.library.copied", key = key.as_str()));
                     } else {
                         self.copied = None;
                     }
                 }
-                if reload {
-                    action.commands.push(RagCommand::LoadLibrary);
-                }
             }
+        }
+    }
+
+    /// The header line for every state that knows which file is in use (RX,
+    /// sprint 6.7): the file element is the toggle into the editor, so a
+    /// corrupt bibliography gets one too — fixing it by hand is exactly what
+    /// the toggle is for.
+    fn show_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        tabs: &[Tab],
+        attached: bool,
+        action: &mut LibraryAction,
+    ) {
+        let (path, discovered) = match &self.state {
+            Some(LibraryState::Ready {
+                path, discovered, ..
+            }) => (path.as_path(), *discovered),
+            Some(LibraryState::Corrupt { path, .. }) => (path.as_path(), false),
+            _ => return,
+        };
+        // The editor's tabs change without this pane being touched (the user
+        // closes or opens the file in the tab bar); the two-second repaint
+        // keeps the toggle in step. The toggle only *reacts*: a close request
+        // goes through the editor's own close path, which still prompts for a
+        // modified file.
+        ui.ctx().request_repaint_after(Duration::from_secs(2));
+        let open = bib_open(path, tabs);
+        let now = ui.ctx().input(|input| input.time);
+        let copied = match self.copied_path {
+            Some(at) if now - at < 2.0 => true,
+            _ => {
+                self.copied_path = None;
+                false
+            }
+        };
+        if copied {
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+        }
+        let outcome = header(ui, path, discovered, open, attached, copied);
+        if header_action(outcome, path, open, action) {
+            ui.ctx().copy_text(path.display().to_string());
+            self.copied_path = Some(now);
         }
     }
 }
 
-/// Header line: the file in use, its discovery state and a refresh action.
-fn header(ui: &mut egui::Ui, path: &Path, discovered: bool, reload: &mut bool) {
+/// What one header frame produced (RX, sprint 6.7).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct HeaderOutcome {
+    /// The refresh button was clicked.
+    reload: bool,
+    /// The file toggle was clicked: close when it is open, open otherwise.
+    toggle: bool,
+    /// The copy-path button was clicked.
+    copy_path: bool,
+    /// The attach toggle was clicked, with the value it now asks for.
+    attach: Option<bool>,
+}
+
+/// Header line (RX, sprint 6.7): the file in use as its own toggle, with
+/// *refresh* to its left and *copy path* and *attach* to its right.
+///
+/// The file button never opens or closes anything itself — it reports the
+/// wish, the host's tabs stay in charge. `open` marks it while a tab holds
+/// the file; `copied` swaps the copy glyph for a check while the confirmation
+/// is fresh. The `(found automatically)` note lives in the hover text (the
+/// Corpus menu carries it too).
+fn header(
+    ui: &mut egui::Ui,
+    path: &Path,
+    discovered: bool,
+    open: bool,
+    attached: bool,
+    copied: bool,
+) -> HeaderOutcome {
+    let mut outcome = HeaderOutcome::default();
     ui.horizontal(|ui| {
-        let mut label = file_label(path);
-        if discovered {
-            label.push_str(&format!(" {}", t!("agent.menu.found_automatically")));
+        if ui
+            .small_button(ARROWS_CLOCKWISE)
+            .on_hover_text(t!("agent.library.refresh"))
+            .clicked()
+        {
+            outcome.reload = true;
         }
-        ui.add(egui::Label::new(egui::RichText::new(label).weak().small()).truncate())
-            .on_hover_text(path.display().to_string());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button(ARROWS_CLOCKWISE)
-                .on_hover_text(t!("agent.library.refresh"))
-                .clicked()
-            {
-                *reload = true;
-            }
+        // The file toggle keeps the space of the two controls after it, so a
+        // long name truncates instead of pushing them out of the pane.
+        let reserved = 2.0 * ui.spacing().interact_size.y + 2.0 * ui.spacing().item_spacing.x;
+        let file_width = (ui.available_width() - reserved).max(40.0);
+        let mut hint = path.display().to_string();
+        if discovered {
+            hint.push('\n');
+            hint.push_str(&t!("agent.menu.found_automatically"));
+        }
+        hint.push('\n');
+        hint.push_str(&if open {
+            t!("agent.library.close_hint")
+        } else {
+            t!("agent.library.open_hint")
         });
+        let file = ui
+            .scope(|ui| {
+                ui.set_max_width(file_width);
+                ui.add(
+                    egui::Button::new(file_label(path))
+                        .small()
+                        .selected(open)
+                        .truncate(),
+                )
+                .on_hover_text(hint)
+            })
+            .inner;
+        if file.clicked() {
+            outcome.toggle = true;
+        }
+        let copy_hint = if copied {
+            t!("agent.library.path_copied")
+        } else {
+            t!("agent.library.copy_path")
+        };
+        if ui
+            .small_button(if copied { CHECK } else { COPY })
+            .on_hover_text(copy_hint)
+            .clicked()
+        {
+            outcome.copy_path = true;
+        }
+        let attach_hint = if attached {
+            t!("agent.library.attach_on")
+        } else {
+            t!("agent.library.attach_off")
+        };
+        if ui
+            .add(egui::Button::new(PAPERCLIP).small().selected(attached))
+            .on_hover_text(attach_hint)
+            .clicked()
+        {
+            outcome.attach = Some(!attached);
+        }
     });
+    outcome
+}
+
+/// Apply one header frame to the section's action; returns whether the path
+/// should be copied (the caller owns the clipboard and the flash).
+fn header_action(
+    outcome: HeaderOutcome,
+    path: &Path,
+    open: bool,
+    action: &mut LibraryAction,
+) -> bool {
+    if outcome.reload {
+        action.commands.push(RagCommand::LoadLibrary);
+    }
+    if outcome.toggle {
+        if open {
+            action.close_bib = Some(path.to_path_buf());
+        } else {
+            action.open_bib = Some(path.to_path_buf());
+        }
+    }
+    if let Some(attached) = outcome.attach {
+        action.attach_bib = Some(attached);
+    }
+    outcome.copy_path
+}
+
+/// Whether an editor tab holds `path` (RX): the header's toggle renders
+/// selected while it does — whatever opened the tab and whoever closes it.
+/// Viewers (image, PDF) never count; only the document tabs the toggle opens.
+fn bib_open(path: &Path, tabs: &[Tab]) -> bool {
+    tabs.iter()
+        .any(|tab| matches!(tab.kind, TabKind::Document) && tab.path.as_deref() == Some(path))
 }
 
 /// Filter box, count line and the (virtualised) row list.
@@ -1135,8 +1318,165 @@ mod tests {
     fn render(ctx: &egui::Context, section: &mut LibrarySection) {
         let mut action = LibraryAction::default();
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            section.show(ui, &mut action);
+            section.show(ui, &[], false, &mut action);
         });
+    }
+
+    #[test]
+    fn the_file_toggle_follows_the_editors_document_tabs() {
+        // RX (sprint 6.7): the header derives its toggle from the host's tab
+        // list — a document tab holding the file marks it open, a different
+        // path or a non-document tab never does.
+        let dir = tempfile::tempdir().unwrap();
+        let bib = dir.path().join("library.bib");
+        let document = Tab::with_file(1, bib.clone(), "@misc{a}".into());
+        assert!(bib_open(&bib, &[document]));
+
+        assert!(!bib_open(&bib, &[]), "no tabs, nothing to close");
+
+        let other = Tab::with_file(2, dir.path().join("draft.md"), String::new());
+        assert!(!bib_open(&bib, &[other]), "another document is not it");
+
+        let mut special = Tab::with_file(3, bib.clone(), String::new());
+        special.kind = TabKind::Special(crate::state::SpecialTabKind::Settings);
+        assert!(
+            !bib_open(&bib, &[special]),
+            "a non-document tab with the path does not count"
+        );
+    }
+
+    #[test]
+    fn the_file_toggle_asks_the_host_to_open_and_close_the_editor_tab() {
+        // The toggle reports a wish; the host stays in charge of the tabs. An
+        // open file asks for the editor's own close path (the policy lives
+        // there), a closed one for a normal open.
+        let dir = tempfile::tempdir().unwrap();
+        let bib = dir.path().join("library.bib");
+
+        let mut action = LibraryAction::default();
+        header_action(
+            HeaderOutcome {
+                toggle: true,
+                ..HeaderOutcome::default()
+            },
+            &bib,
+            false,
+            &mut action,
+        );
+        assert_eq!(action.open_bib.as_deref(), Some(bib.as_path()));
+        assert!(action.close_bib.is_none());
+
+        let mut action = LibraryAction::default();
+        header_action(
+            HeaderOutcome {
+                toggle: true,
+                ..HeaderOutcome::default()
+            },
+            &bib,
+            true,
+            &mut action,
+        );
+        assert_eq!(action.close_bib.as_deref(), Some(bib.as_path()));
+        assert!(action.open_bib.is_none());
+    }
+
+    #[test]
+    fn the_header_maps_refresh_attach_and_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let bib = dir.path().join("library.bib");
+        let mut action = LibraryAction::default();
+        let copy = header_action(
+            HeaderOutcome {
+                reload: true,
+                attach: Some(true),
+                copy_path: true,
+                ..HeaderOutcome::default()
+            },
+            &bib,
+            false,
+            &mut action,
+        );
+        assert!(copy, "the caller copies the path and flashes the check");
+        assert_eq!(action.attach_bib, Some(true));
+        assert!(
+            action
+                .commands
+                .iter()
+                .any(|command| matches!(command, RagCommand::LoadLibrary)),
+            "refresh re-reads the bibliography"
+        );
+    }
+
+    #[test]
+    fn the_header_controls_click_through() {
+        // The buttons of the header row, clicked where the last frame laid
+        // them out: refresh · file (toggle) · copy path · attach.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let bib = dir.path().join("library.bib");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 40.0));
+
+        let frame = |events: Vec<egui::Event>| {
+            let mut outcome = HeaderOutcome::default();
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                outcome = header(ui, &bib, false, false, false, false);
+            });
+            outcome
+        };
+        let click = |at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            frame(vec![
+                egui::Event::PointerMoved(at),
+                press(true),
+                press(false),
+            ])
+        };
+
+        // The layout uis themselves span the whole row and are filtered out;
+        // the file button sits in a scope, and that scope's rect is the
+        // button's own place in the row.
+        let _ = frame(vec![]);
+        let mut rects: Vec<egui::Rect> = ctx.viewport(|viewport| {
+            viewport
+                .prev_pass
+                .widgets
+                .layers()
+                .filter(|(layer, _)| **layer == egui::LayerId::background())
+                .flat_map(|(_, widgets)| widgets.iter().map(|widget| widget.rect))
+                .collect()
+        });
+        let row = rects.iter().map(|rect| rect.width()).fold(0.0, f32::max);
+        rects.retain(|rect| rect.width() < row - 1.0);
+        rects.sort_by(|a, b| a.min.x.partial_cmp(&b.min.x).unwrap());
+        // The file button and the scope it lives in share their place.
+        rects.dedup_by(|a, b| (a.center() - b.center()).length() < 0.5);
+        assert_eq!(rects.len(), 4, "refresh, file, copy, attach: {rects:?}");
+        let widest = rects
+            .iter()
+            .max_by(|a, b| a.width().partial_cmp(&b.width()).unwrap())
+            .copied()
+            .expect("the file button is the widest");
+        let (refresh, copy, attach) = (rects[0], rects[2], rects[3]);
+
+        assert!(click(refresh.center()).reload);
+        assert!(click(widest.center()).toggle);
+        assert!(click(copy.center()).copy_path);
+        assert_eq!(click(attach.center()).attach, Some(true));
+        assert_eq!(
+            frame(vec![]).attach,
+            None,
+            "an idle frame leaves the toggle alone"
+        );
     }
 
     #[test]

@@ -834,6 +834,59 @@ Verification: 1660 tests pass with the 3 known pre-existing failures (`rag`), 11
 (§5) were quarantined for the run and restored. Touched file rustfmt-clean; clippy reports
 nothing new in it (the pre-existing `f32` fallback in `cite_drop_target` aside).
 
+### ✅ Sprint 6.7 — the bibliography in the roundtrip (RX, user round)
+
+User spec (2026-10-14): *“Make the element showing the current bibtex file active”* — the
+library header's file line becomes the way into the `.bib` (edit it by hand, hand it to the
+agent). Layout, left to right: **refresh · the file (toggle) · copy path · attach**.
+
+- **The file name is the toggle.** It opens the bibliography in an editor tab and closes that
+  tab again. The section never tracks editor state itself — `bib_open(path, tabs)` derives the
+  toggle (document tabs only) from the host's tab list, which
+  `AppState::settings_tabs_and_active_tab` splits next to the settings and the active document
+  (the sprint 6.2 method grew the `&[Tab]` slice). The header **polls**:
+  `request_repaint_after(2 s)` while a bibliography is shown, so a tab the user opened or
+  closed by hand lands within two seconds. The click only *asks*:
+  `LibraryAction::{open_bib, close_bib}` travel out as `EditorFileAction::{Open, Close}`; the
+  host opens through `open_file_smart` (an already-open file is focused) and closes through
+  `AppState::close_tab` — the editor's own close path, so a modified file still prompts
+  (the “do not override the close policy” requirement).
+- **Refresh** stays, to the left of the file (its command now goes through the same
+  `HeaderOutcome` mapping as the other buttons). **Copy path** copies the full path and flashes
+  a check on the button for two seconds — the section's copied-key note sits below the list and
+  is swallowed by the list's full-height scroll area in the live pane, so a new flash on the
+  button is visible where the click happened.
+- **Attach** (`RagSettings::bib_attached`, off by default, persisted like `buffer_attached`)
+  hands the `.bib` to every question: `bib_context(settings, library.bibliography_path())`
+  reads the file at submit time and builds `RoundtripContext::file(path, content)` — the
+  document flavour without a cursor (new constructor; `cursor` stays `None`, the file is not
+  the buffer being edited), truncated at the same 60 000 chars with the existing marker. The
+  co-writer prompt explains the `.bib` container and says its entries are the only citable
+  keys (the use case: replace literal citations by their bibtex keys).
+- **A corrupt bibliography gets the header too** — the file toggle is exactly what you want
+  when the file does not parse, so the header renders for `Ready` *and* `Corrupt`
+  (`discovered` is only known in `Ready`; the *(found automatically)* note moved into the
+  hover text, the Corpus menu still carries it).
+- **Layout.** The file button is wrapped in a scope with
+  `set_max_width(available − 2·interact_size − 2·spacing)`, so a long name truncates instead
+  of pushing copy/attach out of the pane; the two controls stay adjacent to the file.
+
+Tests: `the_file_toggle_follows_the_editors_document_tabs` (document tabs only),
+`the_file_toggle_asks_the_host_to_open_and_close_the_editor_tab` and
+`the_header_maps_refresh_attach_and_copy` (outcome → action mapping),
+`the_header_controls_click_through` (all four buttons driven by simulated clicks on rects read
+from egui's widget list), `the_bibliography_rides_along_when_attached` (on/off, missing/blank
+file, container shape), the roundtrip container tests
+(`a_file_attachment_carries_name_and_path_without_a_cursor`, `a_blank_file_attaches_nothing`)
+and the settings defaults (old configs load with the attach off).
+
+Verification: 1667 tests pass with `rag` (the 3 known pre-existing failures of §5: the
+bare-YouTube paragraph and the two recovery-identity tests; the §5 flake
+`block_height_cache_hit` failed once in a full run and passes in isolation; the five stale
+test modules were quarantined for the runs and restored). Touched files rustfmt-clean (1.92,
+edition 2021 — the repo's style), clippy reports nothing new in them. Locale strings in
+`en`/`de`; README gained *The bibliography as input* and the file-line description.
+
 ### 🚧 Phase "Editor Roundtrip" (6.0–6.4 landed) — chat ⇄ editor
 
 The RAG↔bibliography round trip works (sprints 4–5). The open gap is the *editor*: the agent

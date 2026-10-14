@@ -240,6 +240,10 @@ pub struct RagSettings {
     /// (the "Editor Roundtrip" phase, sprint 6.2). The composer chip toggles
     /// it; the document never leaves the editor when it is off.
     pub buffer_attached: bool,
+    /// Whether the bibliography rides along with every question (RX, sprint
+    /// 6.7): the library header's attach toggle, so the agent can map the
+    /// author's literal citations to the keys of the `.bib` in use.
+    pub bib_attached: bool,
     /// Chunking algorithm for corpus ingestion.
     pub chunker: ChunkerKind,
     /// The ragrig configuration (chat, embeddings, parsing, memory).
@@ -271,6 +275,9 @@ impl Default for RagSettings {
             // The agent should see what the author is writing; one click
             // switches it off (decision D7).
             buffer_attached: true,
+            // The bibliography is a deliberate attachment: off until the
+            // author asks for it in the library header (sprint 6.7).
+            bib_attached: false,
             chunker: ChunkerKind::default(),
             ragrig,
             library: LibrarySettings::default(),
@@ -339,6 +346,10 @@ mod tests {
             settings.buffer_attached,
             "the active document rides along unless switched off"
         );
+        assert!(
+            !settings.bib_attached,
+            "the bibliography is attached on request only"
+        );
         assert_eq!(settings.chunker, ChunkerKind::Markdown);
         assert_eq!(settings.width, DEFAULT_PANEL_WIDTH);
         assert_eq!(settings.library_width, DEFAULT_LIBRARY_WIDTH);
@@ -377,6 +388,10 @@ mod tests {
         assert_eq!(loaded.ragrig.embed.similarity_threshold, 0.03);
         assert!(loaded.embeddings_enabled);
         assert!(loaded.buffer_attached, "the sprint 6.2 default is on");
+        assert!(
+            !loaded.bib_attached,
+            "the sprint 6.7 bibliography attach starts off"
+        );
         assert_eq!(loaded.chunker, ChunkerKind::Markdown);
     }
 
@@ -396,6 +411,7 @@ mod tests {
         assert!(loaded.enabled);
         assert_eq!(loaded.width, 420.0);
         assert!(loaded.embeddings_enabled);
+        assert!(!loaded.bib_attached, "the new field is off for old files");
         assert_eq!(loaded.chunker, ChunkerKind::Markdown);
     }
 
