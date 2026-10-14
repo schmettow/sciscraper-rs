@@ -139,12 +139,14 @@ krilla-svg = "0.7"
 ragrig = { version = "1", default-features = false, features = ["internal", "ollama-embed"], optional = true }
 # Reusable chat/agent-panel widgets (side project, co-developed).
 # The ragrig agent interface (side project, co-developed): transcript, composer,
-# component bars and the dockable panes. 0.4 collapses a pane horizontally (to
-# a strip at the window edge) instead of folding its sections vertically; 0.3.1
-# caps the composer height and wraps Markdown list items/quotes; 0.3 adds the
-# `form` helpers (setting rows, note/warning lines). The directory is still
-# named `egui_chat` until the repo rename lands.
-ragrig-egui = { version = "0.4.0", path = "../ragrig_egui", optional = true }
+# attachments, sessions, component bars and the dockable panes. 0.5 adds the
+# workflow widgets around the composer — the pending-context chips
+# (`attachments`) and the conversation picker (`sessions`) — adopted from this
+# host (sprints 6.2–6.7); 0.4 collapses a pane horizontally (to a strip at the
+# window edge) instead of folding its sections vertically; 0.3.1 caps the
+# composer height and wraps Markdown list items/quotes; 0.3 adds the `form`
+# helpers (setting rows, note/warning lines).
+ragrig-egui = { version = "0.5.0", path = "../ragrig_egui", optional = true }
 # Bibliography model for `@Key` resolution and the library pane. The path
 # serves local co-development: crates.io carries only 0.2.0, which lacks
 # `Collection::cite_entries`; publish 0.2.1 before dropping the path.

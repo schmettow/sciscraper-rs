@@ -53,10 +53,12 @@ use std::time::{Duration, Instant};
 use ragrig::types::Provider;
 use ragrig::MemoryStrategyKind;
 use ragrig_egui::agent_bar::{AgentBar, AgentBarStyle, Component, ComponentStatus as BarStatus};
+use ragrig_egui::attachments::{self, Attachment, AttachmentEvent};
 use ragrig_egui::chat_view::{ChatMessage, ChatRole, ChatView, MessageMeta, MessageState};
 use ragrig_egui::composer::{max_composer_height, Composer};
 use ragrig_egui::dock::{DockSide, SectionDock, SectionState};
 use ragrig_egui::form::{note, setting_row, warning};
+use ragrig_egui::sessions::{SessionAction, SessionEntry, SessionLabels, SessionRow};
 use rust_i18n::t;
 
 use crate::rag::roundtrip::{self, EditorBuffer, EditorEdit, Replacement, RoundtripContext};
@@ -470,15 +472,36 @@ impl AgentPanel {
             .collapse_hint(t!("agent.pane.collapse"))
             .expand_hint(t!("agent.pane.expand"));
         let dock = dock.section(&mut self.agent_section, |ui| {
-            session_row(
-                ui,
-                self.session.as_deref(),
-                &self.sessions,
-                working,
-                &new_session_requested,
-                &sessions_refresh_requested,
-                &session_load_requested,
-            );
+            // The conversation picker (ragrig-egui 0.5): the section owns the
+            // entries, their labels and the busy gate; the crate renders and
+            // reports what the user asked for.
+            use crate::ui::phosphor_icons::{ARROW_CLOCKWISE, PLUS};
+            let entries: Vec<SessionEntry> = self
+                .sessions
+                .iter()
+                .map(|info| SessionEntry {
+                    id: info.id.clone(),
+                    label: session_label(info),
+                })
+                .collect();
+            let labels = SessionLabels {
+                new: format!("{PLUS} {}", t!("agent.session.new")),
+                new_hint: t!("agent.session.new_hint").to_string(),
+                current: t!("agent.session.current").to_string(),
+                empty: t!("agent.session.empty").to_string(),
+                refresh: format!("{ARROW_CLOCKWISE} {}", t!("agent.session.refresh")),
+            };
+            let picker = SessionRow::new(&entries, self.session.as_deref())
+                .busy(working)
+                .labels(labels);
+            match picker.show(ui) {
+                Some(SessionAction::New) => new_session_requested.set(true),
+                Some(SessionAction::Refresh) => sessions_refresh_requested.set(true),
+                Some(SessionAction::Load(id)) => {
+                    session_load_requested.borrow_mut().replace(id);
+                }
+                None => {}
+            }
 
             let top = ui.cursor().min.y;
             let bounds = ui.available_rect_before_wrap();
@@ -522,24 +545,33 @@ impl AgentPanel {
             if composer.cancelled {
                 cancel_requested.set(true);
             }
-            // The context chip sits above the composer (bottom-up layout:
-            // whatever comes last is highest). Its toggle is applied after
-            // the docks, where the settings borrow is free again.
-            context_chip(&mut footer_ui, buffer, buffer_attached, &buffer_toggled);
-            // The pending marked passage sits above the document chip: it was
-            // attached later and is the more specific context.
-            selection_chip(
-                &mut footer_ui,
+            // The attachment chips sit above the composer (bottom-up layout:
+            // whatever comes last is highest), drawn by `attachments` (RX,
+            // ragrig-egui 0.5): the document toggle at the bottom, the waiting
+            // passage above it (attached later, the more specific context),
+            // the insert offer on top (the most action-worthy). The flags are
+            // applied after the docks, where the settings borrow is free
+            // again.
+            let chips = context_chips(
+                buffer,
+                buffer_attached,
                 self.pending.as_ref().map(|pending| &pending.context),
-                &selection_dropped,
-            );
-            // The insert offer is the most action-worthy: it sits on top.
-            insert_chip(
-                &mut footer_ui,
                 self.insert_offer.as_deref(),
-                &insert_requested,
-                &insert_dropped,
             );
+            if let Some(outcome) = chip_outcome(attachments::show(&mut footer_ui, &chips)) {
+                if outcome.toggle_buffer {
+                    buffer_toggled.set(true);
+                }
+                if outcome.drop_selection {
+                    selection_dropped.set(true);
+                }
+                if outcome.accept_insert {
+                    insert_requested.set(true);
+                }
+                if outcome.drop_insert {
+                    insert_dropped.set(true);
+                }
+            }
 
             // Transcript in the space above the footer.
             let transcript_bottom = (footer_ui.min_rect().top() - ui.spacing().item_spacing.y)
@@ -970,12 +1002,8 @@ impl AgentPanel {
                 self.syncing = false;
                 self.transcript.push(sync_summary(indexed, documents));
                 for line in failed.iter().take(5) {
-                    self.transcript.push(ChatMessage {
-                        role: ChatRole::System,
-                        text: line.clone(),
-                        state: MessageState::Error,
-                        meta: None,
-                    });
+                    self.transcript
+                        .push(ChatMessage::system(line.clone()).state(MessageState::Error));
                 }
                 if failed.len() > 5 {
                     self.transcript
@@ -989,12 +1017,8 @@ impl AgentPanel {
             }
             RagEvent::SyncFailed { message } => {
                 self.syncing = false;
-                self.transcript.push(ChatMessage {
-                    role: ChatRole::System,
-                    text: message,
-                    state: MessageState::Error,
-                    meta: None,
-                });
+                self.transcript
+                    .push(ChatMessage::system(message).state(MessageState::Error));
             }
             RagEvent::SessionSwitched { id, turns } => {
                 self.transcript = turns.into_iter().map(message_from_turn).collect();
@@ -1025,23 +1049,16 @@ impl AgentPanel {
             #[cfg(feature = "grobid")]
             RagEvent::IngestFailed { message } => {
                 self.ingesting = false;
-                self.replace_ingest_note(vec![ChatMessage {
-                    role: ChatRole::System,
-                    text: message,
-                    state: MessageState::Error,
-                    meta: None,
-                }]);
+                self.replace_ingest_note(vec![
+                    ChatMessage::system(message).state(MessageState::Error)
+                ]);
                 // Tell connectivity failures apart from bad documents: the
                 // probe re-checks the server the pipeline could not use.
                 self.request_probe(ProbeScope::All);
             }
             RagEvent::SessionFailed { message } => {
-                self.transcript.push(ChatMessage {
-                    role: ChatRole::System,
-                    text: message,
-                    state: MessageState::Error,
-                    meta: None,
-                });
+                self.transcript
+                    .push(ChatMessage::system(message).state(MessageState::Error));
             }
         }
     }
@@ -1127,75 +1144,18 @@ impl AgentPanel {
             }
             Some(placeholder) if placeholder.state == MessageState::Streaming => {
                 placeholder.state = MessageState::Complete;
-                self.transcript.push(ChatMessage {
-                    role: ChatRole::System,
-                    text: message,
-                    state: MessageState::Error,
-                    meta: None,
-                });
+                self.transcript
+                    .push(ChatMessage::system(message).state(MessageState::Error));
             }
             _ => {
-                self.transcript.push(ChatMessage {
-                    role: ChatRole::System,
-                    text: message,
-                    state: MessageState::Error,
-                    meta: None,
-                });
+                self.transcript
+                    .push(ChatMessage::system(message).state(MessageState::Error));
             }
         }
     }
 }
 
-/// Conversation controls: new conversation, pick a saved one, refresh.
-fn session_row(
-    ui: &mut egui::Ui,
-    current: Option<&str>,
-    sessions: &[SessionInfo],
-    busy: bool,
-    new_session: &Cell<bool>,
-    refresh: &Cell<bool>,
-    load: &RefCell<Option<String>>,
-) {
-    use crate::ui::phosphor_icons::{ARROW_CLOCKWISE, PLUS};
-    ui.horizontal(|ui| {
-        if ui
-            .add_enabled(
-                !busy,
-                egui::Button::new(format!("{PLUS} {}", t!("agent.session.new"))),
-            )
-            .on_hover_text(t!("agent.session.new_hint"))
-            .clicked()
-        {
-            new_session.set(true);
-        }
-        let label = current
-            .and_then(|id| sessions.iter().find(|session| session.id == id))
-            .map_or_else(|| t!("agent.session.current").to_string(), session_label);
-        egui::ComboBox::from_id_salt("agent_session_picker")
-            .selected_text(label)
-            .width(150.0)
-            .show_ui(ui, |ui| {
-                ui.set_min_width(240.0);
-                if sessions.is_empty() {
-                    ui.weak(t!("agent.session.empty"));
-                }
-                for info in sessions {
-                    let selected = current == Some(info.id.as_str());
-                    if ui.selectable_label(selected, session_label(info)).clicked() {
-                        load.borrow_mut().replace(info.id.clone());
-                    }
-                }
-                ui.separator();
-                if ui
-                    .button(format!("{ARROW_CLOCKWISE} {}", t!("agent.session.refresh")))
-                    .clicked()
-                {
-                    refresh.set(true);
-                }
-            });
-    });
-}
-
+/// A picker entry's label: `12 turns · 3 h · a short summary`.
 fn session_label(info: &SessionInfo) -> String {
     let turns = format!("{} {}", info.turns, t!("agent.session.turns"));
     let age = human_age(info.updated);
@@ -1288,28 +1248,18 @@ fn attachment_note(
     } else {
         MessageState::Error
     };
-    Some(ChatMessage {
-        role: ChatRole::System,
-        text: lines.join("\n"),
-        state,
-        meta: None,
-    })
+    Some(ChatMessage::system(lines.join("\n")).state(state))
 }
 
 /// A transcript card for a Co-Edit outcome (sprint 6.4): what happened to an
 /// answer's replacement block. A refused replacement is tinted like an error,
 /// because that is what it is — the document was not touched.
 fn edit_card(text: String, refused: bool) -> ChatMessage {
-    ChatMessage {
-        role: ChatRole::System,
-        text,
-        state: if refused {
-            MessageState::Error
-        } else {
-            MessageState::Complete
-        },
-        meta: None,
-    }
+    ChatMessage::system(text).state(if refused {
+        MessageState::Error
+    } else {
+        MessageState::Complete
+    })
 }
 
 /// The document attachment for the next question: on while the toggle is on
@@ -1340,99 +1290,99 @@ fn bib_context(settings: &RagSettings, path: Option<&Path>) -> Option<RoundtripC
     RoundtripContext::file(path, &content)
 }
 
-/// The composer's context chip: which document rides along with the next
-/// question, and a click to change that.
+/// Ids of the footer chips, one per interaction the host maps back onto its
+/// state ([`chip_outcome`]).
+const CHIP_BUFFER: &str = "buffer";
+/// The waiting marked passage (sprint 6.3).
+const CHIP_SELECTION: &str = "selection";
+/// The offered replacement (sprint 6.4).
+const CHIP_INSERT: &str = "insert";
+
+/// The attachment chips above the composer, **bottom to top** (the footer is
+/// a bottom-up layout): the document toggle, the waiting passage, the offered
+/// replacement.
 ///
-/// Hidden when no document is open; disabled while the document has no text,
-/// so the toggle never promises an attachment it cannot make.
-fn context_chip(
-    ui: &mut egui::Ui,
+/// The document chip is hidden while no document is open and disabled while
+/// it has no text, so it never promises an attachment it cannot make. Drawn
+/// by `ragrig_egui::attachments` (0.5) — the widget owns the look, the
+/// section owns the state and the wording.
+fn context_chips(
     buffer: Option<EditorBuffer<'_>>,
-    attached: bool,
-    toggled: &Cell<bool>,
-) {
-    use crate::ui::phosphor_icons::PAPERCLIP;
-    let Some(buffer) = buffer else {
-        return;
-    };
-    let has_text = buffer.has_text();
-    let on = attached && has_text;
-    let hint = if !has_text {
-        t!("agent.buffer.empty")
-    } else if on {
-        t!("agent.buffer.on")
-    } else {
-        t!("agent.buffer.off")
-    };
-    ui.horizontal(|ui| {
-        let response = ui
-            .add_enabled(
-                has_text,
-                egui::Button::new(format!("{PAPERCLIP} {}", buffer.name)).selected(on),
+    buffer_attached: bool,
+    pending: Option<&RoundtripContext>,
+    insert_offer: Option<&str>,
+) -> Vec<Attachment> {
+    use crate::ui::phosphor_icons::{PAPERCLIP, PENCIL, SELECTION, X};
+    let mut chips = Vec::new();
+    if let Some(buffer) = buffer {
+        let has_text = buffer.has_text();
+        let on = buffer_attached && has_text;
+        let hint = if !has_text {
+            t!("agent.buffer.empty")
+        } else if on {
+            t!("agent.buffer.on")
+        } else {
+            t!("agent.buffer.off")
+        };
+        chips.push(
+            Attachment::toggle(CHIP_BUFFER, PAPERCLIP, buffer.name)
+                .on(on)
+                .enabled(has_text)
+                .hint(hint),
+        );
+    }
+    if let Some(pending) = pending {
+        chips.push(
+            Attachment::pending(
+                CHIP_SELECTION,
+                SELECTION,
+                t!("agent.selection.chip", chars = pending.chars()),
             )
-            .on_hover_text(hint);
-        if has_text && response.clicked() {
-            toggled.set(true);
-        }
-    });
+            .hint(t!("agent.selection.hint"))
+            .drop(X, t!("agent.selection.drop")),
+        );
+    }
+    if let Some(offer) = insert_offer {
+        chips.push(
+            Attachment::offer(
+                CHIP_INSERT,
+                PENCIL,
+                t!("agent.edit.chip", chars = offer.chars().count()),
+                t!("agent.edit.insert"),
+            )
+            .hint(t!("agent.edit.chip_hint"))
+            .action_hint(t!("agent.edit.insert_hint"))
+            .drop(X, t!("agent.edit.drop")),
+        );
+    }
+    chips
 }
 
-/// The composer's pending-passage chip (sprint 6.3, focus mode): the marked
-/// region that rides along with the next question, and a click to drop it.
-///
-/// The passage is consumed by the next question ([`AgentPanel::submit`]), so
-/// the chip never outlives the attachment it announces.
-fn selection_chip(ui: &mut egui::Ui, pending: Option<&RoundtripContext>, dropped: &Cell<bool>) {
-    use crate::ui::phosphor_icons::{SELECTION, X};
-    let Some(pending) = pending else {
-        return;
-    };
-    ui.horizontal(|ui| {
-        ui.label(format!(
-            "{SELECTION} {}",
-            t!("agent.selection.chip", chars = pending.chars())
-        ))
-        .on_hover_text(t!("agent.selection.hint"));
-        if ui
-            .small_button(X)
-            .on_hover_text(t!("agent.selection.drop"))
-            .clicked()
-        {
-            dropped.set(true);
-        }
-    });
+/// What one chip interaction means for the panel's pending state.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ChipOutcome {
+    /// The document toggle was clicked: flip `buffer_attached`.
+    toggle_buffer: bool,
+    /// The marked passage was dropped.
+    drop_selection: bool,
+    /// The offered replacement was accepted (insert at the caret).
+    accept_insert: bool,
+    /// The offered replacement was dropped.
+    drop_insert: bool,
 }
 
-/// The composer's insert chip (sprint 6.4): a replacement the agent produced
-/// that was *not* written into a document — no passage was marked, or the
-/// passage changed while the answer was written. Inserting puts it at the
-/// caret; the ✕ drops it.
-fn insert_chip(ui: &mut egui::Ui, offer: Option<&str>, insert: &Cell<bool>, dropped: &Cell<bool>) {
-    use crate::ui::phosphor_icons::{PENCIL, X};
-    let Some(text) = offer else {
-        return;
-    };
-    ui.horizontal(|ui| {
-        ui.label(format!(
-            "{PENCIL} {}",
-            t!("agent.edit.chip", chars = text.chars().count())
-        ))
-        .on_hover_text(t!("agent.edit.chip_hint"));
-        if ui
-            .small_button(t!("agent.edit.insert"))
-            .on_hover_text(t!("agent.edit.insert_hint"))
-            .clicked()
-        {
-            insert.set(true);
-        }
-        if ui
-            .small_button(X)
-            .on_hover_text(t!("agent.edit.drop"))
-            .clicked()
-        {
-            dropped.set(true);
-        }
-    });
+/// Map the crate's chip event onto the host's flags; `None` (no interaction)
+/// and unknown ids map to nothing.
+fn chip_outcome(event: Option<AttachmentEvent>) -> Option<ChipOutcome> {
+    let mut outcome = ChipOutcome::default();
+    match event? {
+        AttachmentEvent::Toggled(id) if id == CHIP_BUFFER => outcome.toggle_buffer = true,
+        AttachmentEvent::Dropped(id) if id == CHIP_SELECTION => outcome.drop_selection = true,
+        AttachmentEvent::Dropped(id) if id == CHIP_INSERT => outcome.drop_insert = true,
+        AttachmentEvent::Accepted(id) if id == CHIP_INSERT => outcome.accept_insert = true,
+        _ => return None,
+    }
+    Some(outcome)
 }
 
 /// Build one bar's items from the latest status snapshot.
@@ -1538,12 +1488,10 @@ fn ingest_messages(outcome: &IngestOutcome, indexed: bool, nothing_new: bool) ->
         }
     }
     for line in outcome.failed.iter().take(5) {
-        messages.push(ChatMessage {
-            role: ChatRole::System,
-            text: t!("agent.ingest.failed", line = line.as_str()).to_string(),
-            state: MessageState::Error,
-            meta: None,
-        });
+        messages.push(
+            ChatMessage::system(t!("agent.ingest.failed", line = line.as_str()).to_string())
+                .state(MessageState::Error),
+        );
     }
     if outcome.failed.len() > 5 {
         messages.push(ChatMessage::system(format!(
@@ -2666,20 +2614,58 @@ mod tests {
         );
     }
 
+    /// Render the chips of one frame (the crate's widget, host data).
+    fn render_chips(ctx: &egui::Context, chips: &[Attachment]) {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(
+                attachments::show(ui, chips).is_none(),
+                "no input, no interaction"
+            );
+        });
+    }
+
     #[test]
-    fn the_context_chip_renders_with_and_without_a_document() {
-        // Render smoke test: the chip is drawn above the composer with a
-        // document and hidden without one; an idle frame never flips the
-        // toggle (only a click does).
-        let ctx = egui::Context::default();
-        let mut settings = RagSettings::default();
-        let mut panel = AgentPanel::new(&settings, None);
+    fn the_context_chips_follow_the_attachment_state() {
+        // The chips above the composer (ragrig-egui 0.5): the document toggle
+        // follows the setting and is disabled without text; the passage and
+        // the insert offer appear only while they have something to say.
+        use ragrig_egui::attachments::AttachmentKind;
         let buffer = EditorBuffer {
             name: "draft.md",
             path: None,
             cursor: (1, 2),
             content: "body",
         };
+        let chips = context_chips(Some(buffer), true, None, None);
+        assert_eq!(chips.len(), 1);
+        assert_eq!(chips[0].id, CHIP_BUFFER);
+        assert!(chips[0].enabled);
+        assert_eq!(chips[0].kind, AttachmentKind::Toggle { on: true });
+
+        let blank = EditorBuffer {
+            content: "  \n",
+            ..buffer
+        };
+        let chips = context_chips(Some(blank), true, None, None);
+        assert!(!chips[0].enabled, "an empty document cannot be attached");
+        assert_eq!(chips[0].kind, AttachmentKind::Toggle { on: false });
+
+        assert!(context_chips(None, true, None, None).is_empty());
+
+        let passage = marked_passage("keep this passage", 0..4);
+        let chips = context_chips(None, true, Some(&passage), Some("the replacement"));
+        let ids: Vec<&str> = chips.iter().map(|chip| chip.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![CHIP_SELECTION, CHIP_INSERT],
+            "bottom to top: the offer rides on top of the passage"
+        );
+        assert!(chips[0].label.contains("4 chars"), "{}", chips[0].label);
+
+        // An idle frame draws the chips but never flips the toggle.
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+        let mut panel = AgentPanel::new(&settings, None);
         for editor in [Some(buffer), None] {
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
                 panel.show_ui(ui, &mut settings, None, &[], &[], editor);
@@ -2688,6 +2674,27 @@ mod tests {
         assert!(
             settings.buffer_attached,
             "idle frames leave the toggle alone"
+        );
+    }
+
+    #[test]
+    fn the_chip_events_map_onto_the_host_flags() {
+        let toggled = chip_outcome(Some(AttachmentEvent::Toggled(CHIP_BUFFER.into()))).unwrap();
+        assert!(toggled.toggle_buffer);
+        let dropped = chip_outcome(Some(AttachmentEvent::Dropped(CHIP_SELECTION.into()))).unwrap();
+        assert!(dropped.drop_selection);
+        let accepted = chip_outcome(Some(AttachmentEvent::Accepted(CHIP_INSERT.into()))).unwrap();
+        assert!(accepted.accept_insert);
+        let dropped = chip_outcome(Some(AttachmentEvent::Dropped(CHIP_INSERT.into()))).unwrap();
+        assert!(dropped.drop_insert);
+        assert!(chip_outcome(None).is_none());
+        assert!(
+            chip_outcome(Some(AttachmentEvent::Dropped("nonsense".into()))).is_none(),
+            "unknown ids are ignored"
+        );
+        assert!(
+            chip_outcome(Some(AttachmentEvent::Accepted(CHIP_SELECTION.into()))).is_none(),
+            "a passage cannot be accepted, only dropped"
         );
     }
 
@@ -2707,16 +2714,9 @@ mod tests {
         );
 
         // The chip renders while a passage waits (and in an idle frame, too).
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            selection_chip(
-                ui,
-                panel.pending.as_ref().map(|pending| &pending.context),
-                &Cell::new(false),
-            );
-        });
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            selection_chip(ui, None, &Cell::new(false));
-        });
+        let pending = panel.pending.as_ref().map(|pending| &pending.context);
+        render_chips(&ctx, &context_chips(None, false, pending, None));
+        render_chips(&ctx, &context_chips(None, false, None, None));
     }
 
     #[test]
@@ -2852,18 +2852,12 @@ mod tests {
         assert_eq!(panel.insert_offer.as_deref(), Some("Kept."));
 
         // The offer renders as a chip above the composer (and hides without
-        // one); the ✕ is the cell the caller watches for a dismissal.
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            insert_chip(
-                ui,
-                panel.insert_offer.as_deref(),
-                &Cell::new(false),
-                &Cell::new(false),
-            );
-        });
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            insert_chip(ui, None, &Cell::new(false), &Cell::new(false));
-        });
+        // one); the ✕ is the id the host watches for a dismissal.
+        render_chips(
+            &ctx,
+            &context_chips(None, false, None, panel.insert_offer.as_deref()),
+        );
+        render_chips(&ctx, &context_chips(None, false, None, None));
     }
 
     #[test]

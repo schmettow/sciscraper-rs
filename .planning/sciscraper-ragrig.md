@@ -42,13 +42,16 @@ without features behaves exactly as before.
 ## 2. Where new code lives
 
 ```
-ragrig-egui/                       side project (own repo, own releases; the local
-                                 directory keeps the old name `egui_chat` for now)
+ragrig-egui/                       side project (own repo, own releases)
   src/dock.rs                    SectionDock: side panel, stacked sections, horizontal
                                  collapse to a strip
   src/chat_view.rs               transcript bubbles, streaming/error states, meta footer
   src/composer.rs                Return = newline, Ctrl/⌘+Return = submit, send/stop
+  src/attachments.rs             pending-context chips above the composer (toggle,
+                                 pending, offer)
+  src/sessions.rs                conversation picker: new, switch, refresh
   src/agent_bar.rs               component icons, status dots, slide-up menus
+  src/form.rs                    setting rows, note/warning lines
 
 sciscraper-rs  (feature `rag`, off by default)
   src/rag/mod.rs                 RagSettings (embeds RagrigConfig), defaults, workspace
@@ -59,7 +62,8 @@ sciscraper-rs  (feature `rag`, off by default)
                                  (feature `grobid`)
   src/rag/roundtrip.rs           protocol: containers in, edits out (phase "Editor
                                  Roundtrip")
-  src/ui/agent_panel.rs          dock composition, menus, transcript↔worker glue
+  src/ui/agent_panel.rs          dock composition, menus, transcript↔worker glue, the
+                                 host half of the chips/sessions
   src/ui/library_panel.rs        bibliography rows, drag-to-cite, add-PDFs/URL toolbar
   src/ui/focus_button.rs         selection overlay → chat
   src/app/rag.rs                 FerriteApp glue: toggle, lazy init, polling, rendering
@@ -85,16 +89,19 @@ name; the records below use the current name throughout.
 | 0.1 | Dock, chat view (incl. streaming/error/meta), composer with submit keys, agent bar with status dots + slide-up menus. | ✅ Sprint 1 |
 | 0.2 | Light Markdown in assistant bubbles via `pulldown-cmark` (default feature `markdown`): emphasis, headings, lists (nested/ordered), inline + fenced code, quotes, rules, links with targets; streaming-safe. 28 unit tests + 5 doctests. | ✅ Sprint 2 |
 | 0.3 | `form` module: `setting_row` (label + widget, truncated label column), `note`/`warning` lines — used by the sciscraper component menus. 31 unit tests + 6 doctests. | ✅ Sprint 3 |
-| 0.4 | Message actions (copy feedback, retry), clickable links, draggable splitter between dock sections. | next |
-| 0.5 | Tabbed dock mode; theme presets; publish on crates.io. | planned |
+| 0.4 | Dock collapses **horizontally** to a strip (`DockResponse::collapsed`); **renamed** `egui_chat` → `ragrig-egui`. | ✅ Sprint 6.5 |
+| 0.5 | **Workflow widgets** adopted from sciscraper: `attachments` (pending-context chips: toggle/pending/offer, disabled chips explain themselves) and `sessions` (`SessionRow`: new/switch/refresh with host-localized labels); `ChatMessage::state` builder. Additive. | ✅ Sprint 6.8 |
+| 0.6 | Message actions (copy feedback, retry), clickable links, draggable splitter; **index housekeeping** controls (*Update*/*Rebuild* + index state note) and a **source list** with hover row actions — the remaining sciscraper prototypes. | next |
+| 0.7 | Tabbed dock mode; theme presets; publish on crates.io. | planned |
 
 Sprint 5.3 needed **no** `ragrig-egui` change: `SectionDock` already takes a `DockSide`, and the
 agent bar is simply instantiated twice with different component lists — the split contract held.
 
-The "Editor Roundtrip" phase reuses that discipline: focus requests work today through the
-public `Composer::input_id()`, and the pending-context chips are host-drawn above the composer.
-A first-class attachment API (`Composer::chips([…])`, `Composer::context_row(…)`) is a good
-0.4 candidate once the host-side prototype has settled.
+The "Editor Roundtrip" phase followed that discipline while it was being prototyped (focus
+requests go through the public `Composer::input_id()`, the pending-context chips were host-drawn
+above the composer) — and **settled in 0.5**: the chips live in `attachments` now, the session
+picker in `sessions`, and sciscraper keeps only the state, the wording and the mapping. The rule
+from here on: new agent-interface UX lands in the crate, sciscraper consumes it.
 
 Crate inquiry (Sprint 2): `egui_commonmark` was the candidate for editor-side
 Markdown rendering, but 0.24 requires **egui 0.35** (sciscraper pins 0.34) and
@@ -886,6 +893,50 @@ bare-YouTube paragraph and the two recovery-identity tests; the §5 flake
 test modules were quarantined for the runs and restored). Touched files rustfmt-clean (1.92,
 edition 2021 — the repo's style), clippy reports nothing new in them. Locale strings in
 `en`/`de`; README gained *The bibliography as input* and the file-line description.
+
+### ✅ Sprint 6.8 — the toolkit transfer (ragrig-egui 0.5.0)
+
+User round (2026-10-14): *“Everything that links Ragrig logic to Egui should go to the
+ragrig-egui crate … do a diff against the version before the rename and see what you can
+transfer.”* The check against the crate's last pre-rename feature commit (`33899b8`, 6.5)
+confirms it: 0.4 was the last shared release — the 6.2–6.4 chips were prototyped host-side
+before it and never moved, and 6.6/6.7 (library-row hover, bib header) continued host-side
+after it.
+
+**Transferred to the crate (0.5.0, additive):**
+
+- **`attachments`** — the pending-context chips above the composer, the plan's named next
+  candidate. `Attachment::{toggle, pending, offer}` (a builder over `AttachmentKind`), with
+  host-supplied glyphs, hints, drop/action labels, an `enabled` gate that explains itself
+  (`on_disabled_hover_text`) and `AttachmentEvent::{Toggled, Dropped, Accepted}` back to the
+  host. Each chip renders inside its own `push_id` scope — a chip appearing cannot renumber
+  the others (the 6.6 lesson, now a crate guarantee). sciscraper keeps the ids, the wording,
+  the order ([buffer, selection, insert] — the footer is bottom-up) and the mapping
+  (`context_chips`, `chip_outcome`).
+- **`sessions`** — `SessionRow` + `SessionEntry` + `SessionLabels` + `SessionAction`: the
+  conversation picker (new / switch / refresh) with host-localized labels, a busy gate and
+  the popup width as a constant. The host keeps the store and the label text
+  (`session_label`, `human_age` stay in sciscraper).
+- **`ChatMessage::state(...)`** on top of the existing `system(...)` constructor — sciscraper
+  now builds every system note through the crate (`append_failure`, the sync/ingest/session
+  failure events, `attachment_note`, `edit_card`, `ingest_messages`).
+
+**Left host-side, deliberately:** the component *menus* (they bind `RagrigConfig` and the
+localized strings — the crate stays ragrig-free by contract; `form` already carries their
+layout), the status model (`RagComponent`/`RagStatus`/probes — domain logic that feeds the
+bar through `Component`), the roundtrip protocol (`RoundtripContext` — the chips only take
+its rendered strings), and everything that touches the editor (tab paths, `EditorFileAction`).
+
+**Next candidates (crate 0.6, sketched but not moved):** the index housekeeping controls
+(*Update*/*Rebuild* + the index state note — needs an `IndexState` model and a label set) and
+the **source list** with hover row actions (the 6.5/6.6 widget; its API — action set,
+selection model, drag payload — deserves a dedicated round).
+
+Verification: ragrig-egui 0.5.0 — 45 unit + 2 layout + 8 doctests green, `cargo fmt --check`
+and `clippy --all-targets -- -D warnings` clean. sciscraper with the adapted host: 1668 tests
+pass with `rag` (the 3 known pre-existing failures of §5, the five stale test modules
+quarantined for the run and restored); touched file rustfmt-clean, clippy reports nothing new
+in it.
 
 ### 🚧 Phase "Editor Roundtrip" (6.0–6.4 landed) — chat ⇄ editor
 

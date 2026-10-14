@@ -5146,7 +5146,7 @@ dependencies = [
 
 [[package]]
 name = "ragrig-egui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "egui",
  "pulldown-cmark 0.13.4",
