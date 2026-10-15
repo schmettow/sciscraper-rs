@@ -1105,6 +1105,8 @@ agent:
     insert_bracketed: "[@key] einfügen (APA)"
     copy_key: "@key kopieren (Markdown)"
     copied: "@%{key} kopiert"
+    open_paper: "Das Paper im Systembetrachter öffnen"
+    open_paper_failed: "@%{key} kann nicht geöffnet werden: %{reason}"
     chip: "Bibliografie"
     refresh: "Bibliografie neu einlesen"
     open_hint: "Die Bibliografie im Editor öffnen"

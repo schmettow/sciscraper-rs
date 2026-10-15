@@ -111,6 +111,18 @@ pub enum RagCommand {
     },
     /// Re-read the library bibliography (startup, watcher, settings change).
     LoadLibrary,
+    /// Open a library entry's document in the system viewer (RX, sprint 6.10).
+    ///
+    /// The worker resolves the document the same way a citation does — the
+    /// entry's recorded `file` field, then a corpus file named after the key
+    /// ([`library::resolve_document`]) — so the eye button and `@key`
+    /// attaching can never disagree about which paper a row means.
+    OpenPaper {
+        /// Canonical citation key of the row.
+        key: String,
+        /// The entry's recorded `file`/`pdf` field, unresolved.
+        file: Option<PathBuf>,
+    },
     /// Ingest dropped PDFs and URLs (feature `grobid`): the GROBID pre-pass,
     /// then a bibliography merge, a library reload and an incremental sync.
     #[cfg(feature = "grobid")]
@@ -218,6 +230,14 @@ pub enum RagEvent {
     Library {
         /// What the pane should render.
         state: Box<LibraryState>,
+    },
+    /// A library entry could not be opened in the system viewer; `reason` is
+    /// user-presentable and `key` names the row (RX, sprint 6.10).
+    PaperUnavailable {
+        /// The citation key of the row.
+        key: String,
+        /// Why the document could not be opened.
+        reason: String,
     },
     /// An ingestion run finished (feature `grobid`).
     #[cfg(feature = "grobid")]
@@ -636,6 +656,9 @@ async fn worker_main(
                 state.library_path = state.library_path();
                 spawn_library_load(state.query_context(), events.clone());
             }
+            RagCommand::OpenPaper { key, file } => {
+                spawn_open_paper(state.query_context(), key, file, events.clone());
+            }
             #[cfg(feature = "grobid")]
             RagCommand::Ingest { sources } => {
                 if state.is_busy() {
@@ -723,6 +746,54 @@ fn spawn_library_load(context: QueryContext, events: Sender<RagEvent>) {
         let _ = events.send(RagEvent::Library {
             state: Box::new(state),
         });
+    });
+}
+
+/// Resolve a library entry's document and hand it to the system viewer.
+///
+/// Resolution reads the corpus folder, so it runs off the executor thread; the
+/// viewer itself is a detached process (`open`), not a child to wait on. A
+/// success is silent — the viewer appearing is the feedback — a failure is
+/// reported so the pane can say why nothing opened.
+fn spawn_open_paper(
+    context: QueryContext,
+    key: String,
+    file: Option<PathBuf>,
+    events: Sender<RagEvent>,
+) {
+    let workspace = context
+        .settings
+        .effective_workspace(context.editor_workspace.as_deref());
+    let settings = context.settings.library.clone();
+    tokio::spawn(async move {
+        // The closure needs the key for the lookup but the match below still
+        // needs it for the report: hand the resolver its own copy.
+        let resolve_key = key.clone();
+        let opened = tokio::task::spawn_blocking(move || {
+            let Some(workspace) = workspace else {
+                return Err("no RAG workspace — choose a folder in the component bar".to_string());
+            };
+            let folder = settings.resolve(&workspace).folder;
+            let mut scan = None;
+            let path =
+                library::resolve_document(&resolve_key, file.as_deref(), &folder, &mut scan)?;
+            open::that(&path).map_err(|err| format!("cannot open {}: {err}", path.display()))
+        })
+        .await;
+        match opened {
+            Ok(Ok(())) => log::debug!("RAG: opened @{key} in the system viewer"),
+            Ok(Err(reason)) => {
+                log::warn!("RAG: cannot open @{key}: {reason}");
+                let _ = events.send(RagEvent::PaperUnavailable { key, reason });
+            }
+            Err(err) => {
+                log::warn!("RAG: open-paper task failed for @{key}: {err}");
+                let _ = events.send(RagEvent::PaperUnavailable {
+                    key,
+                    reason: format!("the viewer task failed: {err}"),
+                });
+            }
+        }
     });
 }
 
@@ -2577,6 +2648,57 @@ mod tests {
             panic!("expected missing, got {state:?}");
         };
         assert!(reason.contains("workspace"), "unexpected reason: {reason}");
+    }
+
+    #[tokio::test]
+    async fn opening_a_paper_without_a_workspace_explains_itself() {
+        // The eye button's failure path (RX, sprint 6.10): with no workspace the
+        // document cannot be resolved, and the pane is told why instead of the
+        // viewer silently not appearing.
+        let worker = RagrigWorker::spawn(RagSettings::default(), None, echo_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::OpenPaper {
+            key: "Ghost2024".into(),
+            file: None,
+        });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::PaperUnavailable { .. })
+        });
+        let RagEvent::PaperUnavailable { key, reason } = event else {
+            unreachable!()
+        };
+        assert_eq!(key, "Ghost2024");
+        assert!(reason.contains("workspace"), "unexpected reason: {reason}");
+    }
+
+    #[tokio::test]
+    async fn opening_a_paper_resolves_its_document_before_the_viewer() {
+        // Resolution happens in the worker, off the UI thread, and a row whose
+        // document cannot be found reports the same reasons a citation attach
+        // would — the two share `library::resolve_document` (RX, sprint 6.10).
+        let dir = tempfile::tempdir().unwrap();
+        write_library_file(
+            dir.path(),
+            "library.bib",
+            "@misc{Ghost2024,\n  title = {No document}\n}\n",
+        );
+        let worker = RagrigWorker::spawn(workspace_settings(dir.path()), None, echo_factories());
+        wait_for_status(&worker);
+        worker.send(RagCommand::OpenPaper {
+            key: "Ghost2024".into(),
+            file: None,
+        });
+        let event = wait_for_event(&worker, |event| {
+            matches!(event, RagEvent::PaperUnavailable { .. })
+        });
+        let RagEvent::PaperUnavailable { key, reason } = event else {
+            unreachable!()
+        };
+        assert_eq!(key, "Ghost2024");
+        assert!(
+            reason.contains("no document linked"),
+            "unexpected reason: {reason}"
+        );
     }
 
     /// Poll until `predicate` matches; panics after ~4 s.

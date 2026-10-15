@@ -408,7 +408,7 @@ key on hover.
   the count line shows `shown of total`.
 - **Select** — click a row; **Ctrl+click** extends the selection; clicking the
   only selected row clears it.
-- **Row actions on hover** — while the pointer is on a row, three buttons
+- **Row actions on hover** — while the pointer is on a row, four buttons
   appear at its right edge:
   - `+` *Insert @key at the cursor* — e.g. `@Kano2022` (a **double-click**
     does the same). While the **chat prompt holds the keyboard** (its frame
@@ -417,6 +417,11 @@ key on hover.
   - `[ ]` *Insert [@key] (APA)* — for a multi-selection this expands to
     `[@Kano2022, @Smith2020]`
   - `⧉` *Copy citation key* — copies the Markdown form `@key`
+  - the **eye** *opens the paper in your system viewer* (the app's own PDF
+    handler — Sciscraper does not embed one). The document is the entry's
+    `file` field, or a corpus file named after the key — the *same* rule
+    `@Key` attaching uses, so a row and its citation always mean the same
+    paper. If it cannot be found, the pane says why under the file line.
 
 ### Drag a source into the document
 

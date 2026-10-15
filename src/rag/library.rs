@@ -296,6 +296,95 @@ fn file_of(entry: &Entry) -> Option<PathBuf> {
     }
 }
 
+/// Resolve the document of a bibliography entry within the corpus `folder`.
+///
+/// This is the same cascade the citation attach uses (decision D5): the
+/// entry's recorded `file`/`pdf` field first — resolved against the corpus
+/// folder when it is relative — then a corpus file named after the key
+/// (`<key> - …`, the ragrig rename convention). `scan` caches the folder
+/// listing across calls, so opening many rows pays for one `read_dir`, not one
+/// per row.
+///
+/// Errors carry a user-presentable reason and never guess: a missing document
+/// and an ambiguous keyed name are reported, not silently resolved — opening
+/// (or citing) the wrong paper would be worse than a miss.
+pub fn resolve_document(
+    key: &str,
+    recorded: Option<&Path>,
+    folder: &Path,
+    scan: &mut Option<Vec<(String, PathBuf)>>,
+) -> Result<PathBuf, String> {
+    // 1. The document recorded in the entry's `file` field.
+    if let Some(recorded) = recorded {
+        let in_corpus = if recorded.is_absolute() {
+            recorded.to_path_buf()
+        } else {
+            folder.join(recorded)
+        };
+        if in_corpus.is_file() {
+            return Ok(in_corpus);
+        }
+        if recorded.is_file() {
+            return Ok(recorded.to_path_buf());
+        }
+    }
+
+    // 2. A corpus file named after the key (`<key> - …`).
+    let files = scan.get_or_insert_with(|| corpus_files(folder));
+    let mut matches = candidates(key, files);
+    match matches.len() {
+        0 => Err(if recorded.is_some() {
+            "linked document not found".to_string()
+        } else {
+            "no document linked".to_string()
+        }),
+        1 => Ok(matches.pop().expect("one candidate")),
+        count => Err(format!("{count} candidate files (ambiguous)")),
+    }
+}
+
+/// Corpus files as `(lowercase stem, path)` pairs.
+fn corpus_files(folder: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| {
+            let path = entry.path();
+            let stem = path.file_stem()?.to_str()?.to_lowercase();
+            Some((stem, path))
+        })
+        .collect()
+}
+
+/// Files whose name matches the key exactly or starts with `<key> - `.
+fn candidates(key: &str, files: &[(String, PathBuf)]) -> Vec<PathBuf> {
+    let lowercase = key.to_lowercase();
+    let prefix = format!("{lowercase} - ");
+    let mut matches: Vec<PathBuf> = files
+        .iter()
+        .filter(|(stem, _)| *stem == lowercase || stem.starts_with(&prefix))
+        .map(|(_, path)| path.clone())
+        .collect();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+/// Short file name for labels and user-facing messages.
+pub(crate) fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 /// First non-empty field among `names`, as display text.
 fn field_text(entry: &Entry, names: &[&str]) -> String {
     for name in names {
@@ -536,5 +625,72 @@ mod tests {
         assert_eq!(normalize_text("A\n   title\n"), "A title");
         assert_eq!(normalize_text("  "), "");
         assert_eq!(normalize_text("C++ {R}ocks"), "C++ Rocks");
+    }
+
+    #[test]
+    fn resolve_document_prefers_the_recorded_file_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path();
+        let paper = write(folder, "paper.pdf", "%PDF-1.4");
+        let mut scan = None;
+
+        // A relative link resolves against the corpus folder.
+        let resolved =
+            resolve_document("Smith2024", Some(Path::new("paper.pdf")), folder, &mut scan);
+        assert_eq!(resolved.as_deref(), Ok(paper.as_path()));
+
+        // An absolute link is taken as it is (the folder is irrelevant).
+        let resolved = resolve_document("Smith2024", Some(&paper), folder, &mut scan);
+        assert_eq!(resolved.as_deref(), Ok(paper.as_path()));
+    }
+
+    #[test]
+    fn resolve_document_falls_back_to_a_file_named_after_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path();
+        // The ragrig rename convention: `<key> - …`.
+        let keyed = write(
+            folder,
+            "Smith2024 - Jane Smith - A Paper - 2024.pdf",
+            "%PDF",
+        );
+        // A near miss (a different key with the same prefix) must not match.
+        write(folder, "Smith2024x - other.pdf", "%PDF");
+        let mut scan = None;
+
+        // No recorded file: only the keyed name can answer.
+        assert_eq!(
+            resolve_document("Smith2024", None, folder, &mut scan).as_deref(),
+            Ok(keyed.as_path())
+        );
+        // Case-insensitive, and a recorded file whose link is dead does not
+        // shadow the keyed name.
+        assert_eq!(
+            resolve_document("smith2024", Some(Path::new("gone.pdf")), folder, &mut scan,)
+                .as_deref(),
+            Ok(keyed.as_path())
+        );
+    }
+
+    #[test]
+    fn resolve_document_reports_missing_and_ambiguous_without_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path();
+        write(folder, "A2024 - one.pdf", "%PDF");
+        write(folder, "A2024 - two.pdf", "%PDF");
+        let mut scan = None;
+
+        // Two keyed candidates: never pick one.
+        let ambiguous = resolve_document("A2024", None, folder, &mut scan).unwrap_err();
+        assert!(ambiguous.contains("ambiguous"), "{ambiguous}");
+
+        // An entry with no link and no keyed file.
+        let none = resolve_document("B2024", None, folder, &mut scan).unwrap_err();
+        assert!(none.contains("no document linked"), "{none}");
+
+        // A recorded link that resolves nowhere.
+        let broken =
+            resolve_document("C2024", Some(Path::new("gone.pdf")), folder, &mut scan).unwrap_err();
+        assert!(broken.contains("linked document not found"), "{broken}");
     }
 }

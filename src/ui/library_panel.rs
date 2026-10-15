@@ -22,6 +22,12 @@
 //! toggle is derived from the host's tabs — polled every two seconds, so a
 //! tab the user opened or closed by hand lands on the next frame — and it
 //! never overrides the editor's close policy: a modified file still prompts.
+//!
+//! Each row also carries an eye button (RX, sprint 6.10): it opens the entry's
+//! *document* — not the bibliography — in the system viewer, so a paper in the
+//! list can be read without leaving the app. The document is resolved the same
+//! way a citation is (`file` field, then a corpus file named after the key),
+//! off the UI thread; a resolution that fails is reported under the header.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -32,10 +38,11 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ragrig_egui::form::{note, warning};
 use rust_i18n::t;
 
+use crate::rag::library::file_label;
 use crate::rag::{CitePayload, LibraryEntry, LibraryState, LibraryView, RagCommand};
 use crate::state::{Tab, TabKind};
 use crate::ui::phosphor_icons::{
-    ARROWS_CLOCKWISE, BRACKETS_SQUARE, CHECK, COPY, MAGNIFYING_GLASS, PAPERCLIP, PLUS,
+    ARROWS_CLOCKWISE, BRACKETS_SQUARE, CHECK, COPY, EYE, MAGNIFYING_GLASS, PAPERCLIP, PLUS,
     UPLOAD_SIMPLE, X,
 };
 
@@ -87,6 +94,9 @@ pub struct LibrarySection {
     /// (feature `grobid`).
     #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
     url_input: Option<String>,
+    /// A failed attempt to open a paper in the system viewer: the message and
+    /// the time it should stop showing (RX, sprint 6.10).
+    open_error: Option<(String, f64)>,
 }
 
 impl LibrarySection {
@@ -114,6 +124,12 @@ impl LibrarySection {
             LibraryState::Ready { path, .. } | LibraryState::Corrupt { path, .. } => Some(path),
             _ => None,
         }
+    }
+
+    /// Record that a paper could not be opened in the system viewer, to show —
+    /// and expire — in the pane under the header (RX, sprint 6.10).
+    pub fn note_open_error(&mut self, message: String, at: f64) {
+        self.open_error = Some((message, at));
     }
 
     /// Toolbar row: add sources to the corpus.
@@ -257,6 +273,18 @@ impl LibrarySection {
         ui.add_space(2.0);
         self.show_toolbar(ui, action);
         self.show_header(ui, tabs, attached, action);
+        // A paper that could not be opened (RX, sprint 6.10): the row's eye is
+        // the only action whose success needs no feedback — the viewer
+        // appearing is the answer — so its failure shows where the click was
+        // made and fades on its own.
+        if let Some((message, at)) = self.open_error.clone() {
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+            if ui.ctx().input(|input| input.time) - at < 6.0 {
+                warning(ui, &message);
+            } else {
+                self.open_error = None;
+            }
+        }
         match self.state.as_ref() {
             None => note(ui, &t!("agent.library.loading")),
             Some(LibraryState::Missing { reason }) => {
@@ -529,6 +557,9 @@ fn show_list(
                 if let Some(key) = &outcome.copied {
                     copied = Some(key.clone());
                 }
+                if outcome.open {
+                    action.commands.push(open_paper_command(entry));
+                }
                 if outcome.insert || outcome.double_clicked {
                     action.insert = Some(CitePayload::inline(entry.key.clone()));
                 }
@@ -569,17 +600,30 @@ struct RowOutcome {
     double_clicked: bool,
     insert: bool,
     insert_bracketed: bool,
+    /// The eye button asked for the entry's document in the system viewer.
+    open: bool,
     copied: Option<String>,
+}
+
+/// The command a row's eye button issues (RX, sprint 6.10): the worker
+/// resolves the document — the entry's `file` field, then a corpus file named
+/// after the key — and hands it to the system viewer, off the UI thread.
+fn open_paper_command(entry: &LibraryEntry) -> RagCommand {
+    RagCommand::OpenPaper {
+        key: entry.key.clone(),
+        file: entry.file.clone(),
+    }
 }
 
 /// Render one two-line row and collect its interactions.
 ///
 /// The row is a `click_and_drag` widget (the tab-bar pattern): clicking
 /// selects, dragging publishes `drag` as the egui payload. While the pointer
-/// is on the row, three action buttons appear at its right edge — insert at
+/// is on the row, four action buttons appear at its right edge — insert at
 /// the cursor, insert the APA form, copy the key (sprint 6.5: they replaced a
-/// right-click menu that was hard to hit). Their space is always reserved, so
-/// the text does not jump when they appear.
+/// right-click menu that was hard to hit) and open the document in the system
+/// viewer (sprint 6.10). Their space is always reserved, so the text does not
+/// jump when they appear.
 fn show_row(
     ui: &mut egui::Ui,
     entry: &LibraryEntry,
@@ -620,9 +664,9 @@ fn show_row(
 
     // Layout: meta line (Au · Yr — Source) above the title; the action
     // buttons keep the right edge.
-    let [insert_rect, bracketed_rect, copy_rect] = action_buttons(rect);
+    let [insert_rect, bracketed_rect, copy_rect, view_rect] = action_buttons(rect);
     let mut text_rect = rect.shrink2(egui::vec2(4.0, 2.0));
-    text_rect.max.x = (copy_rect.min.x - ui.spacing().item_spacing.x).max(text_rect.min.x + 20.0);
+    text_rect.max.x = (view_rect.min.x - ui.spacing().item_spacing.x).max(text_rect.min.x + 20.0);
     let mut row_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(text_rect)
@@ -694,6 +738,17 @@ fn show_row(
         ui.ctx().copy_text(format!("@{}", entry.key));
         outcome.copied = Some(entry.key.clone());
     }
+    if action_button(
+        ui,
+        view_rect,
+        &entry.key,
+        "open",
+        EYE,
+        &t!("agent.library.open_paper"),
+        hovering,
+    ) {
+        outcome.open = true;
+    }
 
     outcome.clicked = response.clicked();
     outcome.command_clicked = ui.input(|input| input.modifiers.command);
@@ -701,10 +756,10 @@ fn show_row(
     outcome
 }
 
-/// The three action buttons of a row: insert at the cursor (the primary
-/// action, keeping the corner the `+` always had), the APA form, and copy —
-/// laid out right to left behind the text.
-fn action_buttons(rect: egui::Rect) -> [egui::Rect; 3] {
+/// The four action buttons of a row: insert at the cursor (the primary
+/// action, keeping the corner the `+` always had), the APA form, copy and the
+/// system-viewer eye — laid out right to left behind the text.
+fn action_buttons(rect: egui::Rect) -> [egui::Rect; 4] {
     const SIZE: f32 = 18.0;
     const GAP: f32 = 2.0;
     let y = rect.center().y - SIZE / 2.0;
@@ -712,7 +767,7 @@ fn action_buttons(rect: egui::Rect) -> [egui::Rect; 3] {
         let x = (rect.max.x - 2.0 - SIZE - slot as f32 * (SIZE + GAP)).max(rect.min.x);
         egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(SIZE, SIZE))
     };
-    [at(0), at(1), at(2)]
+    [at(0), at(1), at(2), at(3)]
 }
 
 /// One row action button, with a per-row stable id: a recycled auto id could
@@ -809,13 +864,7 @@ fn meta_line(entry: &LibraryEntry) -> String {
     meta
 }
 
-/// Short file name for labels.
-fn file_label(path: &Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
-}
-
+/// Modification time of `path`, when it can be read.
 fn mtime_of(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -887,7 +936,7 @@ mod tests {
         crate::rag::library::load(&bib).unwrap()
     }
 
-    const SAMPLE: &str = "@article{Caspar2021,\n  author = {Caspar, Martin},\n  title = {The Cell model},\n  journaltitle = {Ecological Economics},\n  year = {2021}\n}\n\n@book{Kahle2000,\n  title = {A dataset},\n  year = {2000}\n}\n";
+    const SAMPLE: &str = "@article{Caspar2021,\n  author = {Caspar, Martin},\n  title = {The Cell model},\n  journaltitle = {Ecological Economics},\n  year = {2021},\n  file = {paper.pdf}\n}\n\n@book{Kahle2000,\n  title = {A dataset},\n  year = {2000}\n}\n";
 
     #[test]
     fn meta_lines_follow_the_au_yr_source_order() {
@@ -963,6 +1012,25 @@ mod tests {
 
         let copied = t!("agent.library.copied", key = "Caspar2021").to_string();
         assert!(copied.contains("Caspar2021"), "{copied}");
+
+        // The viewer's failure line names both the row and the reason (6.10).
+        let open_failed = t!(
+            "agent.library.open_paper_failed",
+            key = "Caspar2021",
+            reason = "no document linked"
+        )
+        .to_string();
+        assert!(
+            open_failed.contains("Caspar2021") && open_failed.contains("no document linked"),
+            "{open_failed}"
+        );
+        assert!(!open_failed.contains("%{"), "{open_failed}");
+        assert!(
+            !t!("agent.library.open_paper")
+                .to_string()
+                .contains("agent."),
+            "the viewer hint key must resolve"
+        );
 
         let inserted = t!("notification.citation_inserted", text = "@X").to_string();
         assert!(inserted.contains("@X"), "{inserted}");
@@ -1203,7 +1271,7 @@ mod tests {
                 .iter()
                 .any(|shape| matches!(shape, egui::Shape::Rect(rect) if rect.fill == hover_fill))
         };
-        let glyphs = [PLUS, BRACKETS_SQUARE, COPY];
+        let glyphs = [PLUS, BRACKETS_SQUARE, COPY, EYE];
         let painted_glyphs = |shapes: &[egui::Shape]| {
             shapes
                 .iter()
@@ -1227,7 +1295,7 @@ mod tests {
         );
         assert_eq!(
             painted_glyphs(&hovering),
-            3,
+            4,
             "the pointer on the row text showed no buttons"
         );
     }
@@ -1534,6 +1602,111 @@ mod tests {
             .collect();
         let expected = format!("@{}", entry.key);
         assert_eq!(copied, vec![expected.as_str()]);
+    }
+
+    #[test]
+    fn the_eye_button_asks_the_worker_to_open_the_document() {
+        // RX (sprint 6.10): the fourth row button opens the entry's document in
+        // the system viewer. It reports only the wish — the command carries the
+        // row's key and its recorded `file` field, and the worker resolves and
+        // opens off the UI thread.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let entry = view
+            .entries
+            .iter()
+            .find(|entry| entry.key == "Caspar2021")
+            .expect("the sample row is there");
+        let drag = CitePayload::inline(entry.key.clone());
+        let row_height = 36.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, row_height));
+        let target = action_buttons(row)[3].center();
+
+        // Frame 1: the pointer rests on the row, so the buttons are laid out.
+        let mut outcome = RowOutcome::default();
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![egui::Event::PointerMoved(target)],
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+        assert!(!outcome.open, "hovering alone only reveals the buttons");
+
+        // Frame 2: the click lands on the eye.
+        let press = |pressed| egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![press(true), press(false)],
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+        assert!(outcome.open, "the eye button asks for the document");
+        assert!(
+            !outcome.insert
+                && !outcome.insert_bracketed
+                && outcome.copied.is_none()
+                && !outcome.clicked,
+            "opening is neither an insert, a copy nor a row click"
+        );
+
+        // The command carries the key and the recorded file *unresolved* — the
+        // folder-relative link is the worker's job.
+        let command = open_paper_command(entry);
+        let RagCommand::OpenPaper { key, file } = command else {
+            panic!("expected an OpenPaper command, got {command:?}");
+        };
+        assert_eq!(key, "Caspar2021");
+        assert_eq!(file.as_deref(), Some(Path::new("paper.pdf")));
+    }
+
+    #[test]
+    fn a_failed_open_shows_under_the_header_and_expires() {
+        // The eye is the only feedback-less action on success; a failure has to
+        // say why, where the click was made (RX, sprint 6.10).
+        let ctx = egui::Context::default();
+        let marker = "marker-open-failed";
+        let mut section = LibrarySection::default();
+        section.note_open_error(marker.to_string(), 0.0);
+
+        let full = ctx.run_ui(egui::RawInput::default(), |ui| {
+            section.show(ui, &[], false, &mut LibraryAction::default());
+        });
+        let painted: Vec<String> = painted_shapes(&full)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            painted.iter().any(|line| line.contains(marker)),
+            "the reason must be visible: {painted:?}"
+        );
+
+        // Past its window the note drops itself instead of lingering.
+        let mut stale = LibrarySection::default();
+        stale.note_open_error(marker.to_string(), 0.0);
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                time: Some(10.0),
+                ..egui::RawInput::default()
+            },
+            |ui| {
+                stale.show(ui, &[], false, &mut LibraryAction::default());
+            },
+        );
+        assert!(stale.open_error.is_none(), "a stale note is dropped");
     }
 
     #[test]

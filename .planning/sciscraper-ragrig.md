@@ -91,7 +91,7 @@ name; the records below use the current name throughout.
 | 0.3 | `form` module: `setting_row` (label + widget, truncated label column), `note`/`warning` lines — used by the sciscraper component menus. 31 unit tests + 6 doctests. | ✅ Sprint 3 |
 | 0.4 | Dock collapses **horizontally** to a strip (`DockResponse::collapsed`); **renamed** `egui_chat` → `ragrig-egui`. | ✅ Sprint 6.5 |
 | 0.5 | **Workflow widgets** adopted from sciscraper: `attachments` (pending-context chips: toggle/pending/offer, disabled chips explain themselves) and `sessions` (`SessionRow`: new/switch/refresh with host-localized labels); `ChatMessage::state` builder. Additive. | ✅ Sprint 6.8 |
-| 0.6 | Message actions (copy feedback, retry), clickable links, draggable splitter; **index housekeeping** controls (*Update*/*Rebuild* + index state note) and a **source list** with hover row actions — the remaining sciscraper prototypes. | next |
+| 0.6 | Message actions (copy feedback, retry), clickable links, draggable splitter; **index housekeeping** controls (*Update*/*Rebuild* + index state note) and a **source list** with hover row actions (insert · APA · copy · open-in-viewer) — the remaining sciscraper prototypes. | next |
 | 0.7 | Tabbed dock mode; theme presets; publish on crates.io. | planned |
 
 Sprint 5.3 needed **no** `ragrig-egui` change: `SectionDock` already takes a `DockSide`, and the
@@ -983,6 +983,62 @@ API and `composer::append` are part of the still-unreleased 0.5.0). sciscraper w
 1670 tests pass (the 3 known pre-existing failures of §5; the five stale test modules
 quarantined for the run and restored); touched files rustfmt-clean, clippy reports nothing
 new in them.
+
+### ✅ Sprint 6.10 — the paper viewer (RX, user round)
+
+User round: a viewer for the papers in the Library — an **eye button** on the row that opens
+the entry's document in the *system* viewer. No in-app PDF view: the request was explicitly
+to hand off the file.
+
+**Which system call.** The question was *“what standard options exist?”*. On the three
+targets the conventional routes are: Linux `xdg-open` (and `gio open`, `gnome-open`,
+`kde-open`), macOS `open`, Windows `ShellExecuteW`. The `open` crate — **already a
+dependency** and already used for reveal-in-explorer and *open after export* — wraps exactly
+those and tries them in order, so the eye reuses it (`open::that(path)`) with no new
+dependency. The one caveat is the Flatpak build: inside the sandbox `xdg-open` is absent and
+spawning a host viewer is blocked, so a portal-aware path (`opener`'s
+`org.freedesktop.portal.OpenURI`, or a direct `ashpd` call on the tree's existing
+zbus/ashpd family) is the sandbox-correct follow-up if the Flatpak needs it. Decision: `open`
+now, portal only if the Flatpak turns out to need it.
+
+**One resolver, not two.** Opening a row needed the *document* of an entry — the same
+cascade `cite::resolve` already had (`file` field, resolved against the corpus folder, else a
+corpus file named after the key). It moved out of `cite.rs` into a pure, unit-tested
+[`library::resolve_document`] (`scan` caches the folder listing, so a pane of rows pays for
+one `read_dir`); `cite::resolve` calls it too. Citing and opening can therefore never
+disagree about which paper a row means, and the ambiguity rule (“N candidate files
+(ambiguous)”, never guess) is single-sourced.
+
+**Off the UI thread.** `RagCommand::OpenPaper { key, file }` → the worker resolves the path in
+`spawn_blocking` and calls `open::that`; a success is silent (the viewer appearing is the
+feedback), a failure comes back as `RagEvent::PaperUnavailable { key, reason }` and shows as
+a transient warning under the file line (six seconds, `warning()` from `ragrig-egui::form`).
+The reasons are the resolver's own — *no document linked*, *linked document not found*,
+*N candidate files (ambiguous)*, *no RAG workspace…* — so the pane explains the miss instead
+of a viewer that silently does not appear.
+
+**The button.** A fourth hover action on the row (eye, `EYE`), leftmost so `+` keeps the
+corner it always had. It follows the sprint-6.6 invariants to the letter: laid out every
+frame, painted and interactive only while the pointer is on the row (`UiBuilder::invisible`),
+per-row stable id (`("open", key)`), inside `ui.new_child` (never `scope_builder`). The
+`show_list`→worker hop reuses the existing `LibraryAction::commands` channel; no new action
+field.
+
+Verification: sciscraper with `rag` — 1676 pass (the known pre-existing failures of §5, plus
+one flaky `markdown::cache` test that passes in isolation; the five stale test modules
+quarantined and restored). New: `library::resolve_document` unit tests (file field absolute +
+relative, keyed name, case-insensitivity, ambiguity, missing), the eye click-through
+(`the_eye_button_asks_the_worker_to_open_the_document`, asserting the command's key and
+*unresolved* file), the failure note render/expiry, and two worker events
+(`opening_a_paper_without_a_workspace_explains_itself`,
+`opening_a_paper_resolves_its_document_before_the_viewer`). rustfmt-clean on the pinned
+1.92.0; clippy reports nothing new in the touched files.
+
+> **Build note (not ours to fix here).** The checkout's `Cargo.toml` still names the
+> co-developed crate at `../ragrig-egui` while the directory is `ragrig_egui`, so a local
+> build fails to find it; this run went through a temporary `ragrig-egui -> ragrig_egui`
+> symlink. Either the path should be updated or the symlink kept.
+
 
 ### 🚧 Phase "Editor Roundtrip" (6.0–6.4 landed) — chat ⇄ editor
 

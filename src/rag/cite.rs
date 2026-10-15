@@ -21,6 +21,7 @@ use grobid_bibtex::Collection;
 use ragrig::parsers::DocumentParsers;
 use ragrig::{build_parsers, AttachedDocument};
 
+use super::library;
 use super::LibrarySettings;
 
 /// Maximum characters attached per source (≈ 33k tokens at 3 chars/token).
@@ -169,7 +170,7 @@ pub fn resolve(workspace: &Path, library: &LibrarySettings, keys: &[String]) -> 
         let names = paths
             .candidates
             .iter()
-            .map(|candidate| file_label(candidate))
+            .map(|candidate| library::file_label(candidate))
             .collect::<Vec<_>>();
         for key in keys {
             let reason = if names.is_empty() {
@@ -212,53 +213,29 @@ pub fn resolve(workspace: &Path, library: &LibrarySettings, keys: &[String]) -> 
     let mut attached_paths: HashSet<PathBuf> = HashSet::new();
 
     for key in keys {
-        let entry = entries
+        let Some(entry) = entries
             .iter()
-            .find(|entry| entry.key.eq_ignore_ascii_case(key));
-        let canonical = entry.map_or_else(|| key.clone(), |entry| entry.key.clone());
-
-        // 1. The document recorded in the entry's `file` field.
-        let mut path: Option<PathBuf> = None;
-        if let Some(recorded) = entry.and_then(|entry| entry.file.as_deref()) {
-            let in_corpus = if recorded.is_absolute() {
-                recorded.to_path_buf()
-            } else {
-                folder.join(recorded)
-            };
-            if in_corpus.is_file() {
-                path = Some(in_corpus);
-            } else if recorded.is_file() {
-                path = Some(recorded.to_path_buf());
-            }
-        }
-
-        // 2. A corpus file named after the key (`<key> - …`).
-        let mut reason: Option<String> = None;
-        if path.is_none() {
-            if entry.is_none() {
-                reason = Some("unknown key".to_string());
-            } else {
-                let files = scan.get_or_insert_with(|| corpus_files(&folder));
-                let mut matches = candidates(&canonical, files);
-                match matches.len() {
-                    0 => {
-                        reason = Some(if entry.and_then(|entry| entry.file.as_ref()).is_some() {
-                            "linked document not found".to_string()
-                        } else {
-                            "no document linked".to_string()
-                        });
-                    }
-                    1 => path = matches.pop(),
-                    count => reason = Some(format!("{count} candidate files (ambiguous)")),
-                }
-            }
-        }
-
-        let Some(path) = path else {
-            resolution
-                .missed
-                .push(format!("@{canonical} — {}", reason.unwrap_or_default()));
+            .find(|entry| entry.key.eq_ignore_ascii_case(key))
+        else {
+            resolution.missed.push(format!("@{key} — unknown key"));
             continue;
+        };
+        let canonical = entry.key.clone();
+        // The entry's recorded document, else a corpus file named after the
+        // key: the same resolution the library pane's viewer uses
+        // ([`library::resolve_document`]), so citing and opening can never
+        // disagree about which paper a row means.
+        let path = match library::resolve_document(
+            &canonical,
+            entry.file.as_deref(),
+            &folder,
+            &mut scan,
+        ) {
+            Ok(path) => path,
+            Err(reason) => {
+                resolution.missed.push(format!("@{canonical} — {reason}"));
+                continue;
+            }
         };
 
         if attached_paths.contains(&path) {
@@ -290,53 +267,11 @@ pub fn resolve(workspace: &Path, library: &LibrarySettings, keys: &[String]) -> 
     resolution
 }
 
-/// Corpus files as `(lowercase stem, path)` pairs.
-fn corpus_files(folder: &Path) -> Vec<(String, PathBuf)> {
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_type()
-                .map(|kind| kind.is_file())
-                .unwrap_or(false)
-        })
-        .filter_map(|entry| {
-            let path = entry.path();
-            let stem = path.file_stem()?.to_str()?.to_lowercase();
-            Some((stem, path))
-        })
-        .collect()
-}
-
-/// Files whose name matches the key exactly or starts with `<key> - `.
-fn candidates(key: &str, files: &[(String, PathBuf)]) -> Vec<PathBuf> {
-    let lowercase = key.to_lowercase();
-    let prefix = format!("{lowercase} - ");
-    let mut matches: Vec<PathBuf> = files
-        .iter()
-        .filter(|(stem, _)| *stem == lowercase || stem.starts_with(&prefix))
-        .map(|(_, path)| path.clone())
-        .collect();
-    matches.sort();
-    matches.dedup();
-    matches
-}
-
 fn truncate(text: String, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text;
     }
     text.chars().take(max_chars).collect()
-}
-
-/// Short label for a path in user-facing messages.
-fn file_label(path: &Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 #[cfg(test)]

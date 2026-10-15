@@ -236,7 +236,7 @@ impl AgentPanel {
         let mut got_event = false;
         while let Some(event) = self.worker.try_recv() {
             got_event = true;
-            self.handle_event(event);
+            self.handle_event(ctx, event);
         }
         let mut commands = Vec::new();
         self.library.poll_watcher(&mut commands);
@@ -971,7 +971,7 @@ impl AgentPanel {
         });
     }
 
-    fn handle_event(&mut self, event: RagEvent) {
+    fn handle_event(&mut self, ctx: &egui::Context, event: RagEvent) {
         match event {
             RagEvent::Status { status } => {
                 self.syncing = status
@@ -1038,6 +1038,20 @@ impl AgentPanel {
                 self.session = current;
             }
             RagEvent::Library { state } => self.library.apply(*state),
+            RagEvent::PaperUnavailable { key, reason } => {
+                // The eye button opens the viewer off the UI thread; a failure
+                // (no workspace, no resolvable document, no handler) reports
+                // back here and shows under the library header (RX, 6.10).
+                self.library.note_open_error(
+                    t!(
+                        "agent.library.open_paper_failed",
+                        key = key.as_str(),
+                        reason = reason.as_str()
+                    )
+                    .to_string(),
+                    ctx.input(|input| input.time),
+                );
+            }
             RagEvent::SyncFinished {
                 indexed,
                 failed,

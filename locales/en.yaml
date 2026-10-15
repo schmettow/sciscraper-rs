@@ -1173,6 +1173,8 @@ agent:
     insert_bracketed: "Insert [@key] (APA)"
     copy_key: "Copy @key (Markdown)"
     copied: "Copied @%{key}"
+    open_paper: "Open the paper in the system viewer"
+    open_paper_failed: "Cannot open @%{key}: %{reason}"
     chip: "Library"
     refresh: "Re-read the bibliography"
     open_hint: "Open the bibliography in the editor"
