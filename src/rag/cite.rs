@@ -23,8 +23,8 @@ use ragrig::{build_parsers, AttachedDocument};
 
 use super::LibrarySettings;
 
-/// Maximum characters attached per source (≈ 20k tokens at 3 chars/token).
-pub const MAX_ATTACH_CHARS: usize = 60_000;
+/// Maximum characters attached per source (≈ 33k tokens at 3 chars/token).
+pub const MAX_ATTACH_CHARS: usize = 100_000;
 /// Maximum number of sources attached to one query.
 pub const MAX_ATTACHMENTS: usize = 3;
 

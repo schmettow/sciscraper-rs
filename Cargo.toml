@@ -146,7 +146,7 @@ ragrig = { version = "1", default-features = false, features = ["internal", "oll
 # window edge) instead of folding its sections vertically; 0.3.1 caps the
 # composer height and wraps Markdown list items/quotes; 0.3 adds the `form`
 # helpers (setting rows, note/warning lines).
-ragrig-egui = { version = "0.5.0", path = "../ragrig_egui", optional = true }
+ragrig-egui = { version = "0.5.0", path = "../ragrig-egui", optional = true }
 # Bibliography model for `@Key` resolution and the library pane. The path
 # serves local co-development: crates.io carries only 0.2.0, which lacks
 # `Collection::cite_entries`; publish 0.2.1 before dropping the path.

@@ -69,6 +69,12 @@ With the v0.2.6 custom editor, most previous egui TextEdit limitations are resol
 ### Executable Code Blocks (v0.3.0)
 Core Run (shell + Python, inline output, timeout, **Stop**) works for typical use; manual checklist: [`test_md/test_code_execution.md`](test_md/test_code_execution.md). Remaining edge cases (Windows `bash` without Git Bash, `sh`/`zsh` fallback, run state keyed by line number, copy/insert stderr format) are documented in [`code-block-run.md`](docs/technical/markdown/code-block-run.md) § Known limitations. **Fixes: v0.3.1** — see [Planned Features → v0.3.1 → Executable code blocks — hardening](#executable-code-blocks--hardening--polish).
 
+### Agent Pane (RAG)
+- [ ] **Attachment size cap is compile-time only** - `MAX_ATTACH_CHARS` / `MAX_CONTEXT_CHARS`
+  (100 000 chars; `src/rag/cite.rs`, aliased in `src/rag/roundtrip.rs`) cap the document buffer,
+  marked selections, the bibliography and `@Key` papers. **Make it configurable** (agent
+  settings) so it can be raised or lowered without rebuilding.
+
 ---
 
 ## Planned Features

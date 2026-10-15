@@ -24,6 +24,9 @@ revise — you do not write for them.
 - **Write in the language of the document** (or of the question, when it differs). Answers
   are rendered as Markdown in a chat pane: use headings, lists and tables sparingly and only
   when they carry structure.
+- **Give tables line breaks.** Every table row goes on its own line — the header row, the
+  `|---|---|` delimiter row, then the data rows — with a blank line before the table. Rows
+  joined onto one line do not render as a table.
 
 ## What you are shown
 

@@ -162,9 +162,9 @@ this fit the argument above?" work without pasting anything.
 
 - The **paperclip chip above the composer** shows which document is attached; click it to
   detach or re-attach. The choice is remembered across restarts.
-- Documents longer than 60 000 characters are attached as an excerpt: the container names the
+- Documents longer than 100 000 characters are attached as an excerpt: the container names the
   full length and carries a `<sciscraper:v1:truncated …/>` marker, and the transcript notes
-  *"Document attached: draft.md (first 60000 of 123456 chars)"*.
+  *"Document attached: draft.md (first 100000 of 123456 chars)"*.
 - An empty document attaches nothing; a scratch tab without a file name is sent without a
   path. Only real document tabs count — the settings pane and the image/PDF viewers never
   ride along.
@@ -183,7 +183,7 @@ citations in this section with the right keys"* work without pasting entries.
 - The attachment is **off by default** and remembered across restarts; attach it for a
   citation pass, click again to detach. The transcript notes *"Library attached:
   library.bib (4210 chars)"* per question, so you can always see what rode along.
-- The chip is hidden while no bibliography is in use; a bibliography longer than 60 000
+- The chip is hidden while no bibliography is in use; a bibliography longer than 100 000
   characters is attached as an excerpt (the container names the full length and carries the
   truncation marker).
 
@@ -347,8 +347,8 @@ Compare the sample size in @Kano2022 with @Smith2020.
   first, then case-insensitively.
 - The PDF comes from the entry's `file` field, or — when that is missing or
   stale — from a file named `Key - …` in the corpus folder.
-- Up to **3** documents are attached per question, capped at 60 000 characters
-  each (≈ 20 000 tokens).
+- Up to **3** documents are attached per question, capped at 100 000 characters
+  each (≈ 33 000 tokens).
 - Mentions are one-shot: every question naming a key attaches its paper again.
 - Misses (unknown key, no local file, unreadable document) are reported as a
   **Could not attach** note in the transcript; they never fail the question.
