@@ -57,6 +57,10 @@ pub const MARKER_CONTEXT: &str = "sciscraper:v1:context";
 /// later the active document buffer).
 pub const MARKER_DOCUMENT: &str = "sciscraper:v1:document";
 
+/// Container for the author's bibliography (the `.bib` in use), attached as a
+/// whole so the agent can map literal citations to its keys.
+pub const MARKER_LIBRARY: &str = "sciscraper:v1:library";
+
 /// Container for a passage the author marked for a question.
 pub const MARKER_SELECTION: &str = "sciscraper:v1:selection";
 
@@ -78,6 +82,7 @@ pub const MAX_CONTEXT_CHARS: usize = MAX_ATTACH_CHARS;
 pub const MARKERS: &[&str] = &[
     MARKER_CONTEXT,
     MARKER_DOCUMENT,
+    MARKER_LIBRARY,
     MARKER_SELECTION,
     MARKER_TRUNCATED,
     MARKER_REPLACE,
@@ -156,6 +161,8 @@ pub struct RoundtripContext {
 pub enum RoundtripKind {
     /// The active document (the buffer).
     Document,
+    /// The author's bibliography, attached as a whole.
+    Library,
     /// A passage the author marked.
     Selection,
 }
@@ -166,6 +173,7 @@ impl RoundtripKind {
     pub fn marker(self) -> &'static str {
         match self {
             Self::Document => MARKER_DOCUMENT,
+            Self::Library => MARKER_LIBRARY,
             Self::Selection => MARKER_SELECTION,
         }
     }
@@ -209,21 +217,21 @@ impl RoundtripContext {
         })
     }
 
-    /// A file the author attached by reference (RX, sprint 6.7), or `None`
-    /// when it holds no text.
+    /// The author's bibliography, attached as a whole (RX, sprint 6.9), or
+    /// `None` when the file holds no text.
     ///
     /// Like [`Self::document`] — name, path, truncation — but without a
-    /// cursor: the file is not the buffer being edited. The co-writer prompt
-    /// tells the model to read a `.bib` document as the bibliography and to
-    /// take its citation keys as the only citable ones.
+    /// cursor (the file is not the buffer being edited) and with its own
+    /// [`MARKER_LIBRARY`] container, which the co-writer prompt explains: its
+    /// entries are the only citable keys.
     #[must_use]
-    pub fn file(path: &Path, content: &str) -> Option<Self> {
+    pub fn library(path: &Path, content: &str) -> Option<Self> {
         if content.trim().is_empty() {
             return None;
         }
         let (text, chars, truncated) = excerpt(content);
         Some(Self {
-            kind: RoundtripKind::Document,
+            kind: RoundtripKind::Library,
             name: path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -629,7 +637,8 @@ mod tests {
     #[test]
     fn missing_markers_reports_what_a_prompt_forgot() {
         let complete = format!(
-            "see {MARKER_CONTEXT} {MARKER_DOCUMENT} {MARKER_SELECTION} {MARKER_TRUNCATED} {MARKER_REPLACE}"
+            "see {MARKER_CONTEXT} {MARKER_DOCUMENT} {MARKER_LIBRARY} {MARKER_SELECTION} \
+             {MARKER_TRUNCATED} {MARKER_REPLACE}"
         );
         assert!(missing_markers(&complete).is_empty());
 
@@ -638,6 +647,7 @@ mod tests {
             missing_markers(&partial),
             vec![
                 MARKER_CONTEXT,
+                MARKER_LIBRARY,
                 MARKER_SELECTION,
                 MARKER_TRUNCATED,
                 MARKER_REPLACE
@@ -776,19 +786,19 @@ mod tests {
     }
 
     #[test]
-    fn a_file_attachment_carries_name_and_path_without_a_cursor() {
+    fn a_library_container_carries_name_and_path_without_a_cursor() {
         let context =
-            RoundtripContext::file(Path::new("library/library.bib"), "@misc{a}").expect("text");
+            RoundtripContext::library(Path::new("library/library.bib"), "@misc{a}").expect("text");
         assert_eq!(
             context.container(),
-            "<sciscraper:v1:document name=\"library.bib\" path=\"library/library.bib\" chars=\"8\">\n\
+            "<sciscraper:v1:library name=\"library.bib\" path=\"library/library.bib\" chars=\"8\">\n\
              @misc{a}\n\
-             </sciscraper:v1:document>"
+             </sciscraper:v1:library>"
         );
         assert_eq!(
             context.note(),
             ContextNote {
-                kind: RoundtripKind::Document,
+                kind: RoundtripKind::Library,
                 name: "library.bib".to_string(),
                 chars: 8,
                 truncated: false,
@@ -797,9 +807,9 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_file_attaches_nothing() {
-        assert!(RoundtripContext::file(Path::new("library.bib"), "").is_none());
-        assert!(RoundtripContext::file(Path::new("library.bib"), " \n\t").is_none());
+    fn a_blank_library_attaches_nothing() {
+        assert!(RoundtripContext::library(Path::new("library.bib"), "").is_none());
+        assert!(RoundtripContext::library(Path::new("library.bib"), " \n\t").is_none());
     }
 
     #[test]

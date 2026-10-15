@@ -13,7 +13,7 @@ Make the element showing the current bibtex file active.
 
 2. Two small fixes
 
-- When citing a reference use the Markdown form @key.
+- When copying a reference use the Markdown form @key, too.
 - When citing while the Chat input is active (blue frame cursor), send the citation to the chat, not the editor.
 
 
@@ -22,8 +22,5 @@ Make the element showing the current bibtex file active.
 
 Use Case 2, again. Alternative way to do the task.
 
-In Agent pane: Place a button <Library> next to to document attach toggle with the same semantics. 
-Update the schema rules and instructions for the agent
-
- 
-
+In Agent pane: Place a button <Library> next to to document attach toggle with the same semantics.
+Update the container rules and instructions in teh system prompt.

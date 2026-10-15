@@ -173,17 +173,19 @@ this fit the argument above?" work without pasting anything.
 
 ### The bibliography as input
 
-The Library's file line carries a paperclip. While it is on, every question carries your
-`.bib` — name, path and text, no cursor — as a `<sciscraper:v1:document …>` container next to
-the document buffer, and the agent is told to treat a `.bib` file as the bibliography: its
-entries are the only citable keys. That is what lets *"replace the literal citations in this
-section with the right keys"* work without pasting entries.
+The Library's file line carries a paperclip, and the row of **toggles above the composer**
+has a **Library** chip next to the document toggle — both switch the same attachment on.
+While it is on, every question carries your `.bib` — name, path and text, no cursor — as a
+`<sciscraper:v1:library …>` container next to the document buffer, and the agent is told
+the container's entries are the only citable keys. That is what lets *"replace the literal
+citations in this section with the right keys"* work without pasting entries.
 
 - The attachment is **off by default** and remembered across restarts; attach it for a
-  citation pass, click again to detach. The transcript notes *"Document attached:
+  citation pass, click again to detach. The transcript notes *"Library attached:
   library.bib (4210 chars)"* per question, so you can always see what rode along.
-- A bibliography longer than 60 000 characters is attached as an excerpt like any document
-  (the container names the full length and carries the truncation marker).
+- The chip is hidden while no bibliography is in use; a bibliography longer than 60 000
+  characters is attached as an excerpt (the container names the full length and carries the
+  truncation marker).
 
 ### Focus mode — ask about a marked passage
 
@@ -409,10 +411,12 @@ key on hover.
 - **Row actions on hover** — while the pointer is on a row, three buttons
   appear at its right edge:
   - `+` *Insert @key at the cursor* — e.g. `@Kano2022` (a **double-click**
-    does the same)
+    does the same). While the **chat prompt holds the keyboard** (its frame
+    is highlighted), the citation lands in the prompt instead — you are
+    composing a question and want to name the paper in it.
   - `[ ]` *Insert [@key] (APA)* — for a multi-selection this expands to
     `[@Kano2022, @Smith2020]`
-  - `⧉` *Copy citation key*
+  - `⧉` *Copy citation key* — copies the Markdown form `@key`
 
 ### Drag a source into the document
 

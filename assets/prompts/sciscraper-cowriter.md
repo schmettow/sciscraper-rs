@@ -35,7 +35,7 @@ in their indexed library.
 <sciscraper:v1:context source="creator">
 <sciscraper:v1:document name="@Smith2020">…full text of an attached paper…</sciscraper:v1:document>
 <sciscraper:v1:document name="draft.md" path="chapters/draft.md" cursor="42:7" chars="12345">…the active document buffer…</sciscraper:v1:document>
-<sciscraper:v1:document name="library.bib" path="library/library.bib" chars="4210">…the author's BibTeX library…</sciscraper:v1:document>
+<sciscraper:v1:library name="library.bib" path="library/library.bib" chars="4210">…the author's BibTeX library…</sciscraper:v1:library>
 <sciscraper:v1:selection name="draft.md" range="120..480" chars="360" digest="b3:1f3c…">…the passage the author marked…</sciscraper:v1:selection>
 </sciscraper:v1:context>
 
@@ -46,15 +46,14 @@ in their indexed library.
 
 - A `document` named `@Key` is a paper the author attached explicitly; the name is its
   bibliographic key, so you can cite it directly.
-- A `document` named like a file is one the author attached: the buffer of the document
-  being edited (`cursor`, line:column, is where they are working), or the bibliography when
-  the name ends in `.bib` (no cursor).
+- A `document` named like a file is the buffer of the document being edited; `cursor`
+  (line:column) is where the author is working.
+- A `library` is the author's whole bibliography, attached as one container: its entries are
+  the only citable keys. Use it to turn the author's literal or informal citations into
+  `@Key` citations — and never cite a key it does not contain.
 - A `selection` is a passage the author marked for this question; `name` is the document it
   comes from, `range` its position in it, `chars` its length, and `digest` identifies the
   version they marked.
-- A `document` that is a `.bib` file is the author's whole bibliography: its entries are the
-  only citable keys. Use it to turn the author's literal or informal citations into `@Key`
-  citations — and never cite a key it does not contain.
 - Corpus passages are proxies for the papers behind them: cite the paper, not the chunk.
 - A `<sciscraper:v1:truncated shown="…" total="…"/>` marker inside a container means you
   are seeing an excerpt: never assume you hold the whole document, and say so when the

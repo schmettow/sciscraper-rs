@@ -55,7 +55,7 @@ use ragrig::MemoryStrategyKind;
 use ragrig_egui::agent_bar::{AgentBar, AgentBarStyle, Component, ComponentStatus as BarStatus};
 use ragrig_egui::attachments::{self, Attachment, AttachmentEvent};
 use ragrig_egui::chat_view::{ChatMessage, ChatRole, ChatView, MessageMeta, MessageState};
-use ragrig_egui::composer::{max_composer_height, Composer};
+use ragrig_egui::composer::{self, max_composer_height, Composer};
 use ragrig_egui::dock::{DockSide, SectionDock, SectionState};
 use ragrig_egui::form::{note, setting_row, warning};
 use ragrig_egui::sessions::{SessionAction, SessionEntry, SessionLabels, SessionRow};
@@ -357,6 +357,14 @@ impl AgentPanel {
         // Snapshot the busy state for the closures below: reading it inside
         // them would borrow all of `self` and clash with their field borrows.
         let working = self.is_working();
+        // Whether the chat prompt held the keyboard *before* this frame drew:
+        // a click on a library row takes the focus away mid-frame, and the
+        // citation has to land where the author was writing (RX, sprint 6.9).
+        let composer_focused =
+            ui.ctx().memory(|memory| memory.focused()) == Some(Composer::input_id());
+        // Whether a bibliography is in use at all: without one the library
+        // chip has nothing to attach and stays hidden (sprint 6.9).
+        let library_available = self.library.bibliography_path().is_some();
 
         // One menu context for both component bars. The docks are built and
         // shown in turn, so the library closure is gone before the agent one
@@ -368,6 +376,7 @@ impl AgentPanel {
         let buffer_attached = settings.buffer_attached;
         let bib_attached = settings.bib_attached;
         let buffer_toggled = Cell::new(false);
+        let library_toggled = Cell::new(false);
         let selection_dropped = Cell::new(false);
         let insert_requested = Cell::new(false);
         let insert_dropped = Cell::new(false);
@@ -547,20 +556,26 @@ impl AgentPanel {
             }
             // The attachment chips sit above the composer (bottom-up layout:
             // whatever comes last is highest), drawn by `attachments` (RX,
-            // ragrig-egui 0.5): the document toggle at the bottom, the waiting
-            // passage above it (attached later, the more specific context),
-            // the insert offer on top (the most action-worthy). The flags are
-            // applied after the docks, where the settings borrow is free
-            // again.
-            let chips = context_chips(
+            // ragrig-egui 0.5): the document and library toggles share the
+            // bottom row, the waiting passage sits above them (attached later,
+            // the more specific context), the insert offer on top (the most
+            // action-worthy). The flags are applied after the docks, where the
+            // settings borrow is free again.
+            let chip_rows = context_chips(
                 buffer,
                 buffer_attached,
+                library_available,
+                bib_attached,
                 self.pending.as_ref().map(|pending| &pending.context),
                 self.insert_offer.as_deref(),
             );
-            if let Some(outcome) = chip_outcome(attachments::show(&mut footer_ui, &chips)) {
+            let rows: Vec<&[Attachment]> = chip_rows.iter().map(Vec::as_slice).collect();
+            if let Some(outcome) = chip_outcome(attachments::show(&mut footer_ui, &rows)) {
                 if outcome.toggle_buffer {
                     buffer_toggled.set(true);
+                }
+                if outcome.toggle_library {
+                    library_toggled.set(true);
                 }
                 if outcome.drop_selection {
                     selection_dropped.set(true);
@@ -607,6 +622,10 @@ impl AgentPanel {
         // Persist dock state.
         if buffer_toggled.get() {
             settings.buffer_attached = !settings.buffer_attached;
+            settings_changed = true;
+        }
+        if library_toggled.get() {
+            settings.bib_attached = !settings.bib_attached;
             settings_changed = true;
         }
         if selection_dropped.get() {
@@ -683,7 +702,13 @@ impl AgentPanel {
         // (RX, sprint 6.7) — the editor's close policy decides about unsaved
         // text, never this pane.
         let library_action = library_action.into_inner();
-        let cite = library_action.insert;
+        // A citation picked while the chat prompt holds the keyboard is chat
+        // input, not an edit: the author is composing a question and wants to
+        // name the paper in it (RX, sprint 6.9).
+        let cite = match library_action.insert {
+            Some(payload) => self.route_citation(ui.ctx(), payload, composer_focused),
+            None => None,
+        };
         if let Some(bib) = library_action.choose_bib {
             settings.library.bibtex = Some(bib);
             self.send_configure(settings, editor_ws.clone());
@@ -759,6 +784,25 @@ impl AgentPanel {
                 return Some(EditorEdit::Insert { text });
             }
         }
+        None
+    }
+
+    /// Route a citation picked in the library (RX, sprint 6.9).
+    ///
+    /// While the chat prompt holds the keyboard, the citation is prompt text
+    /// (the composer keeps its focus, the caret follows the citation).
+    /// Otherwise it travels back to the host and edits the active document,
+    /// as it always did.
+    fn route_citation(
+        &mut self,
+        ctx: &egui::Context,
+        payload: CitePayload,
+        to_chat: bool,
+    ) -> Option<CitePayload> {
+        if !to_chat {
+            return Some(payload);
+        }
+        composer::append(ctx, &mut self.input, &payload.text());
         None
     }
 
@@ -1224,6 +1268,16 @@ fn attachment_note(
                 chars = chars
             )
             .to_string(),
+            (roundtrip::RoundtripKind::Library, false) => {
+                t!("agent.attached_library", name = name, chars = chars).to_string()
+            }
+            (roundtrip::RoundtripKind::Library, true) => t!(
+                "agent.attached_library_truncated",
+                name = name,
+                shown = roundtrip::MAX_CONTEXT_CHARS,
+                chars = chars
+            )
+            .to_string(),
             (roundtrip::RoundtripKind::Selection, false) => {
                 t!("agent.attached_selection", name = name, chars = chars).to_string()
             }
@@ -1275,8 +1329,9 @@ fn buffer_context(
 }
 
 /// The bibliography attachment for the next question (RX, sprint 6.7): on
-/// while the library header's attach toggle is on, and only when the file
-/// reads. The bib is plain input — no cursor, no edits come back from it.
+/// while the library attach toggle is on — the header's paperclip or the
+/// composer chip, one flag — and only when the file reads. The library is
+/// plain input: no cursor, no edits come back from it.
 fn bib_context(settings: &RagSettings, path: Option<&Path>) -> Option<RoundtripContext> {
     if !settings.bib_attached {
         return None;
@@ -1287,33 +1342,40 @@ fn bib_context(settings: &RagSettings, path: Option<&Path>) -> Option<RoundtripC
             log::warn!("Cannot attach the bibliography {}: {error}", path.display())
         })
         .ok()?;
-    RoundtripContext::file(path, &content)
+    RoundtripContext::library(path, &content)
 }
 
 /// Ids of the footer chips, one per interaction the host maps back onto its
 /// state ([`chip_outcome`]).
 const CHIP_BUFFER: &str = "buffer";
+/// The attached bibliography (sprint 6.9): the same flag as the library
+/// header's paperclip.
+const CHIP_LIBRARY: &str = "library";
 /// The waiting marked passage (sprint 6.3).
 const CHIP_SELECTION: &str = "selection";
 /// The offered replacement (sprint 6.4).
 const CHIP_INSERT: &str = "insert";
 
-/// The attachment chips above the composer, **bottom to top** (the footer is
-/// a bottom-up layout): the document toggle, the waiting passage, the offered
-/// replacement.
+/// The attachment chips above the composer as **rows, bottom to top** (the
+/// footer is a bottom-up layout): the document and library toggles share the
+/// bottom row, the waiting passage and the offered replacement get their own.
 ///
 /// The document chip is hidden while no document is open and disabled while
-/// it has no text, so it never promises an attachment it cannot make. Drawn
-/// by `ragrig_egui::attachments` (0.5) — the widget owns the look, the
-/// section owns the state and the wording.
+/// it has no text; the library chip is hidden while no bibliography is in use
+/// — neither promises an attachment it cannot make. Drawn by
+/// `ragrig_egui::attachments` (0.5) — the widget owns the look, the section
+/// owns the state and the wording.
 fn context_chips(
     buffer: Option<EditorBuffer<'_>>,
     buffer_attached: bool,
+    library_available: bool,
+    bib_attached: bool,
     pending: Option<&RoundtripContext>,
     insert_offer: Option<&str>,
-) -> Vec<Attachment> {
-    use crate::ui::phosphor_icons::{PAPERCLIP, PENCIL, SELECTION, X};
-    let mut chips = Vec::new();
+) -> Vec<Vec<Attachment>> {
+    use crate::ui::phosphor_icons::{BOOKS, PAPERCLIP, PENCIL, SELECTION, X};
+    let mut rows: Vec<Vec<Attachment>> = Vec::new();
+    let mut toggles = Vec::new();
     if let Some(buffer) = buffer {
         let has_text = buffer.has_text();
         let on = buffer_attached && has_text;
@@ -1324,38 +1386,49 @@ fn context_chips(
         } else {
             t!("agent.buffer.off")
         };
-        chips.push(
+        toggles.push(
             Attachment::toggle(CHIP_BUFFER, PAPERCLIP, buffer.name)
                 .on(on)
                 .enabled(has_text)
                 .hint(hint),
         );
     }
-    if let Some(pending) = pending {
-        chips.push(
-            Attachment::pending(
-                CHIP_SELECTION,
-                SELECTION,
-                t!("agent.selection.chip", chars = pending.chars()),
-            )
-            .hint(t!("agent.selection.hint"))
-            .drop(X, t!("agent.selection.drop")),
+    if library_available {
+        let hint = if bib_attached {
+            t!("agent.library.attach_on")
+        } else {
+            t!("agent.library.attach_off")
+        };
+        toggles.push(
+            Attachment::toggle(CHIP_LIBRARY, BOOKS, t!("agent.library.chip"))
+                .on(bib_attached)
+                .hint(hint),
         );
+    }
+    if !toggles.is_empty() {
+        rows.push(toggles);
+    }
+    if let Some(pending) = pending {
+        rows.push(vec![Attachment::pending(
+            CHIP_SELECTION,
+            SELECTION,
+            t!("agent.selection.chip", chars = pending.chars()),
+        )
+        .hint(t!("agent.selection.hint"))
+        .drop(X, t!("agent.selection.drop"))]);
     }
     if let Some(offer) = insert_offer {
-        chips.push(
-            Attachment::offer(
-                CHIP_INSERT,
-                PENCIL,
-                t!("agent.edit.chip", chars = offer.chars().count()),
-                t!("agent.edit.insert"),
-            )
-            .hint(t!("agent.edit.chip_hint"))
-            .action_hint(t!("agent.edit.insert_hint"))
-            .drop(X, t!("agent.edit.drop")),
-        );
+        rows.push(vec![Attachment::offer(
+            CHIP_INSERT,
+            PENCIL,
+            t!("agent.edit.chip", chars = offer.chars().count()),
+            t!("agent.edit.insert"),
+        )
+        .hint(t!("agent.edit.chip_hint"))
+        .action_hint(t!("agent.edit.insert_hint"))
+        .drop(X, t!("agent.edit.drop"))]);
     }
-    chips
+    rows
 }
 
 /// What one chip interaction means for the panel's pending state.
@@ -1363,6 +1436,8 @@ fn context_chips(
 struct ChipOutcome {
     /// The document toggle was clicked: flip `buffer_attached`.
     toggle_buffer: bool,
+    /// The library toggle was clicked: flip `bib_attached`.
+    toggle_library: bool,
     /// The marked passage was dropped.
     drop_selection: bool,
     /// The offered replacement was accepted (insert at the caret).
@@ -1377,6 +1452,7 @@ fn chip_outcome(event: Option<AttachmentEvent>) -> Option<ChipOutcome> {
     let mut outcome = ChipOutcome::default();
     match event? {
         AttachmentEvent::Toggled(id) if id == CHIP_BUFFER => outcome.toggle_buffer = true,
+        AttachmentEvent::Toggled(id) if id == CHIP_LIBRARY => outcome.toggle_library = true,
         AttachmentEvent::Dropped(id) if id == CHIP_SELECTION => outcome.drop_selection = true,
         AttachmentEvent::Dropped(id) if id == CHIP_INSERT => outcome.drop_insert = true,
         AttachmentEvent::Accepted(id) if id == CHIP_INSERT => outcome.accept_insert = true,
@@ -2591,6 +2667,10 @@ mod tests {
         settings.bib_attached = true;
         let context = bib_context(&settings, Some(&bib)).expect("attached");
         let container = context.container();
+        assert!(
+            container.starts_with("<sciscraper:v1:library"),
+            "the bibliography has its own container: {container}"
+        );
         assert!(container.contains("name=\"library.bib\""), "{container}");
         assert!(
             container.contains(&format!("path=\"{}\"", bib.display())),
@@ -2615,10 +2695,11 @@ mod tests {
     }
 
     /// Render the chips of one frame (the crate's widget, host data).
-    fn render_chips(ctx: &egui::Context, chips: &[Attachment]) {
+    fn render_chips(ctx: &egui::Context, rows: &[Vec<Attachment>]) {
+        let refs: Vec<&[Attachment]> = rows.iter().map(Vec::as_slice).collect();
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             assert!(
-                attachments::show(ui, chips).is_none(),
+                attachments::show(ui, &refs).is_none(),
                 "no input, no interaction"
             );
         });
@@ -2627,8 +2708,9 @@ mod tests {
     #[test]
     fn the_context_chips_follow_the_attachment_state() {
         // The chips above the composer (ragrig-egui 0.5): the document toggle
-        // follows the setting and is disabled without text; the passage and
-        // the insert offer appear only while they have something to say.
+        // shares its row with the library toggle, follows its setting and is
+        // disabled without text; the passage and the insert offer appear only
+        // while they have something to say.
         use ragrig_egui::attachments::AttachmentKind;
         let buffer = EditorBuffer {
             name: "draft.md",
@@ -2636,33 +2718,51 @@ mod tests {
             cursor: (1, 2),
             content: "body",
         };
-        let chips = context_chips(Some(buffer), true, None, None);
-        assert_eq!(chips.len(), 1);
-        assert_eq!(chips[0].id, CHIP_BUFFER);
-        assert!(chips[0].enabled);
-        assert_eq!(chips[0].kind, AttachmentKind::Toggle { on: true });
+        let rows = context_chips(Some(buffer), true, true, false, None, None);
+        assert_eq!(rows.len(), 1, "the two toggles share one row");
+        let ids: Vec<&str> = rows[0].iter().map(|chip| chip.id.as_str()).collect();
+        assert_eq!(ids, vec![CHIP_BUFFER, CHIP_LIBRARY]);
+        assert_eq!(rows[0][0].kind, AttachmentKind::Toggle { on: true });
+        assert_eq!(
+            rows[0][1].kind,
+            AttachmentKind::Toggle { on: false },
+            "the library attaches on request"
+        );
+        assert!(rows[0][1].enabled);
 
+        // Without a bibliography the library toggle is hidden entirely.
+        let rows = context_chips(Some(buffer), true, false, false, None, None);
+        assert_eq!(rows[0].len(), 1);
+
+        // An empty document cannot be attached; no document hides the chip.
         let blank = EditorBuffer {
             content: "  \n",
             ..buffer
         };
-        let chips = context_chips(Some(blank), true, None, None);
-        assert!(!chips[0].enabled, "an empty document cannot be attached");
-        assert_eq!(chips[0].kind, AttachmentKind::Toggle { on: false });
+        let rows = context_chips(Some(blank), true, true, false, None, None);
+        assert!(!rows[0][0].enabled, "an empty document cannot be attached");
+        assert!(context_chips(None, true, false, false, None, None).is_empty());
 
-        assert!(context_chips(None, true, None, None).is_empty());
-
+        // Bottom to top: the toggle row, the passage, the offer on top.
         let passage = marked_passage("keep this passage", 0..4);
-        let chips = context_chips(None, true, Some(&passage), Some("the replacement"));
-        let ids: Vec<&str> = chips.iter().map(|chip| chip.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![CHIP_SELECTION, CHIP_INSERT],
-            "bottom to top: the offer rides on top of the passage"
+        let rows = context_chips(
+            None,
+            true,
+            true,
+            true,
+            Some(&passage),
+            Some("the replacement"),
         );
-        assert!(chips[0].label.contains("4 chars"), "{}", chips[0].label);
+        let ids: Vec<&str> = rows.iter().map(|row| row[0].id.as_str()).collect();
+        assert_eq!(ids, vec![CHIP_LIBRARY, CHIP_SELECTION, CHIP_INSERT]);
+        assert_eq!(
+            rows[0][0].kind,
+            AttachmentKind::Toggle { on: true },
+            "the library toggle shows the shared flag"
+        );
+        assert!(rows[1][0].label.contains("4 chars"), "{}", rows[1][0].label);
 
-        // An idle frame draws the chips but never flips the toggle.
+        // An idle frame draws the chips but never flips a toggle.
         let ctx = egui::Context::default();
         let mut settings = RagSettings::default();
         let mut panel = AgentPanel::new(&settings, None);
@@ -2673,14 +2773,17 @@ mod tests {
         }
         assert!(
             settings.buffer_attached,
-            "idle frames leave the toggle alone"
+            "idle frames leave the document toggle alone"
         );
+        assert!(!settings.bib_attached, "…and the library toggle, too");
     }
 
     #[test]
     fn the_chip_events_map_onto_the_host_flags() {
         let toggled = chip_outcome(Some(AttachmentEvent::Toggled(CHIP_BUFFER.into()))).unwrap();
         assert!(toggled.toggle_buffer);
+        let toggled = chip_outcome(Some(AttachmentEvent::Toggled(CHIP_LIBRARY.into()))).unwrap();
+        assert!(toggled.toggle_library);
         let dropped = chip_outcome(Some(AttachmentEvent::Dropped(CHIP_SELECTION.into()))).unwrap();
         assert!(dropped.drop_selection);
         let accepted = chip_outcome(Some(AttachmentEvent::Accepted(CHIP_INSERT.into()))).unwrap();
@@ -2695,6 +2798,35 @@ mod tests {
         assert!(
             chip_outcome(Some(AttachmentEvent::Accepted(CHIP_SELECTION.into()))).is_none(),
             "a passage cannot be accepted, only dropped"
+        );
+    }
+
+    #[test]
+    fn a_citation_goes_to_the_chat_while_the_prompt_holds_the_keyboard() {
+        // RX (sprint 6.9): with the composer focused, the picked citation is
+        // prompt text; otherwise it travels to the host, which edits the
+        // active document as before.
+        let ctx = egui::Context::default();
+        let settings = RagSettings::default();
+        let mut panel = AgentPanel::new(&settings, None);
+        panel.input = "compare with".to_string();
+
+        let payload = CitePayload::inline("Smith2024");
+        let forwarded = panel.route_citation(&ctx, payload.clone(), false);
+        assert_eq!(
+            forwarded,
+            Some(payload.clone()),
+            "no chat focus: the editor gets it"
+        );
+        assert_eq!(panel.input, "compare with", "the prompt stays untouched");
+
+        let forwarded = panel.route_citation(&ctx, payload, true);
+        assert!(forwarded.is_none(), "the editor is not touched");
+        assert_eq!(panel.input, "compare with @Smith2024");
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(Composer::input_id()),
+            "the prompt keeps the keyboard"
         );
     }
 
@@ -2715,8 +2847,11 @@ mod tests {
 
         // The chip renders while a passage waits (and in an idle frame, too).
         let pending = panel.pending.as_ref().map(|pending| &pending.context);
-        render_chips(&ctx, &context_chips(None, false, pending, None));
-        render_chips(&ctx, &context_chips(None, false, None, None));
+        render_chips(
+            &ctx,
+            &context_chips(None, false, false, false, pending, None),
+        );
+        render_chips(&ctx, &context_chips(None, false, false, false, None, None));
     }
 
     #[test]
@@ -2855,9 +2990,16 @@ mod tests {
         // one); the ✕ is the id the host watches for a dismissal.
         render_chips(
             &ctx,
-            &context_chips(None, false, None, panel.insert_offer.as_deref()),
+            &context_chips(
+                None,
+                false,
+                false,
+                false,
+                None,
+                panel.insert_offer.as_deref(),
+            ),
         );
-        render_chips(&ctx, &context_chips(None, false, None, None));
+        render_chips(&ctx, &context_chips(None, false, false, false, None, None));
     }
 
     #[test]

@@ -689,7 +689,9 @@ fn show_row(
         &t!("agent.library.copy_key"),
         hovering,
     ) {
-        ui.ctx().copy_text(entry.key.clone());
+        // The Markdown form, not the bare key: it is what the author pastes
+        // into a document or a question (RX, sprint 6.9).
+        ui.ctx().copy_text(format!("@{}", entry.key));
         outcome.copied = Some(entry.key.clone());
     }
 
@@ -1477,6 +1479,61 @@ mod tests {
             None,
             "an idle frame leaves the toggle alone"
         );
+    }
+
+    #[test]
+    fn copying_a_row_puts_the_markdown_form_on_the_clipboard() {
+        // The copy button yields the Markdown citation `@key` — the form the
+        // transcript's confirmation mentions and the insert buttons use
+        // (sprint 6.9).
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let view = view_of(SAMPLE, dir.path());
+        let entry = &view.entries[0];
+        let drag = CitePayload::inline(entry.key.clone());
+        let row_height = 36.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, row_height));
+        let target = action_buttons(row)[2].center();
+
+        // Frame 1: the pointer rests on the row, so the buttons are laid out.
+        let mut outcome = RowOutcome::default();
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![egui::Event::PointerMoved(target)],
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+
+        // Frame 2: the click lands on the copy button.
+        let press = |pressed| egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![press(true), press(false)],
+            ..egui::RawInput::default()
+        };
+        let full = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+        assert_eq!(outcome.copied.as_deref(), Some(entry.key.as_str()));
+        let copied: Vec<&str> = full
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let expected = format!("@{}", entry.key);
+        assert_eq!(copied, vec![expected.as_str()]);
     }
 
     #[test]

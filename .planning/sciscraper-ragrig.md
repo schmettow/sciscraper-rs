@@ -938,6 +938,52 @@ pass with `rag` (the 3 known pre-existing failures of §5, the five stale test m
 quarantined for the run and restored); touched file rustfmt-clean, clippy reports nothing new
 in it.
 
+### ✅ Sprint 6.9 — the library as a first-class attachment (RX, user round)
+
+User round (2026-10-14), items 2 and 3 of the task list.
+
+**Item 2 — two small fixes.**
+
+- **Copy yields `@key`.** The row's copy button put the bare key on the clipboard while the
+  confirmation already said *“Copied @Key”* — the Markdown form is what an author pastes
+  into a document or a question. `show_row` copies `@key` now and the tooltip
+  (`agent.library.copy_key`) names the form; pinned by
+  `copying_a_row_puts_the_markdown_form_on_the_clipboard` (reads the frame's
+  `PlatformOutput` copy command, so the clipboard content itself is asserted).
+- **A citation picked while the chat prompt holds the keyboard goes to the chat.** The panel
+  snapshots the composer's focus at the *start* of the frame (the row click surrenders it
+  mid-frame) and routes `library_action.insert` through `route_citation`: with the prompt
+  focused the citation is appended to the prompt (`ragrig_egui::composer::append` — separator
+  space, caret after the text, focus kept, so the next keystroke continues the question);
+  otherwise the payload travels to the host as before (document insert, one undo step).
+  Pinned by `a_citation_goes_to_the_chat_while_the_prompt_holds_the_keyboard`; the crate
+  helper by `append_adds_a_separator_and_puts_the_caret_after_the_text`.
+
+**Item 3 — the special library marker.**
+
+- **Protocol.** `RoundtripKind::Library` + `MARKER_LIBRARY` (`sciscraper:v1:library`), listed
+  in `MARKERS` (the prompt test enforces the mention); `RoundtripContext::library(path,
+  content)` replaces the 6.7 `file(...)` that dressed the bibliography as a `document`. The
+  container carries name/path/chars (no cursor, no digest), same 60k truncation.
+- **Prompt.** The example container and the rules now say: a `library` is the author's whole
+  bibliography, its entries are the only citable keys, use it to turn literal citations into
+  `@Key` — never cite a key it does not contain. (The `.bib`-document special case is gone.)
+- **Agent-pane chip.** The **Library** toggle sits *next to* the document toggle in the
+  footer chip row: `ragrig_egui::attachments` grew a row model (`show(ui, &[&[Attachment]])`)
+  so the two toggles share one row; sciscraper's `context_chips` returns rows and
+  `chip_outcome` maps `CHIP_LIBRARY` onto the shared `RagSettings::bib_attached` flag — the
+  same switch as the library header's paperclip. Hidden while no bibliography is in use;
+  localized label and hints (`agent.library.chip`, `attach_on/off`); the transcript note
+  distinguishes it (`agent.attached_library` / `…_truncated`).
+- **Two entry points, one flag** (header paperclip and composer chip) — open question for
+  the next round whether the header one should stay once the chip has settled.
+
+Verification: crate 0.5.0 — 46 unit + 2 layout + 9 doctests green, clippy/fmt clean (the row
+API and `composer::append` are part of the still-unreleased 0.5.0). sciscraper with `rag`:
+1670 tests pass (the 3 known pre-existing failures of §5; the five stale test modules
+quarantined for the run and restored); touched files rustfmt-clean, clippy reports nothing
+new in them.
+
 ### 🚧 Phase "Editor Roundtrip" (6.0–6.4 landed) — chat ⇄ editor
 
 The RAG↔bibliography round trip works (sprints 4–5). The open gap is the *editor*: the agent
