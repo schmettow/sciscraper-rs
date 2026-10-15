@@ -4,10 +4,10 @@ version = "0.3.0"
 edition = "2021"
 rust-version = "1.92"
 description = "A scientific Markdown editor with integrated reference management and RAG writing assistance"
-repository = "https://github.com/OlaProeis/Ferrite"
+repository = "https://github.com/schmettow/sciscraper-rs"
 license = "MIT"
-authors = ["OlaProeis"]
-keywords = ["markdown", "editor", "text-editor", "egui"]
+authors = ["Schmettow"]
+keywords = ["markdown", "editor", "scientific", "LLM", "egui"]
 categories = ["text-editors", "gui"]
 
 [features]
