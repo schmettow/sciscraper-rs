@@ -167,6 +167,11 @@ impl SyncProgress {
 }
 
 /// Stages of a running GROBID ingestion (feature `grobid`).
+///
+/// The variants are constructed only by the ingest pipeline
+/// (`src/rag/ingest.rs`, feature `grobid`); the enum itself stays compiled
+/// for the status UI in every configuration.
+#[cfg_attr(not(feature = "grobid"), allow(dead_code))] // fork: variants live in the grobid-gated pipeline
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IngestStage {
     /// A URL is being downloaded into the library folder.
