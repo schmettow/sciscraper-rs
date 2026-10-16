@@ -2672,6 +2672,8 @@ dependencies = [
 [[package]]
 name = "grobid-bibtex"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98916dcc8a167454fd76fca042e6e3b0dc03ad2eb44ae0d448a13ea9c7dfbeec"
 dependencies = [
  "biblatex",
  "grobid",
@@ -5147,6 +5149,8 @@ dependencies = [
 [[package]]
 name = "ragrig-egui"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ae86878e07d0c7b958e5df585119cbd2075162619e51311341ba996292ee3c6"
 dependencies = [
  "egui",
  "pulldown-cmark 0.13.4",
@@ -5862,7 +5866,7 @@ dependencies = [
 
 [[package]]
 name = "sciscraper"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "arboard",
