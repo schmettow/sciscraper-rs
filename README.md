@@ -124,14 +124,15 @@ rather than a button that silently does nothing.
 
 ### Opening the panes
 
-Toggle both panes with the robot button in the ribbon, the **Command Palette**
-entry *Toggle Agent Panel*, or **Ctrl+Shift+A**. The **Agent** chat appears on
-the right, the **Library** on the left (between any file tree or outline pane
-and the editor); each pane remembers its own width, its collapsed state and the
-overall visibility across restarts. Drag the pane's inner edge to resize it, or
-click the chevron in its header to **collapse it horizontally** — the pane
-shrinks to a narrow strip at the window edge and the editor takes the freed
-width; the chevron on the strip brings it back.
+Both panes are open on a fresh profile: the **Agent** chat on the right, the
+**Library** on the left (between any file tree or outline pane and the editor).
+Toggle them together with the robot button in the ribbon, the **Command
+Palette** entry *Toggle Agent Panel*, or **Ctrl+Shift+A**. Each pane remembers
+its own width, its collapsed state and the overall visibility across restarts.
+Drag the pane's inner edge to resize it, or click the chevron in its header to
+**collapse it horizontally** — the pane shrinks to a narrow strip at the window
+edge and the editor takes the freed width; the chevron on the strip brings it
+back.
 
 ### Asking questions
 

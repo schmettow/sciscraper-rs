@@ -34,6 +34,9 @@ embedded as components (“Ferrite Inside”, “Ragrig Inside” — see ROADMA
   maintainer/repository fields, Flathub desktop and metainfo files.
 - Default features now include `rag`; `grobid` stays opt-in. A Ferrite-parity
   build for back-port work is `--no-default-features --features bundle-icon`.
+- The Agent and Library panes are **open by default** on a fresh profile; the
+  ribbon toggle (Ctrl+Shift+A) still hides them together, and existing
+  profiles keep whatever state they saved.
 - Toolchain pinned to Rust 1.92.0 (`rust-toolchain.toml`); MSRV-aware
   dependency resolution via `resolver = "3"`.
 - Locales: the copyright line now names Ferrite and Sciscraper contributors;
