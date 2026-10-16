@@ -317,7 +317,11 @@ Q6 `schmettow@web.de`.
   subgraph assertion tolerates 1 ULP, bare-YouTube paragraphs handle comrak's
   empty `Text("")` sibling. Non-destructive warning pass: 14 → 0. Final:
   `cargo fmt --check` clean; `check --all-targets --all-features` 0/0; tests
-  `1812 passed / 0 failed / 2 ignored`.
+  `1812 passed / 0 failed / 2 ignored`. All three shipping configurations
+  (default `rag`, `--no-default-features --features bundle-icon`,
+  `--all-features`) re-verified warning-free — the default-config
+  `IngestStage` warning surfaced by the feature flip is fixed with a scoped
+  `#[cfg_attr(not(feature = "grobid"), allow(dead_code))]`.
 - **Clippy finding (decision point):** `cargo clippy --all-targets
   --all-features -- -D warnings` reports **322 findings** in the inherited
   codebase; never gated before. Not fixed in this pass (back-port safety);

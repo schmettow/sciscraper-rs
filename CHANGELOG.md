@@ -64,9 +64,11 @@ embedded as components (“Ferrite Inside”, “Ragrig Inside” — see ROADMA
 
 ### Quality
 
-- **Build:** `cargo fmt --check` clean; `cargo check --all-targets
-  --all-features` on Rust 1.92.0 with 0 warnings and 0 errors in our code (one
-  cargo-level future-incompat note from the `ashpd` dependency, not ours).
+- **Build:** `cargo fmt --check` clean; `cargo check --all-targets` with **0
+  warnings and 0 errors in our code** for all three shipping configurations —
+  default (`rag`), Ferrite-parity (`--no-default-features --features
+  bundle-icon`) and `--all-features` — on Rust 1.92.0 (one cargo-level
+  future-incompat note from the `ashpd` dependency, not ours).
   `cargo doc --no-deps --all-features`: 38 pre-existing intra-doc-link
   warnings in inherited docs (report-only).
 - **Tests:** `cargo test --all-features` — **1812 passed, 0 failed, 2 ignored**.
