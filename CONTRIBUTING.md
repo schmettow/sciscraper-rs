@@ -1,6 +1,6 @@
-# Contributing to Ferrite
+# Contributing to Sciscraper
 
-Thank you for your interest in contributing to Ferrite! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Sciscraper! This document provides guidelines and instructions for contributing. (Sciscraper embeds the [Ferrite](https://github.com/OlaProeis/Ferrite) editor as a component — for upstream issues in the editor itself, Ferrite's own tracker is the right place.)
 
 ## Code of Conduct
 
@@ -39,15 +39,16 @@ Please be respectful and constructive in all interactions. We welcome contributo
 
 ### Prerequisites
 
-- Rust 1.70+ (install from [rustup.rs](https://rustup.rs/))
-- Platform-specific dependencies (see [README.md](README.md#build-from-source))
+- Rust 1.92+ (MSRV; `rust-toolchain.toml` pins 1.92.0) — install from [rustup.rs](https://rustup.rs/)
+- Platform-specific dependencies (see [README.md](README.md))
+- On Linux without `libfontconfig1-dev`, `font-kit`'s build script fails to find Fontconfig. Either install the dev package (CI installs `libgtk-3-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig1-dev`) or build with `RUST_FONTCONFIG_DLOPEN=1 cargo run`.
 
 ### Building
 
 ```bash
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/Ferrite.git
-cd Ferrite
+git clone https://github.com/YOUR_USERNAME/sciscraper-rs.git
+cd sciscraper-rs
 
 # Build debug version (faster compilation)
 cargo build
@@ -326,14 +327,14 @@ See [docs/index.md](docs/index.md) for detailed technical documentation.
 
 ## Translating
 
-Ferrite uses [Weblate](https://hosted.weblate.org/projects/ferrite/) for community translations. You can help translate Ferrite into your language!
+Sciscraper keeps its UI strings in `locales/*.yaml`. The strings inherited from the Ferrite editor are also translated in Ferrite's public [Weblate](https://hosted.weblate.org/projects/ferrite/) project; Sciscraper-specific strings are contributed here, as Pull Requests against `locales/`.
 
 ### How to Contribute Translations
 
-1. **Visit [Weblate](https://hosted.weblate.org/projects/ferrite/ferrite-ui/)** and create an account
-2. **Select your language** (or request a new one)
-3. **Start translating** - Weblate provides a user-friendly interface
-4. **Submit** - Your translations will be automatically synced via Pull Request
+1. **Edit the YAML files** in `locales/` (or use [Ferrite's Weblate](https://hosted.weblate.org/projects/ferrite/ferrite-ui/) for the shared editor strings)
+2. **Pick your language** — or add a new `locales/<code>.yaml` based on `en.yaml`
+3. **Keep the structure** — keys stay as they are; translate values only
+4. **Submit a Pull Request** with your changes
 
 ### Translation Guidelines
 
@@ -346,8 +347,8 @@ Ferrite uses [Weblate](https://hosted.weblate.org/projects/ferrite/) for communi
 
 To add support for a new language:
 
-1. Request the language on Weblate, or
-2. Create `locales/<language-code>.yaml` based on `locales/en.yaml`
+1. Create `locales/<language-code>.yaml` based on `locales/en.yaml`
+2. Open a Pull Request; the loader picks the file up automatically
 
 Language codes follow ISO 639-1 (e.g., `de` for German, `fr` for French, `nb` for Norwegian Bokmål).
 
@@ -374,7 +375,7 @@ Releases are automated via GitHub Actions when a version tag is pushed (`git tag
 
 ### Code Signing (Windows)
 
-Windows binaries (`ferrite.exe` and `.msi` installer) are signed via [SignPath.io](https://signpath.io) with a certificate from [SignPath Foundation](https://signpath.org).
+Windows binaries (`sciscraper.exe` and `.msi` installer) are signed via [SignPath.io](https://signpath.io) with a certificate from [SignPath Foundation](https://signpath.org).
 
 **Required GitHub repository secrets:**
 - `SIGNPATH_API_TOKEN` — API token from SignPath.io dashboard (user must have submitter permissions)

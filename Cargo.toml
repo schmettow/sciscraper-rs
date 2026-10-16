@@ -3,15 +3,41 @@ name = "sciscraper"
 version = "0.3.0"
 edition = "2021"
 rust-version = "1.92"
+# MSRV-aware dependency resolution (Rust 1.84+): never select a dependency
+# version that needs a newer rustc than `rust-version`.
+resolver = "3"
 description = "A scientific Markdown editor with integrated reference management and RAG writing assistance"
 repository = "https://github.com/schmettow/sciscraper-rs"
 license = "MIT"
-authors = ["Schmettow"]
+readme = "README.md"
+authors = ["Martin Schmettow"]
 keywords = ["markdown", "editor", "scientific", "LLM", "egui"]
 categories = ["text-editors", "gui"]
 
+# Publish a lean crate: the repository carries large dev-only trees (docs/,
+# test_md/, portable/, screenshots …) that would blow the crates.io size
+# limit. Everything the build needs at compile time is listed here (fonts,
+# prompts, icons, locales, build.rs); `cargo publish --dry-run` verifies the
+# list by rebuilding from the packaged tarball.
+include = [
+    "src/**/*.rs",
+    "build.rs",
+    "locales/*.yaml",
+    "assets/fonts/*.ttf",
+    "assets/prompts/*.md",
+    "assets/icons/icon_*.png",
+    "assets/icons/windows/*",
+    "assets/icons/macos/*",
+    "assets/icons/linux/sciscraper.desktop",
+    "assets/macos/info_plist_ext.xml",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "ROADMAP.md",
+]
+
 [features]
-default = ["bundle-icon", "high-perf-alloc"]
+default = ["bundle-icon", "high-perf-alloc", "rag"]
 # Bundle application icon in the binary (requires assets/icons/icon_256.png to exist)
 bundle-icon = []
 # Use high-performance memory allocators (mimalloc on Windows, jemalloc on Unix)
@@ -24,8 +50,9 @@ async-workers = ["tokio", "poll-promise"]
 # Deferred from v0.2.8 — will ship in v0.2.9 with proper diagnostics panel.
 lsp = []
 # RAG integration (sciscraper): agent chat pane, component bar and library,
-# backed by the `ragrig` framework. Off by default so a plain Ferrite build
-# is unchanged; see .planning/sciscraper-ragrig.md.
+# backed by the `ragrig` framework. In the default feature set — these panes
+# are the product; `--no-default-features` builds the plain Ferrite editor.
+# See .planning/sciscraper-ragrig.md.
 rag = ["dep:ragrig", "dep:ragrig-egui", "dep:grobid-bibtex", "dep:biblatex", "dep:anyhow", "async-workers"]
 # Drop-to-ingest (sprint 5): PDFs and URLs dropped on the library go through
 # the GROBID pre-pass (parse → OpenAlex → rename → merge into the `.bib`) and
@@ -195,8 +222,8 @@ opt-level = 2         # Optimize dependencies in dev builds
 # ============================================================================
 [package.metadata.deb]
 name = "sciscraper"
-maintainer = "OlaProeis <olaproeis@users.noreply.github.com>"
-copyright = "2024-2026, OlaProeis"
+maintainer = "Martin Schmettow <schmettow@web.de>"
+copyright = "2024-2025 OlaProeis; 2026 Martin Schmettow"
 license-file = ["LICENSE", "0"]
 extended-description = """Sciscraper is a scientific Markdown editor with integrated reference
 management and RAG writing assistance. It builds on the Ferrite editor:
@@ -239,7 +266,7 @@ assets = [
 name = "sciscraper"
 license = "MIT"
 summary = "A scientific Markdown editor with reference management and RAG assistance"
-url = "https://github.com/OlaProeis/Ferrite"
+url = "https://github.com/schmettow/sciscraper-rs"
 assets = [
     # Binary
     { source = "target/release/sciscraper", dest = "/usr/bin/sciscraper", mode = "755" },
@@ -264,7 +291,7 @@ assets = [
 # ============================================================================
 [package.metadata.wix]
 name = "Sciscraper"
-manufacturer = "OlaProeis"
+manufacturer = "Martin Schmettow"
 product-icon = "assets/icons/windows/app.ico"
 license = false
 eula = false
@@ -275,7 +302,7 @@ eula = false
 # ============================================================================
 [package.metadata.bundle]
 name = "Sciscraper"
-identifier = "com.olaproeis.sciscraper"
+identifier = "io.github.schmettow.sciscraper"
 icon = ["assets/icons/macos/Sciscraper.icns"]
 short_description = "A scientific Markdown editor with RAG assistance"
 long_description = """Sciscraper is a scientific Markdown editor with integrated reference

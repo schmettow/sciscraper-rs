@@ -2,7 +2,7 @@
 //!
 //! Editor integration (diagnostics, completions) is built on top in later tasks.
 
-#![allow(dead_code)] // API surface used by upcoming LSP tasks; UI not wired yet
+#![allow(dead_code, unused_imports)] // API surface used by upcoming LSP tasks; UI not wired yet
 
 pub mod detection;
 pub mod manager;

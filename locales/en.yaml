@@ -494,7 +494,7 @@ about:
   # License section
   license: "License"
   license_type: "MIT License"
-  copyright: "© 2026 Ferrite Contributors"
+  copyright: "© 2026 Ferrite and Sciscraper contributors"
   version: "Version %{version}"
 
 # Keyboard shortcuts

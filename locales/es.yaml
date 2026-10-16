@@ -780,7 +780,7 @@ about:
     serde: Entramando de serialización
   license: Licencia
   license_type: Licencia MIT
-  copyright: © 2026 Contribuidores de Ferrite
+  copyright: © 2026 Contribuidores de Sciscraper y Ferrite
   version: Versión %{version}
 stats:
   no_data: Ninguna estadística disponible

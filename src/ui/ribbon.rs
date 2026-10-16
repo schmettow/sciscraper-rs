@@ -12,13 +12,13 @@ use crate::state::FileType;
 use crate::theme::ThemeColors;
 use crate::ui::icons::{phosphor_font, phosphor_rich_text, RIBBON_ICON_SIZE};
 use eframe::egui::{self, Color32, Response, RichText, Ui, Vec2};
+#[cfg(feature = "rag")]
+use egui_phosphor::regular::ROBOT;
 use egui_phosphor::regular::{
     CHECK, CLIPBOARD, EXPORT, FILE_MAGNIFYING_GLASS, FILE_PDF, FILE_PLUS, FILE_TEXT, FLOPPY_DISK,
     FOLDERS, FOLDER_SIMPLE_MINUS, GLOBE, LIGHTNING, MAGNIFYING_GLASS, PRINTER, SPARKLE,
     TERMINAL_WINDOW,
 };
-#[cfg(feature = "rag")]
-use egui_phosphor::regular::ROBOT;
 use rust_i18n::t;
 
 /// Height of the ribbon toolbar.

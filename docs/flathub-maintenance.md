@@ -2,8 +2,8 @@
 
 This document describes how to maintain the Ferrite Flatpak package on Flathub.
 
-**App ID:** `io.github.olaproeis.Ferrite`  
-**Flathub Repo:** https://github.com/flathub/io.github.olaproeis.Ferrite
+**App ID:** `io.github.schmettow.Sciscraper`  
+**Flathub Repo:** https://github.com/flathub/io.github.schmettow.Sciscraper
 
 ---
 
@@ -14,17 +14,17 @@ This document describes how to maintain the Ferrite Flatpak package on Flathub.
 1. **In Ferrite repo:**
    - [ ] Update version in `Cargo.toml`
    - [ ] Update `CHANGELOG.md` with release notes
-   - [ ] Update `assets/linux/io.github.olaproeis.Ferrite.metainfo.xml`:
+   - [ ] Update `assets/linux/io.github.schmettow.Sciscraper.metainfo.xml`:
      - Add new `<release>` entry at the top (use format `X.Y.Z`, not `X.Y.Z-hotfix.N`)
      - Update screenshot URLs to use the new tag (not `master`)
    - [ ] Commit all changes
    - [ ] Create and push tag: `git tag -a vX.Y.Z -m "description"`
    - [ ] Push: `git push origin master && git push origin vX.Y.Z`
 
-2. **In Flathub repo** (`flathub/io.github.olaproeis.Ferrite`):
-   - [ ] Clone/pull latest: `git clone https://github.com/flathub/io.github.olaproeis.Ferrite.git`
+2. **In Flathub repo** (`flathub/io.github.schmettow.Sciscraper`):
+   - [ ] Clone/pull latest: `git clone https://github.com/flathub/io.github.schmettow.Sciscraper.git`
    - [ ] Create a branch for the update: `git checkout -b update-vX.Y.Z`
-   - [ ] Update `io.github.olaproeis.Ferrite.yml`:
+   - [ ] Update `io.github.schmettow.Sciscraper.yml`:
      - Update `tag:` to the new tag
      - Update `commit:` to the new commit hash (get with `git log -1 --format="%H" vX.Y.Z`)
    - [ ] Regenerate `cargo-sources.json` if `Cargo.lock` changed:
@@ -52,11 +52,11 @@ This document describes how to maintain the Ferrite Flatpak package on Flathub.
 
 ## Repository Structure
 
-The Flathub repo (`flathub/io.github.olaproeis.Ferrite`) should contain:
+The Flathub repo (`flathub/io.github.schmettow.Sciscraper`) should contain:
 
 ```
-io.github.olaproeis.Ferrite/
-├── io.github.olaproeis.Ferrite.yml    # Flatpak manifest
+io.github.schmettow.Sciscraper/
+├── io.github.schmettow.Sciscraper.yml    # Flatpak manifest
 ├── cargo-sources.json                  # Cargo dependencies for offline build
 ├── .gitignore                          # Ignore build artifacts
 └── flathub.json                        # (optional) Build configuration
@@ -68,7 +68,7 @@ io.github.olaproeis.Ferrite/
 
 ## Key Files to Update
 
-### 1. Manifest (`io.github.olaproeis.Ferrite.yml`)
+### 1. Manifest (`io.github.schmettow.Sciscraper.yml`)
 
 Update these fields for each release:
 
@@ -86,7 +86,7 @@ sources:
 git log -1 --format="%H" vX.Y.Z
 ```
 
-### 2. Metainfo (`assets/linux/io.github.olaproeis.Ferrite.metainfo.xml`)
+### 2. Metainfo (`assets/linux/io.github.schmettow.Sciscraper.metainfo.xml`)
 
 In the **Ferrite repo**, add a new release entry:
 
@@ -157,7 +157,7 @@ If held, moderators review and approve/reject. You'll get email notifications if
 
 Flathub has [quality guidelines](https://docs.flathub.org/docs/for-app-authors/metainfo-guidelines/quality-guidelines). Meeting them can get your app featured on Flathub homepage.
 
-Check status at: https://flathub.org/apps/io.github.olaproeis.Ferrite (click "Details")
+Check status at: https://flathub.org/apps/io.github.schmettow.Sciscraper (click "Details")
 
 ---
 
@@ -183,8 +183,8 @@ Check status at: https://flathub.org/apps/io.github.olaproeis.Ferrite (click "De
 
 ## Useful Links
 
-- **Flathub Repo:** https://github.com/flathub/io.github.olaproeis.Ferrite
-- **App Page:** https://flathub.org/apps/io.github.olaproeis.Ferrite
+- **Flathub Repo:** https://github.com/flathub/io.github.schmettow.Sciscraper
+- **App Page:** https://flathub.org/apps/io.github.schmettow.Sciscraper
 - **Download Stats:** https://flathub.org/stats/ or https://klausenbusk.github.io/flathub-stats/
 - **Maintenance Docs:** https://docs.flathub.org/docs/for-app-authors/maintenance
 - **Updates Docs:** https://docs.flathub.org/docs/for-app-authors/updates

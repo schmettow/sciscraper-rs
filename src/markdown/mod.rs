@@ -53,12 +53,12 @@ mod editor;
 pub mod formatting;
 pub mod mermaid;
 mod parser;
-pub mod video_embed;
 pub mod rendered_commit_undo;
 pub mod rendered_session;
 pub mod syntax;
 pub mod toc;
 pub mod tree_viewer;
+pub mod video_embed;
 mod widgets;
 
 // Only export what's actually used by the app
@@ -72,13 +72,16 @@ pub use csv_viewer::{
 pub use editor::{
     cleanup_rendered_editor_memory, EditorMode, LineMapping, MarkdownEditor, WikilinkContext,
 };
-pub use rendered_session::rendered_editor_id;
 pub use formatting::{
     apply_raw_format, detect_raw_formatting_state, FormattingState, MarkdownFormatCommand,
 };
 pub use mermaid::compute_mermaid_diagnostics;
+pub use rendered_session::rendered_editor_id;
 pub use toc::{insert_or_update_toc, TocOptions};
 pub use tree_viewer::{get_structured_file_type, TreeViewer, TreeViewerState};
+// fork: video-embed playback is a follow-up (see ROADMAP); the API is kept for the back-port
+#[allow(unused_imports)]
 pub use parser::{VideoEmbedInfo, VideoProvider};
+#[allow(unused_imports)]
 pub use video_embed::parse_video_embed_url;
 pub use widgets::{detect_mermaid_diagram_type, MermaidDiagramType};

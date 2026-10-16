@@ -1,7 +1,7 @@
 # crates.io Publication Plan — Sciscraper, ragrig-egui, grobid-bibtex
 
 v2 — 2026-10-16 · incorporates the product/branding policy and decisions from the review round.
-Status: **plan only, no execution yet** (a later run will execute the whole project independently).
+Status: **A–E executed on 2026-10-16 — see the execution log in §J; F remains (publish + tag).**
 
 ## 0 — Product and branding policy (drives everything below)
 
@@ -298,3 +298,52 @@ blocker; the local matrix is authoritative for the release.
 - `grobid-bibtex` 0.2.1 readiness not re-verified this round (its own checklist
   applies at release time; last documented state: green through 0.2.0).
 - `ragrig-egui` verified green earlier today: 57 tests, clean all-features check.
+
+## J — Execution log (A–E, 2026-10-16)
+
+All review decisions are in: Q1 “Always Sciscraper”, Q2 Welcome only, Q3 Ragrig
+profiles → `~/.config/sciscraper` (for now), Q4 cross-build later, Q5 zh-CN kept,
+Q6 `schmettow@web.de`.
+
+- **A done.** `rust-toolchain.toml` → 1.92.0 (full graph verified on it; the
+  1.99 pin produced 158 future-incompat float-literal warnings that 1.92 does
+  not have). `resolver = "3"` added. `ragrig-egui` remote re-pointed to the
+  renamed repository.
+- **D done.** Test target repaired (42 errors → 0): stale test imports after
+  the flowchart-parser split, `Task::to_markdown` restored (removed in 041d8ec
+  while its tests stayed), missing test helpers. Five failing tests fixed for
+  real: recovery identity now keyed on `schema_version` (v2 current, v1
+  legacy — constant was still 1), block-height cache tests serialized, mermaid
+  subgraph assertion tolerates 1 ULP, bare-YouTube paragraphs handle comrak's
+  empty `Text("")` sibling. Non-destructive warning pass: 14 → 0. Final:
+  `cargo fmt --check` clean; `check --all-targets --all-features` 0/0; tests
+  `1812 passed / 0 failed / 2 ignored`.
+- **Clippy finding (decision point):** `cargo clippy --all-targets
+  --all-features -- -D warnings` reports **322 findings** in the inherited
+  codebase; never gated before. Not fixed in this pass (back-port safety);
+  recorded in CHANGELOG Quality + ROADMAP cleanup track. `cargo doc`: 38
+  pre-existing intra-doc-link warnings, report-only.
+- **B done.** Welcome → `t!("app.name")`; locale copyrights updated in 10
+  files; cs `app.name` filled; deb/rpm/wix/bundle metadata → Schmettow /
+  `io.github.schmettow.sciscraper`; LICENSE + `wix/license.rtf` fork notices;
+  Flathub files renamed + rebranded, docs references updated; FUNDING →
+  schmettow; bug-report template and CONTRIBUTING rebranded (+ fontconfig
+  note). Icon/logo untouched by decision; README placeholder in place.
+- **C done.** `include` whitelist: `cargo package --list` = 247 files, dev
+  trees excluded, all compile-time assets present. Defaults = `bundle-icon`,
+  `high-perf-alloc`, `rag`. `cargo publish --dry-run` is blocked *only* by
+  `grobid-bibtex ^0.2.1` being unpublished — the intended publication order.
+- **E done.** README: Install section, badges, logo placeholder, feature-table
+  defaults. CHANGELOG: first-release section with `### Quality` (coverage
+  43.2% lines over 91 597 lines; test/warning results; clippy + doc notes;
+  package list). ROADMAP: product preamble (policy), Sciscraper roadmap incl.
+  cross-build “Later” item, inherited-Ferrite banner. `.planning/ROADMAP.md`:
+  Phase 12 “Sciscape Onboarding” added. `ragrig-egui`: `Changelog.md` created.
+  `grobid-bibtex`: `### Quality` written under v0.2.1.
+- **Adjacent crates verified.** `grobid-bibtex`: all seven checks green incl.
+  `publish --dry-run` (17 files, 221.9 KiB, resolves `grobid` 0.6.0 from the
+  registry). `ragrig-egui`: fmt/check/test/clippy/doc green (57 tests).
+- **F remaining.** Commit everything, then publish in order (ragrig-egui →
+  grobid-bibtex → sciscraper) and tag *after* each publish; live GROBID pass
+  only when a server is running; external renames (SignPath, PortableApps) and
+  the logo rollout stay scheduled.

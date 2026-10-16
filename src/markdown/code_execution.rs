@@ -189,6 +189,7 @@ impl RunStatus {
     /// Status glyph for UI display (Phosphor icons; running uses a separate spinner).
     #[cfg(test)]
     pub fn glyph(&self) -> &'static str {
+        use crate::ui::phosphor_icons::{CHECK, X};
         match self {
             RunStatus::Running => "…",
             RunStatus::Completed { exit_code: Some(0) } => CHECK,
@@ -304,6 +305,7 @@ pub fn spawn_run(
 ///
 /// Test-only blocking API; production uses [`spawn_run`].
 #[cfg(test)]
+#[allow(dead_code)] // kept for the code-execution tests (upstream back-port)
 pub fn run_snippet(
     code: &str,
     fence_lang: &str,
@@ -676,6 +678,9 @@ mod tests {
     fn cancelled_status_is_terminal() {
         let cancelled = RunStatus::Cancelled;
         assert!(!cancelled.is_running());
-        assert!(!matches!(cancelled, RunStatus::Completed { exit_code: Some(0) }));
+        assert!(!matches!(
+            cancelled,
+            RunStatus::Completed { exit_code: Some(0) }
+        ));
     }
 }

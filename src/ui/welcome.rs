@@ -82,7 +82,7 @@ impl WelcomePanel {
 
                     // ── Title ──────────────────────────────────────────
                     ui.label(
-                        RichText::new("Ferrite")
+                        RichText::new(t!("app.name").to_string())
                             .size(36.0)
                             .strong()
                             .color(text_color),

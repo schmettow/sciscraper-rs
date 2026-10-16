@@ -953,6 +953,8 @@ pub(crate) mod mock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // fork: kept for the upstream back-port (currently unused here)
+    #[allow(unused_imports)]
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 

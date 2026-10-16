@@ -28,3 +28,8 @@ pub use layout::layout_flowchart;
 pub use parser::parse_flowchart;
 pub use render::{render_flowchart, FlowchartColors};
 pub use types::*;
+
+// Parser helpers used by the `mermaid` module tests (moved to `parser` in the
+// FC-83a refactor); re-exported so the tests keep their original paths.
+#[cfg(test)]
+pub(crate) use parser::{parse_direction, parse_edge_line_full, parse_node_from_text};

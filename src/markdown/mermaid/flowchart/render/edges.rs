@@ -1355,8 +1355,11 @@ fn get_subgraph_crossing_info(
 #[cfg(test)]
 mod back_edge_tests {
     use super::*;
+    // fork: kept for the upstream back-port (Pos2/Vec2 currently unused here)
+    #[allow(unused_imports)]
     use egui::{Pos2, Rect, Vec2};
 
+    use crate::markdown::mermaid::flowchart::utils::expand_rect;
     use crate::markdown::mermaid::flowchart::{layout_flowchart, parse_flowchart};
     use crate::markdown::mermaid::text::EstimatedTextMeasurer;
 

@@ -391,7 +391,7 @@ about:
   # License section
   license: "许可"
   license_type: "MIT 许可协议"
-  copyright: "© 2026 Ferrite Contributors"
+  copyright: "© 2026 Sciscraper 和 Ferrite 贡献者"
   version: "版本 %{version}"
 
 # Keyboard shortcuts

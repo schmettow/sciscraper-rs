@@ -1738,9 +1738,11 @@ mod tests {
         println!("  Min required subgraph width: {}", min_required_width);
         println!("  Actual subgraph width: {}", sg_layout.size.x);
 
-        // The subgraph width should be at least as wide as the title + padding
+        // The subgraph width should be at least as wide as the title + padding.
+        // f32 geometry: allow a sub-pixel tolerance — the layout reaches the
+        // same width through a different float path and can land 1 ULP below.
         assert!(
-            sg_layout.size.x >= min_required_width,
+            sg_layout.size.x >= min_required_width - 0.01,
             "Subgraph width ({}) should be >= title width + padding ({})",
             sg_layout.size.x,
             min_required_width
@@ -1820,7 +1822,7 @@ mod tests {
         }
 
         let d = layout.nodes.get("D").unwrap();
-        let e = layout.nodes.get("E").unwrap();
+        let _e = layout.nodes.get("E").unwrap();
         let f = layout.nodes.get("F").unwrap();
         let c = layout.nodes.get("C").unwrap();
 

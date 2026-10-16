@@ -4,9 +4,7 @@
 //! Trusted domains (YouTube / youtu.be) may use interactive WebView overlays; others
 //! fall back to thumbnail-only rendering (handled in a later task).
 
-use super::parser::{
-    MarkdownNode, MarkdownNodeType, VideoEmbedInfo, VideoProvider,
-};
+use super::parser::{MarkdownNode, MarkdownNodeType, VideoEmbedInfo, VideoProvider};
 
 const TRUSTED_VIDEO_HOSTS: &[&str] = &[
     "youtube.com",
@@ -20,6 +18,7 @@ const TRUSTED_VIDEO_HOSTS: &[&str] = &[
 /// Parse a URL string into video embed metadata.
 ///
 /// Returns `None` when the URL is missing, uses a non-http(s) scheme, or has no host.
+#[allow(dead_code)] // video-embed playback is a follow-up (see ROADMAP)
 pub fn parse_video_embed_url(raw_url: &str) -> Option<VideoEmbedInfo> {
     parse_video_embed_url_with_source(raw_url, raw_url.trim().to_string())
 }
@@ -97,10 +96,7 @@ fn parse_braced_video_syntax(text: &str) -> Option<&str> {
     if !trimmed.starts_with("{{video") || !trimmed.ends_with("}}") {
         return None;
     }
-    let inner = trimmed
-        .strip_prefix("{{video")?
-        .strip_suffix("}}")?
-        .trim();
+    let inner = trimmed.strip_prefix("{{video")?.strip_suffix("}}")?.trim();
     if inner.is_empty() {
         return None;
     }
@@ -144,36 +140,39 @@ pub fn try_parse_video_paragraph(node: &MarkdownNode) -> Option<VideoEmbedInfo> 
 }
 
 fn extract_bare_youtube_url(node: &MarkdownNode) -> Option<String> {
-    match node.children.len() {
-        0 => None,
-        1 => match &node.children[0].node_type {
-            MarkdownNodeType::Text(text) => {
-                let trimmed = text.trim();
-                if trimmed.is_empty() || trimmed.contains('\n') {
-                    None
-                } else {
-                    Some(trimmed.to_string())
+    // Comrak emits an empty `Text("")` sibling around autolinks, so scan
+    // the significant inline items instead of trusting the raw child count:
+    // a bare-URL paragraph is either one Text (or several Texts) or exactly
+    // one Link with no other visible text around it.
+    let mut combined = String::new();
+    let mut url: Option<String> = None;
+    for child in &node.children {
+        match &child.node_type {
+            MarkdownNodeType::Text(text) => combined.push_str(text),
+            MarkdownNodeType::Link { url: link_url, .. } => {
+                if url.replace(link_url.trim().to_string()).is_some() {
+                    return None; // more than one link: not a bare URL paragraph
                 }
             }
-            MarkdownNodeType::Link { url, .. } => Some(url.trim().to_string()),
-            _ => None,
-        },
-        _ => {
-            if node
-                .children
-                .iter()
-                .any(|child| !matches!(child.node_type, MarkdownNodeType::Text(_)))
-            {
-                return None;
-            }
-            let combined = node.text_content();
-            let trimmed = combined.trim();
-            if trimmed.is_empty() || trimmed.contains('\n') {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
+            // Breaks, emphasis, images … mean the paragraph carries more
+            // than the bare URL.
+            _ => return None,
         }
+    }
+    if let Some(link_url) = url {
+        // Visible text next to the link means the URL is embedded in a
+        // sentence, not standing alone in its own paragraph.
+        return if combined.trim().is_empty() {
+            Some(link_url)
+        } else {
+            None
+        };
+    }
+    let trimmed = combined.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 

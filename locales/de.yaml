@@ -436,7 +436,7 @@ about:
   # License section
   license: "Lizenz"
   license_type: "MIT-Lizenz"
-  copyright: "© 2026 Ferrite-Entwicklungshelfer"
+  copyright: "© 2026 Sciscraper und Ferrite Beitragende"
   version: "Version %{version}"
 
 # Keyboard shortcuts

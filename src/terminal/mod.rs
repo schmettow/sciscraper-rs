@@ -105,6 +105,8 @@ impl Terminal {
         let (status_tx, status_rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel();
 
+        // Used by the Windows foreground-process check below.
+        #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         let pid = pty.pid();
         let wd = working_dir.clone();
 
@@ -138,6 +140,8 @@ impl Terminal {
                 }
 
                 // 2. Check Process (Windows)
+                // Mutated only by the Windows block below.
+                #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
                 let mut fg_process = None;
                 #[cfg(target_os = "windows")]
                 if pid > 0 {

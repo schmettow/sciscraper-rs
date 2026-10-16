@@ -21,24 +21,24 @@
 
 ### Prerequisites
 
-- [x] Desktop entry file (`.desktop`) - Created at `assets/linux/io.github.olapreis.Ferrite.desktop`
-- [x] AppStream metadata file (`metainfo.xml`) - Created at `assets/linux/io.github.olapreis.Ferrite.metainfo.xml`
+- [x] Desktop entry file (`.desktop`) - Created at `assets/linux/io.github.schmettow.Sciscraper.desktop`
+- [x] AppStream metadata file (`metainfo.xml`) - Created at `assets/linux/io.github.schmettow.Sciscraper.metainfo.xml`
 - [x] Icon in multiple sizes (already have in `assets/icons/`)
-- [x] Flatpak manifest template - Created at `assets/linux/io.github.olapreis.Ferrite.yml`
+- [x] Flatpak manifest template - Created at `assets/linux/io.github.schmettow.Sciscraper.yml`
 - [ ] GitHub account with push access
 
 ### Steps
 
 #### 1. Create Desktop Entry File
 
-Create `assets/linux/io.github.olapreis.Ferrite.desktop`:
+Create `assets/linux/io.github.schmettow.Sciscraper.desktop`:
 
 ```ini
 [Desktop Entry]
 Name=Ferrite
 Comment=A cross-platform markdown editor
 Exec=ferrite %F
-Icon=io.github.olapreis.Ferrite
+Icon=io.github.schmettow.Sciscraper
 Terminal=false
 Type=Application
 Categories=Office;TextEditor;
@@ -49,12 +49,12 @@ StartupWMClass=ferrite
 
 #### 2. Create AppStream Metadata
 
-Create `assets/linux/io.github.olapreis.Ferrite.metainfo.xml`:
+Create `assets/linux/io.github.schmettow.Sciscraper.metainfo.xml`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.olapreis.Ferrite</id>
+  <id>io.github.schmettow.Sciscraper</id>
   <name>Ferrite</name>
   <summary>A cross-platform markdown editor built with Rust</summary>
   <metadata_license>CC0-1.0</metadata_license>
@@ -82,7 +82,7 @@ Create `assets/linux/io.github.olapreis.Ferrite.metainfo.xml`:
   <url type="homepage">https://github.com/OlaProeis/Ferrite</url>
   <url type="bugtracker">https://github.com/OlaProeis/Ferrite/issues</url>
   <url type="vcs-browser">https://github.com/OlaProeis/Ferrite</url>
-  <launchable type="desktop-id">io.github.olapreis.Ferrite.desktop</launchable>
+  <launchable type="desktop-id">io.github.schmettow.Sciscraper.desktop</launchable>
   <provides>
     <binary>ferrite</binary>
   </provides>
@@ -107,10 +107,10 @@ Create `assets/linux/io.github.olapreis.Ferrite.metainfo.xml`:
 
 This will be submitted to Flathub. Create locally first for testing:
 
-`io.github.olapreis.Ferrite.yml`:
+`io.github.schmettow.Sciscraper.yml`:
 
 ```yaml
-app-id: io.github.olapreis.Ferrite
+app-id: io.github.schmettow.Sciscraper
 runtime: org.freedesktop.Platform
 runtime-version: '23.08'
 sdk: org.freedesktop.Sdk
@@ -138,12 +138,12 @@ modules:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
       - cargo --offline build --release --verbose
       - install -Dm755 target/release/ferrite /app/bin/ferrite
-      - install -Dm644 assets/linux/io.github.olapreis.Ferrite.desktop /app/share/applications/io.github.olapreis.Ferrite.desktop
-      - install -Dm644 assets/linux/io.github.olapreis.Ferrite.metainfo.xml /app/share/metainfo/io.github.olapreis.Ferrite.metainfo.xml
-      - install -Dm644 assets/icons/ferrite-256.png /app/share/icons/hicolor/256x256/apps/io.github.olapreis.Ferrite.png
-      - install -Dm644 assets/icons/ferrite-128.png /app/share/icons/hicolor/128x128/apps/io.github.olapreis.Ferrite.png
-      - install -Dm644 assets/icons/ferrite-64.png /app/share/icons/hicolor/64x64/apps/io.github.olapreis.Ferrite.png
-      - install -Dm644 assets/icons/ferrite-48.png /app/share/icons/hicolor/48x48/apps/io.github.olapreis.Ferrite.png
+      - install -Dm644 assets/linux/io.github.schmettow.Sciscraper.desktop /app/share/applications/io.github.schmettow.Sciscraper.desktop
+      - install -Dm644 assets/linux/io.github.schmettow.Sciscraper.metainfo.xml /app/share/metainfo/io.github.schmettow.Sciscraper.metainfo.xml
+      - install -Dm644 assets/icons/ferrite-256.png /app/share/icons/hicolor/256x256/apps/io.github.schmettow.Sciscraper.png
+      - install -Dm644 assets/icons/ferrite-128.png /app/share/icons/hicolor/128x128/apps/io.github.schmettow.Sciscraper.png
+      - install -Dm644 assets/icons/ferrite-64.png /app/share/icons/hicolor/64x64/apps/io.github.schmettow.Sciscraper.png
+      - install -Dm644 assets/icons/ferrite-48.png /app/share/icons/hicolor/48x48/apps/io.github.schmettow.Sciscraper.png
     sources:
       - type: git
         url: https://github.com/OlaProeis/Ferrite.git
@@ -162,16 +162,16 @@ sudo apt install flatpak-builder
 python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
 
 # Build and test
-flatpak-builder --user --install --force-clean build-dir io.github.olapreis.Ferrite.yml
+flatpak-builder --user --install --force-clean build-dir io.github.schmettow.Sciscraper.yml
 
 # Run
-flatpak run io.github.olapreis.Ferrite
+flatpak run io.github.schmettow.Sciscraper
 ```
 
 #### 5. Submit to Flathub
 
 1. Fork https://github.com/flathub/flathub
-2. Create new branch `new-pr/io.github.olapreis.Ferrite`
+2. Create new branch `new-pr/io.github.schmettow.Sciscraper`
 3. Add your manifest file
 4. Submit PR following their template
 5. Respond to reviewer feedback
@@ -369,11 +369,11 @@ rustPlatform.buildRustPackage rec {
 ### Phase 1: Preparation (Do First)
 
 - [x] Create `assets/linux/` directory
-- [x] Create `.desktop` file (`io.github.olapreis.Ferrite.desktop`)
-- [x] Create `metainfo.xml` file (`io.github.olapreis.Ferrite.metainfo.xml`)
+- [x] Create `.desktop` file (`io.github.schmettow.Sciscraper.desktop`)
+- [x] Create `metainfo.xml` file (`io.github.schmettow.Sciscraper.metainfo.xml`)
 - [x] Add screenshot(s) to repo for Flathub (using existing `assets/screenshots/`)
 - [x] Verify all icon sizes exist in `assets/icons/`
-- [x] Create Flatpak manifest template (`io.github.olapreis.Ferrite.yml`)
+- [x] Create Flatpak manifest template (`io.github.schmettow.Sciscraper.yml`)
 
 ### Phase 2: Flathub Submission
 
@@ -450,7 +450,7 @@ rustPlatform.buildRustPackage rec {
 
 ## Questions to Resolve
 
-1. **App ID:** Is `io.github.olapreis.Ferrite` the correct reverse-DNS format? (GitHub username + repo)
+1. **App ID:** Is `io.github.schmettow.Sciscraper` the correct reverse-DNS format? (GitHub username + repo)
 2. **Screenshots:** Do we have good high-res screenshots for Flathub listing?
 3. **Homebrew core vs tap:** Start with tap (faster), consider core submission later if popular?
 4. **Snap confinement:** `strict` (more secure) vs `classic` (more permissions)?

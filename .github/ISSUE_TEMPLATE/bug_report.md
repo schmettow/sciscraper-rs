@@ -13,7 +13,7 @@ A clear and concise description of the bug.
 ## Environment
 
 - **OS:** [e.g., Windows 11, Ubuntu 22.04, macOS 14]
-- **Ferrite version:** [e.g., 0.1.0]
+- **Sciscraper version:** [e.g., 0.3.0]
 - **Rust version:** [run `rustc --version`]
 - **Installation method:** [pre-built binary / built from source]
 

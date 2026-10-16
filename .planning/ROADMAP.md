@@ -16,6 +16,7 @@
 | 9 | Power Terminal | Command history and SSH session management | TERM-01..06 | Skipped |
 | 10 | Database Tools | SQLite browser with query editor | DB-01..08 | Skipped |
 | 11 | Integration & Polish | Menu items, shortcuts, persistence | INT-01..04 | ✓ Complete |
+| 12 | Sciscape Onboarding | First-run experience: rebranded Welcome screen and onboarding flow | — | Planned |
 
 ---
 
@@ -229,6 +230,20 @@ Plans:
 
 ---
 
+## Phase 12: Sciscape Onboarding
+
+**Goal:** Turn the rebranded Welcome screen into the Sciscape onboarding experience for new users.
+
+**Scope:**
+- Rebrand the hard-coded Welcome heading to Sciscraper (`src/ui/welcome.rs`; shipped with the 0.3.0 branding pass).
+- Shape first-run setup around the product's components — workspace/corpus choice, agent (Ollama) checks, and the Library — following the "Ferrite Inside / Ragrig Inside" policy in the root roadmap.
+- Fold in the dedicated logo once it lands (README placeholder today).
+
+**Estimated Complexity:** Low-Medium
+**Dependencies:** None (extends the 0.3.0 branding pass)
+
+---
+
 ## Dependency Graph
 
 ```
@@ -294,4 +309,4 @@ Productivity     AI Assistant          Power Terminal
 
 ---
 
-*Last updated: 2026-01-24*
+*Last updated: 2026-10-16*

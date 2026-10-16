@@ -85,6 +85,27 @@ impl Task {
         })
     }
 
+    /// Convert task back to markdown format.
+    ///
+    /// Round-trip companion to [`Task::from_markdown`]; kept as public API even
+    /// though no UI action calls it yet.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let task = Task { completed: false, text: "Buy milk".to_string(), priority: 0 };
+    /// assert_eq!(task.to_markdown(), "- [ ] Buy milk");
+    /// ```
+    #[allow(dead_code)]
+    pub fn to_markdown(&self) -> String {
+        let checkbox = if self.completed { "[x]" } else { "[ ]" };
+        let priority_prefix = match self.priority {
+            2 => "!! ",
+            1 => "! ",
+            _ => "",
+        };
+        format!("- {} {}{}", checkbox, priority_prefix, self.text)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1280,7 +1301,11 @@ impl ProductivityPanel {
     }
 
     /// Build button label text with a Phosphor icon glyph followed by caption text.
-    fn pomodoro_button_label(icon: &str, label: &str, color: eframe::egui::Color32) -> eframe::egui::text::LayoutJob {
+    fn pomodoro_button_label(
+        icon: &str,
+        label: &str,
+        color: eframe::egui::Color32,
+    ) -> eframe::egui::text::LayoutJob {
         use crate::ui::icons::phosphor_font;
         use eframe::egui::text::{LayoutJob, TextFormat};
         use eframe::egui::FontId;

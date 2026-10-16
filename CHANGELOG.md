@@ -1,13 +1,91 @@
 # Changelog
 
-All notable changes to Ferrite will be documented in this file.
+All notable changes to Sciscraper are documented in this file, followed by
+the inherited Ferrite history this fork builds on.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-10-16 — Sciscraper first crates.io release
+
+First publication of Sciscraper, the scientific Markdown editor forked from
+[Ferrite](https://github.com/OlaProeis/Ferrite) (the version line is inherited
+from the upstream editor). Sciscraper is an independent product; the Ferrite
+editor and the [ragrig](https://github.com/schmettow/ragrig) framework are
+embedded as components (“Ferrite Inside”, “Ragrig Inside” — see ROADMAP.md).
+
+### Added (over the inherited editor)
+
+- **Agent pane** (right; feature `rag`, in the default set): RAG chat backed by
+  ragrig — hybrid BM25 + vector retrieval against the workspace corpus,
+  streaming answers, persisted conversations, hot-swappable components via the
+  component bar, `@Key` paper attachments, focus mode and co-edit. See README
+  § Using the agent.
+- **Library pane** (left): the BibTeX bibliography as a working list —
+  drag-to-cite as `@key` / `[@key]`, hover actions, row → file navigation.
+- **GROBID ingest** (feature `grobid`, opt-in): *Add PDFs…*, the URL row, and
+  drop-to-ingest parse through the GROBID pre-pass and merge into the
+  workspace bibliography.
+
+### Changed (product level)
+
+- Re-branded as Sciscraper: window title and app id, Welcome panel, installer
+  metadata (deb/rpm/MSI, macOS bundle id `io.github.schmettow.sciscraper`),
+  maintainer/repository fields, Flathub desktop and metainfo files.
+- Default features now include `rag`; `grobid` stays opt-in. A Ferrite-parity
+  build for back-port work is `--no-default-features --features bundle-icon`.
+- Toolchain pinned to Rust 1.92.0 (`rust-toolchain.toml`); MSRV-aware
+  dependency resolution via `resolver = "3"`.
+- Locales: the copyright line now names Ferrite and Sciscraper contributors;
+  all other component-level strings keep their inherited Ferrite wording by
+  policy.
+
+### Fixed
+
+- **Test target did not compile on `master`** (42 errors): stale test imports
+  in `editor/ferrite/history.rs` and `markdown/mermaid/mod.rs` after the
+  flowchart-parser split, a `Task::to_markdown` helper removed while its tests
+  stayed, and missing test helpers. `cargo test --all-features` is green again.
+- **Bare-URL video paragraphs** (`https://youtu.be/…`) parse as embeds again —
+  comrak emits an empty `Text("")` sibling next to autolinks, which the
+  extractor rejected.
+- **Crash-recovery identity**: the schema marker now distinguishes legacy v1
+  records from v2 records that positively note an untitled tab, so an untitled
+  recovery can no longer bleed into a path-backed tab that reused the id
+  (`RECOVERY_CONTENT_SCHEMA_VERSION` 1 → 2; v1 files still load and stay
+  legacy).
+- **Block-height cache tests** are serialized against their shared global
+  cache; the mermaid subgraph-title assertion tolerates 1-ULP f32 rounding.
+- **Warning cleanup on the pinned toolchain**, non-destructively: 14 bin
+  warnings → 0 (scoped `#[allow(…)]`/`_` prefixes; the two egui 0.34
+  deprecations migrated to `run_ui`/`show_inside`). The 158
+  `float_literal_f32_fallback` findings seen on rustc 1.99 do not exist on
+  1.92.
+
+### Quality
+
+- **Build:** `cargo fmt --check` clean; `cargo check --all-targets
+  --all-features` on Rust 1.92.0 with 0 warnings and 0 errors in our code (one
+  cargo-level future-incompat note from the `ashpd` dependency, not ours).
+  `cargo doc --no-deps --all-features`: 38 pre-existing intra-doc-link
+  warnings in inherited docs (report-only).
+- **Tests:** `cargo test --all-features` — **1812 passed, 0 failed, 2 ignored**.
+- **Coverage** (`cargo llvm-cov --all-features`; doctests not measured on
+  stable): 44.4% regions / **43.2% lines** / 55.5% functions over 91 597 lines
+  — inherited editor plus fork code; GUI paths are additionally exercised
+  manually (README test plans).
+- **Clippy:** `cargo clippy --all-targets --all-features -- -D warnings`
+  reports 322 findings in the inherited codebase (never gated before this
+  release). Deferred to a module-by-module, back-port-safe cleanup track — see
+  ROADMAP.
+- **`cargo package --list`:** 247 files; dev-only trees (`test_md/`, `docs/`,
+  `portable/`, screenshots) excluded via the `include` whitelist, all
+  compile-time assets (fonts, prompts, icons, locales) verified present.
+
 ## [Unreleased] — v0.3.1
 
-Work in progress on `master`; not yet tagged.
+Inherited from Ferrite `master` at the fork point (back-port watch); not part
+of Sciscraper releases.
 
 ### Added
 

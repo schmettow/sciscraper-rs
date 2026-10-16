@@ -1,8 +1,67 @@
-# Ferrite Roadmap
+# Sciscraper Roadmap
 
-Forward-looking plan for Ferrite — what we're building next. **Shipped releases:** [CHANGELOG.md](CHANGELOG.md) (**latest stable: [v0.3.0](CHANGELOG.md#030---2026-05-22)**, May 22, 2026).
+**Sciscraper is an independent product.** It embeds components and credits them
+as such: **Ferrite Inside** — the editor engine (editing, preview, viewers,
+export, terminal) — and **Ragrig Inside** — the RAG framework behind the agent
+pane. The [`ragrig-egui`](https://github.com/schmettow/ragrig-egui) pane layer
+keeps the two sides separable: the editor component can be swapped without
+touching the agent side.
+
+We chose Ferrite because it is best-of-breed for egui — with a grateful nod to
+its developers. The fork is not a race: Sciscraper tracks upstream at
+synchronization points, and the next granted moment to sync with Ferrite is its
+**v1.0.0** release. Until then Ferrite stays present in all exports and credit
+lines, as long as the component is in use.
+
+**Shipped releases:** [CHANGELOG.md](CHANGELOG.md) — latest: **v0.3.0** (first
+crates.io release, October 2026).
 
 ---
+
+## Sciscraper roadmap (product)
+
+### v0.3.x — publication hardening
+
+- [ ] **Lint debt after the first release** — `cargo clippy --all-targets
+      --all-features -- -D warnings` reports 322 findings in the inherited
+      codebase (never gated before). Clean up module by module; where upstream
+      still edits the code, prefer `_` prefixes and scoped `#[allow(…)]` so
+      Ferrite back-ports stay mergeable (same policy as the rustc-warning pass
+      in v0.3.0).
+- [ ] **Separate product state** — move Sciscraper-owned configuration (agent /
+      RAG profiles, GROBID settings, library paths) into
+      `~/.config/sciscraper/`; the Ferrite component keeps `~/.config/ferrite/`
+      (one-time fallback read for existing installs).
+- [ ] **Logo rollout** — the dedicated Sciscraper logo replaces the README
+      placeholder and the inherited icon set (packaging icons, `.ico`, `.icns`).
+- [ ] **Welcome / onboarding** — grow the rebranded Welcome panel into the
+      Sciscape onboarding flow (tracked in
+      [`.planning/ROADMAP.md`](.planning/ROADMAP.md) § Phase 12).
+- [ ] **Release plumbing** — SignPath project rename (external service),
+      PortableApps re-branding, release-workflow artifact names.
+
+### Later
+
+- [ ] **Cross-building pipeline for Windows** — produce the Windows binaries
+      and installers from CI on other platforms (pattern: `ragrig-cli`'s
+      MSVC/MinGW support and `cfg(unix)` gating, plus the existing WiX/NSIS
+      inputs in this repository). Deferred to a later version.
+
+### Known issues
+
+- [ ] **Agent pane: attachment size cap is compile-time only** —
+      `MAX_ATTACH_CHARS` / `MAX_CONTEXT_CHARS` (100 000 chars;
+      `src/rag/cite.rs`, aliased in `src/rag/roundtrip.rs`) cap the document
+      buffer, marked selections, the bibliography and `@Key` papers. **Make it
+      configurable** (agent settings) so it can be raised or lowered without
+      rebuilding.
+
+---
+
+## Inherited: Ferrite roadmap (upstream watch — next sync at Ferrite v1.0.0)
+
+Everything below is the upstream Ferrite roadmap as inherited at the fork
+point, kept for back-port orientation. Sciscraper does not track it one-to-one.
 
 ## In Progress — v0.3.1
 
@@ -68,12 +127,6 @@ With the v0.2.6 custom editor, most previous egui TextEdit limitations are resol
 
 ### Executable Code Blocks (v0.3.0)
 Core Run (shell + Python, inline output, timeout, **Stop**) works for typical use; manual checklist: [`test_md/test_code_execution.md`](test_md/test_code_execution.md). Remaining edge cases (Windows `bash` without Git Bash, `sh`/`zsh` fallback, run state keyed by line number, copy/insert stderr format) are documented in [`code-block-run.md`](docs/technical/markdown/code-block-run.md) § Known limitations. **Fixes: v0.3.1** — see [Planned Features → v0.3.1 → Executable code blocks — hardening](#executable-code-blocks--hardening--polish).
-
-### Agent Pane (RAG)
-- [ ] **Attachment size cap is compile-time only** - `MAX_ATTACH_CHARS` / `MAX_CONTEXT_CHARS`
-  (100 000 chars; `src/rag/cite.rs`, aliased in `src/rag/roundtrip.rs`) cap the document buffer,
-  marked selections, the bibliography and `@Key` papers. **Make it configurable** (agent
-  settings) so it can be raised or lowered without rebuilding.
 
 ---
 

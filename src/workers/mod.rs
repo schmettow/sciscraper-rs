@@ -67,6 +67,7 @@ pub struct WorkerHandle {
     pub response_rx: Receiver<WorkerResponse>,
 }
 
+#[allow(dead_code)] // full worker API surface; the upcoming panels call the rest
 impl WorkerHandle {
     /// Spawn a new worker thread running the given worker function.
     ///

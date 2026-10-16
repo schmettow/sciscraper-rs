@@ -47,6 +47,7 @@ pub struct AnsiLine {
 #[cfg(test)]
 impl AnsiLine {
     /// Total visible character count (sum of segment text lengths).
+    #[allow(dead_code)] // kept for the ANSI-rendering tests (upstream back-port)
     pub fn char_count(&self) -> usize {
         self.segments.iter().map(|s| s.text.chars().count()).sum()
     }

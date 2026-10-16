@@ -10,7 +10,7 @@ Confirm before creating `vX.Y.Z`:
 
 - [ ] `Cargo.toml` `version = "X.Y.Z"`
 - [ ] `CHANGELOG.md` dated (not `Unreleased`) with compare link at bottom
-- [ ] `assets/linux/io.github.olaproeis.Ferrite.metainfo.xml`:
+- [ ] `assets/linux/io.github.schmettow.Sciscraper.metainfo.xml`:
   - New `<release version="X.Y.Z">` entry (newest first)
   - Screenshot URLs use tag `vX.Y.Z` (not `master`)
 - [ ] `portable/FerriteMDPortable/App/AppInfo/appinfo.ini` `PackageVersion` / `DisplayVersion`
@@ -60,7 +60,7 @@ Full detail: [docs/install/macos.md](https://github.com/OlaProeis/Ferrite/blob/m
 
 Do **not** open the Flathub PR until the tag exists and GitHub Release builds succeed. Full steps: [`flathub-maintenance.md`](./flathub-maintenance.md).
 
-1. Clone/pull `https://github.com/flathub/io.github.olaproeis.Ferrite`
+1. Clone/pull `https://github.com/flathub/io.github.schmettow.Sciscraper`
 2. Branch `update-vX.Y.Z`
 3. Update manifest `tag:` and `commit:` (`git log -1 --format="%H" vX.Y.Z` in Ferrite repo)
 4. Regenerate `cargo-sources.json` if `Cargo.lock` changed (required for 0.3.0)

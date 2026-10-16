@@ -1,5 +1,10 @@
 # Sciscraper
 
+<!-- Sciscraper logo placeholder — the dedicated logo lands here when ready -->
+
+[![crates.io](https://img.shields.io/crates/v/sciscraper.svg)](https://crates.io/crates/sciscraper)
+[![CI](https://github.com/schmettow/sciscraper-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/schmettow/sciscraper-rs/actions/workflows/ci.yml)
+
 **Sciscraper** is a scientific Markdown editor with integrated reference
 management and RAG writing assistance. It is a fork of
 [Ferrite](https://github.com/OlaProeis/Ferrite), a fast, lightweight editor for
@@ -19,12 +24,13 @@ On top of the inherited editor, Sciscraper adds a pane on each side:
   anywhere on the window (or add URLs with the link button) to ingest them
   (feature `grobid`).
 
-Both panes are behind the Cargo feature `rag` (see
-[Building and running](#building-and-running)); a build without it is the
-plain Ferrite editor.
+Both panes are in the default feature set (`rag`); building with
+`--no-default-features` gives the plain Ferrite editor (see
+[Building and running](#building-and-running)).
 
 ## Contents
 
+- [Install](#install)
 - [The inherited editor](#the-inherited-editor)
 - [Building and running](#building-and-running)
 - [Using the agent](#using-the-agent)
@@ -32,6 +38,17 @@ plain Ferrite editor.
 - [Troubleshooting](#troubleshooting)
 - [Where Sciscraper keeps its state](#where-sciscraper-keeps-its-state)
 - [Credits and license](#credits-and-license)
+
+## Install
+
+```bash
+cargo install sciscraper                    # editor + agent pane (default)
+cargo install sciscraper --features grobid  # plus PDF/URL ingest via GROBID
+```
+
+Requires Rust 1.92+ and, on Linux, the Fontconfig development package
+(`libfontconfig1-dev`); without it, build with `RUST_FONTCONFIG_DLOPEN=1`.
+Prebuilt installers (deb/rpm/MSI/macOS) are attached to GitHub releases.
 
 ## The inherited editor
 
@@ -67,13 +84,13 @@ You need:
    ollama pull qwen2.5:1.5b      # memory / query rewriting (optional)
    ```
 
-Build the integrated editor (`rag` is **not** in the default feature set, so a
-plain build stays compatible with upstream Ferrite). **Add `grobid` as well if
-you want to add PDFs from inside the editor** — the *Add PDFs…* button and
-drop-to-ingest only exist with both features:
+Build the integrated editor (the agent panes are in the default feature set —
+plain `cargo build` is the product). **Add `grobid` if you want to add PDFs
+from inside the editor** — the *Add PDFs…* button and drop-to-ingest exist
+with that feature:
 
 ```bash
-cargo build --release --features rag,grobid
+cargo build --release --features grobid
 ./target/release/sciscraper               # editor only
 ./target/release/sciscraper ~/my-project  # open a folder as workspace
 ```
@@ -81,7 +98,13 @@ cargo build --release --features rag,grobid
 For a quick run during development:
 
 ```bash
-cargo run --features rag,grobid -- ~/my-project
+cargo run --features grobid -- ~/my-project
+```
+
+For Ferrite-parity work (upstream back-ports), build without the agent panes:
+
+```bash
+cargo build --release --no-default-features --features bundle-icon
 ```
 
 Packaging metadata (`cargo deb`, `cargo generate-rpm`, `cargo wix`,
@@ -90,7 +113,7 @@ Packaging metadata (`cargo deb`, `cargo generate-rpm`, `cargo wix`,
 
 | Cargo feature | Default | What it enables |
 |---|---|---|
-| `rag` | off | Agent pane, component bars, Library pane, `@Key` citations |
+| `rag` | **on** | Agent pane, component bars, Library pane, `@Key` citations |
 | `grobid` | off | Adding PDFs: the *Add PDFs…* browser, the URL row, and drop-to-ingest are parsed by GROBID, renamed and merged into the bibliography |
 
 A `rag`-only build still shows the GROBID component, greyed out, and its menu
@@ -712,7 +735,7 @@ sessions and the library.
 
 Sciscraper is MIT-licensed, like the projects it builds on:
 
-- [Ferrite](https://github.com/OlaProeis/Ferrite) by OlaProeis — the editor.
+- [Ferrite](https://github.com/OlaProeis/Ferrite) by OlaProeis — the editor engine (Ferrite Inside).
 - [`ragrig`](https://github.com/schmettow/ragrig) and
   [`ragrig-cli`](https://github.com/schmettow/ragrig-cli) — the RAG framework
   and terminal front end.

@@ -20,7 +20,10 @@ pub fn allow_set_foreground_window(process_id: u32) -> bool {
     unsafe { AllowSetForegroundWindow(process_id) != 0 }
 }
 
+/// No-op on this platform; the Windows variant drives the single-instance
+/// foreground handoff.
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 pub fn allow_set_foreground_window(_process_id: u32) -> bool {
     false
 }

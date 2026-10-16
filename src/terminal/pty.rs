@@ -168,6 +168,9 @@ impl TerminalPty {
     }
 
     /// Build the shell command for the specified shell type.
+    ///
+    /// `shell_type` only matters on Windows; Unix shells are detected at runtime.
+    #[cfg_attr(not(windows), allow(unused_variables))]
     fn build_shell_command(
         shell_type: ShellType,
         working_dir: Option<std::path::PathBuf>,
@@ -207,10 +210,7 @@ impl TerminalPty {
                 let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
                 (CommandBuilder::new(shell), WindowsLaunchShell::Cmd)
             }
-            ShellType::Wsl => (
-                CommandBuilder::new("wsl.exe"),
-                WindowsLaunchShell::Wsl,
-            ),
+            ShellType::Wsl => (CommandBuilder::new("wsl.exe"), WindowsLaunchShell::Wsl),
             ShellType::Default => {
                 if is_windows_powershell_available() {
                     (
@@ -218,8 +218,7 @@ impl TerminalPty {
                         WindowsLaunchShell::PowerShell,
                     )
                 } else {
-                    let shell =
-                        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+                    let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
                     (CommandBuilder::new(shell), WindowsLaunchShell::Cmd)
                 }
             }

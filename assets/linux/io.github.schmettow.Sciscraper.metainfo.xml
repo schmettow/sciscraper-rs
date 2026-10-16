@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.schmettow.Sciscraper</id>
+  <name>Sciscraper</name>
+  <summary>A scientific Markdown editor with reference management and RAG assistance</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="io.github.schmettow">
+    <name>Martin Schmettow</name>
+  </developer>
+
+  <description>
+    <p>
+      Sciscraper is a scientific Markdown editor with integrated reference
+      management and RAG writing assistance. It embeds the Ferrite editor
+      (editing, preview, viewers, export) and the Ragrig framework (agent
+      pane, retrieval, library) — built with Rust and egui.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Agent pane: RAG chat against your document corpus, with hybrid BM25 + vector retrieval</li>
+      <li>Library pane: your BibTeX bibliography, one row per reference, drag-to-cite as @key or [@key]</li>
+      <li>Add PDFs or URLs; GROBID parses and merges them into the bibliography</li>
+      <li>Three view modes: Raw editing, Split view, and full WYSIWYG preview</li>
+      <li>Native Mermaid diagram rendering (flowcharts, sequence, class, state, ER, Gantt, pie charts, and more)</li>
+      <li>CSV/TSV viewer with rainbow column coloring and sorting</li>
+      <li>JSON/YAML/TOML tree viewer with collapsible nodes</li>
+      <li>Git integration with visual status indicators in the file tree</li>
+      <li>Find and replace with regex support; synchronized scrolling between editor and preview</li>
+      <li>PDF and HTML export, executable fenced code blocks, terminal, and productivity hub</li>
+      <li>Multi-language interface support; Zen mode for distraction-free writing</li>
+    </ul>
+  </description>
+
+  <url type="homepage">https://github.com/schmettow/sciscraper-rs</url>
+  <url type="bugtracker">https://github.com/schmettow/sciscraper-rs/issues</url>
+  <url type="vcs-browser">https://github.com/schmettow/sciscraper-rs</url>
+
+  <launchable type="desktop-id">io.github.schmettow.Sciscraper.desktop</launchable>
+
+  <provides>
+    <binary>sciscraper</binary>
+  </provides>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/schmettow/sciscraper-rs/master/assets/screenshots/split-dark.png</image>
+      <caption>Sciscraper in dark mode with split view showing markdown editing and live preview</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/schmettow/sciscraper-rs/master/assets/screenshots/raw-dark.png</image>
+      <caption>Raw editing mode with syntax highlighting</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/schmettow/sciscraper-rs/master/assets/screenshots/zen-dark.png</image>
+      <caption>Zen mode for distraction-free writing</caption>
+    </screenshot>
+  </screenshots>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.3.0" date="2026-10-16">
+      <description>
+        <p>First Sciscraper release — the panes the fork adds on top of the Ferrite editor:</p>
+        <ul>
+          <li>Agent pane backed by ragrig: streaming RAG chat, component bar, hot-swapping</li>
+          <li>Library pane: BibTeX bibliography with drag-to-cite (@key / [@key])</li>
+          <li>GROBID ingest: add PDFs and URLs, parsed and merged into the bibliography</li>
+          <li>Focus mode and co-edit against marked passages</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>
