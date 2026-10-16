@@ -994,12 +994,25 @@ to hand off the file.
 targets the conventional routes are: Linux `xdg-open` (and `gio open`, `gnome-open`,
 `kde-open`), macOS `open`, Windows `ShellExecuteW`. The `open` crate — **already a
 dependency** and already used for reveal-in-explorer and *open after export* — wraps exactly
-those and tries them in order, so the eye reuses it (`open::that(path)`) with no new
-dependency. The one caveat is the Flatpak build: inside the sandbox `xdg-open` is absent and
-spawning a host viewer is blocked, so a portal-aware path (`opener`'s
-`org.freedesktop.portal.OpenURI`, or a direct `ashpd` call on the tree's existing
-zbus/ashpd family) is the sandbox-correct follow-up if the Flatpak needs it. Decision: `open`
-now, portal only if the Flatpak turns out to need it.
+those and tries them in order, so the eye reuses it with no new dependency. `open::that`
+joins the launcher (`Command::status()`), which the crate's own docs flag as something that
+“may block” — not acceptable behind a pane that must never freeze. `open::that_detached` is
+the crate's answer for that: it forks, `setsid`s and exits the intermediate process, so it
+returns immediately **and** the viewer survives Sciscraper exiting (killing the author's
+viewers on exit would take control away from them). The one caveat is the Flatpak build:
+inside the sandbox `xdg-open` is absent and spawning a host viewer is blocked, so a
+portal-aware path (`opener`'s `org.freedesktop.portal.OpenURI`, or a direct `ashpd` call on
+the tree's existing zbus/ashpd family) is the sandbox-correct follow-up if the Flatpak needs
+it. Decision: `open::that_detached` now, portal only if the Flatpak turns out to need it.
+
+**The copy-path fallback.** Detaching buys the non-blocking hand-over and costs the error
+channel: the intermediate process exits before the grandchild `exec`s, so the launcher's exit
+status is unreachable — `Ok` means *a launcher was spawned*, never *a viewer appeared*. A
+missing or misconfigured `xdg-open` (the author's KDE desktop) therefore reports success and
+does nothing. So the pane reports **every** attempt under the file line — `Opened <file>`, or
+the reason — with a *copy path* button beside it: when the system call silently does nothing,
+the author still has the file. That is why the note is not failure-only, and why
+`RagEvent::PaperOpen` always carries the resolved path.
 
 **One resolver, not two.** Opening a row needed the *document* of an entry — the same
 cascade `cite::resolve` already had (`file` field, resolved against the corpus folder, else a
@@ -1010,12 +1023,12 @@ disagree about which paper a row means, and the ambiguity rule (“N candidate f
 (ambiguous)”, never guess) is single-sourced.
 
 **Off the UI thread.** `RagCommand::OpenPaper { key, file }` → the worker resolves the path in
-`spawn_blocking` and calls `open::that`; a success is silent (the viewer appearing is the
-feedback), a failure comes back as `RagEvent::PaperUnavailable { key, reason }` and shows as
-a transient warning under the file line (six seconds, `warning()` from `ragrig-egui::form`).
-The reasons are the resolver's own — *no document linked*, *linked document not found*,
-*N candidate files (ambiguous)*, *no RAG workspace…* — so the pane explains the miss instead
-of a viewer that silently does not appear.
+`spawn_blocking` and hands it over with `open::that_detached`; the attempt comes back as
+`RagEvent::PaperOpen { key, path, error }`. `open_outcome` folds it: a resolved document keeps
+its path even when the launcher failed — exactly the case the copy button is for — while an
+unresolved one reports the resolver's own reason: *no document linked*, *linked document not
+found*, *N candidate files (ambiguous)*, *no RAG workspace…*. The note shows under the file
+line for six seconds (`note()`/`warning()` from `ragrig-egui::form`) and drops itself.
 
 **The button.** A fourth hover action on the row (eye, `EYE`), leftmost so `+` keeps the
 corner it always had. It follows the sprint-6.6 invariants to the letter: laid out every
@@ -1024,15 +1037,16 @@ per-row stable id (`("open", key)`), inside `ui.new_child` (never `scope_builder
 `show_list`→worker hop reuses the existing `LibraryAction::commands` channel; no new action
 field.
 
-Verification: sciscraper with `rag` — 1676 pass (the known pre-existing failures of §5, plus
-one flaky `markdown::cache` test that passes in isolation; the five stale test modules
-quarantined and restored). New: `library::resolve_document` unit tests (file field absolute +
-relative, keyed name, case-insensitivity, ambiguity, missing), the eye click-through
-(`the_eye_button_asks_the_worker_to_open_the_document`, asserting the command's key and
-*unresolved* file), the failure note render/expiry, and two worker events
-(`opening_a_paper_without_a_workspace_explains_itself`,
-`opening_a_paper_resolves_its_document_before_the_viewer`). rustfmt-clean on the pinned
-1.92.0; clippy reports nothing new in the touched files.
+Verification: sciscraper with `rag` — 1679 pass (the known pre-existing failures of §5; the
+five stale test modules quarantined and restored). New: `library::resolve_document` unit tests
+(file field absolute + relative, keyed name, case-insensitivity, ambiguity, missing), the eye
+click-through (`the_eye_button_asks_the_worker_to_open_the_document`, asserting the command's
+key and *unresolved* file), the note's visibility + copy click (`OutputCommand::CopyText`
+carries the document's path) and its expiry, `open_outcome` keeping the path on a failed
+hand-over, and two worker events (`opening_a_paper_without_a_workspace_explains_itself`,
+`opening_a_paper_resolves_its_document_before_the_viewer` — both on the resolution-failure
+path, because a resolvable row would launch a real viewer wherever the tests run).
+rustfmt-clean on the pinned 1.92.0; clippy reports nothing new in the touched files.
 
 > **Build note (not ours to fix here).** The checkout's `Cargo.toml` still names the
 > co-developed crate at `../ragrig-egui` while the directory is `ragrig_egui`, so a local

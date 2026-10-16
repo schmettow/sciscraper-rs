@@ -1107,6 +1107,8 @@ agent:
     copied: "@%{key} kopiert"
     open_paper: "Das Paper im Systembetrachter öffnen"
     open_paper_failed: "@%{key} kann nicht geöffnet werden: %{reason}"
+    opened_paper: "Geöffnet: %{file}"
+    copy_document_path: "Den Pfad des Dokuments kopieren"
     chip: "Bibliografie"
     refresh: "Bibliografie neu einlesen"
     open_hint: "Die Bibliografie im Editor öffnen"

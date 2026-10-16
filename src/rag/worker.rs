@@ -231,13 +231,17 @@ pub enum RagEvent {
         /// What the pane should render.
         state: Box<LibraryState>,
     },
-    /// A library entry could not be opened in the system viewer; `reason` is
-    /// user-presentable and `key` names the row (RX, sprint 6.10).
-    PaperUnavailable {
+    /// The result of an open attempt (RX, sprint 6.10): the resolved document
+    /// path — always reported, because [`open::that_detached`] cannot say
+    /// whether the desktop actually showed anything — and the reason, when no
+    /// document could be resolved or no launcher spawned.
+    PaperOpen {
         /// The citation key of the row.
         key: String,
-        /// Why the document could not be opened.
-        reason: String,
+        /// The resolved document, when there is one.
+        path: Option<PathBuf>,
+        /// Why nothing was handed to the desktop, when that failed.
+        error: Option<String>,
     },
     /// An ingestion run finished (feature `grobid`).
     #[cfg(feature = "grobid")]
@@ -751,10 +755,15 @@ fn spawn_library_load(context: QueryContext, events: Sender<RagEvent>) {
 
 /// Resolve a library entry's document and hand it to the system viewer.
 ///
-/// Resolution reads the corpus folder, so it runs off the executor thread; the
-/// viewer itself is a detached process (`open`), not a child to wait on. A
-/// success is silent — the viewer appearing is the feedback — a failure is
-/// reported so the pane can say why nothing opened.
+/// Resolution reads the corpus folder, so it runs off the executor thread. The
+/// hand-over is [`open::that_detached`]: it never blocks — it forks and lets the
+/// launcher run in its own session (`setsid`) — so the UI thread can never
+/// stall on a launcher, and the viewer survives Sciscraper exiting (a viewer
+/// must not be killed because the app closed). What comes back, though, is only
+/// whether a launcher could be *spawned*: the detach trick exits the
+/// intermediate process before the grandchild `exec`s, so the launcher's exit
+/// status is unreachable and `Ok` does **not** mean a viewer appeared. That is
+/// why the pane always offers the resolved path as a copy fallback.
 fn spawn_open_paper(
     context: QueryContext,
     key: String,
@@ -766,8 +775,8 @@ fn spawn_open_paper(
         .effective_workspace(context.editor_workspace.as_deref());
     let settings = context.settings.library.clone();
     tokio::spawn(async move {
-        // The closure needs the key for the lookup but the match below still
-        // needs it for the report: hand the resolver its own copy.
+        // The closure needs the key for the lookup but the report below still
+        // needs it: hand the resolver its own copy.
         let resolve_key = key.clone();
         let opened = tokio::task::spawn_blocking(move || {
             let Some(workspace) = workspace else {
@@ -777,24 +786,37 @@ fn spawn_open_paper(
             let mut scan = None;
             let path =
                 library::resolve_document(&resolve_key, file.as_deref(), &folder, &mut scan)?;
-            open::that(&path).map_err(|err| format!("cannot open {}: {err}", path.display()))
+            let failed = open::that_detached(&path)
+                .map_err(|err| format!("cannot open {}: {err}", path.display()))
+                .err();
+            Ok((path, failed))
         })
         .await;
-        match opened {
-            Ok(Ok(())) => log::debug!("RAG: opened @{key} in the system viewer"),
-            Ok(Err(reason)) => {
-                log::warn!("RAG: cannot open @{key}: {reason}");
-                let _ = events.send(RagEvent::PaperUnavailable { key, reason });
-            }
-            Err(err) => {
-                log::warn!("RAG: open-paper task failed for @{key}: {err}");
-                let _ = events.send(RagEvent::PaperUnavailable {
-                    key,
-                    reason: format!("the viewer task failed: {err}"),
-                });
-            }
+        let (path, error) = match opened {
+            Ok(attempt) => open_outcome(attempt),
+            Err(err) => (None, Some(format!("the viewer task failed: {err}"))),
+        };
+        match &error {
+            Some(reason) => log::warn!("RAG: cannot open @{key}: {reason}"),
+            None => log::debug!("RAG: handed @{key} to the system viewer"),
         }
+        let _ = events.send(RagEvent::PaperOpen { key, path, error });
     });
+}
+
+/// Fold a finished open attempt into what the pane shows: the resolved
+/// document, when there is one, and the reason nothing was handed over.
+///
+/// A launcher that failed *after* the document was resolved keeps that path:
+/// it is exactly the case where copying it by hand is the way out, so the path
+/// and the reason travel together.
+fn open_outcome(
+    attempt: Result<(PathBuf, Option<String>), String>,
+) -> (Option<PathBuf>, Option<String>) {
+    match attempt {
+        Ok((path, failure)) => (Some(path), failure),
+        Err(reason) => (None, Some(reason)),
+    }
 }
 
 /// Probe the configured backends off the executor thread.
@@ -2653,21 +2675,21 @@ mod tests {
     #[tokio::test]
     async fn opening_a_paper_without_a_workspace_explains_itself() {
         // The eye button's failure path (RX, sprint 6.10): with no workspace the
-        // document cannot be resolved, and the pane is told why instead of the
-        // viewer silently not appearing.
+        // document cannot be resolved, and the pane is told why — carrying no
+        // path to offer — instead of the attempt staying silent.
         let worker = RagrigWorker::spawn(RagSettings::default(), None, echo_factories());
         wait_for_status(&worker);
         worker.send(RagCommand::OpenPaper {
             key: "Ghost2024".into(),
             file: None,
         });
-        let event = wait_for_event(&worker, |event| {
-            matches!(event, RagEvent::PaperUnavailable { .. })
-        });
-        let RagEvent::PaperUnavailable { key, reason } = event else {
+        let event = wait_for_event(&worker, |event| matches!(event, RagEvent::PaperOpen { .. }));
+        let RagEvent::PaperOpen { key, path, error } = event else {
             unreachable!()
         };
         assert_eq!(key, "Ghost2024");
+        assert!(path.is_none(), "nothing was resolved: {path:?}");
+        let reason = error.expect("the miss must explain itself");
         assert!(reason.contains("workspace"), "unexpected reason: {reason}");
     }
 
@@ -2676,6 +2698,8 @@ mod tests {
         // Resolution happens in the worker, off the UI thread, and a row whose
         // document cannot be found reports the same reasons a citation attach
         // would — the two share `library::resolve_document` (RX, sprint 6.10).
+        // The row deliberately has no document: resolving one would reach the
+        // hand-over and launch a real viewer wherever the tests run.
         let dir = tempfile::tempdir().unwrap();
         write_library_file(
             dir.path(),
@@ -2688,16 +2712,39 @@ mod tests {
             key: "Ghost2024".into(),
             file: None,
         });
-        let event = wait_for_event(&worker, |event| {
-            matches!(event, RagEvent::PaperUnavailable { .. })
-        });
-        let RagEvent::PaperUnavailable { key, reason } = event else {
+        let event = wait_for_event(&worker, |event| matches!(event, RagEvent::PaperOpen { .. }));
+        let RagEvent::PaperOpen { key, path, error } = event else {
             unreachable!()
         };
         assert_eq!(key, "Ghost2024");
+        assert!(path.is_none(), "nothing was resolved: {path:?}");
+        let reason = error.expect("the miss must explain itself");
         assert!(
             reason.contains("no document linked"),
             "unexpected reason: {reason}"
+        );
+    }
+
+    #[test]
+    fn an_open_outcome_keeps_the_path_even_when_the_launcher_failed() {
+        // The pane's copy fallback depends on this: a launcher that failed
+        // *after* resolution still hands the author the document's path
+        // (`open::that_detached` cannot even report a successful hand-over).
+        let paper = PathBuf::from("/corpus/Smith2024 - A Paper.pdf");
+        assert_eq!(
+            open_outcome(Ok((paper.clone(), None))),
+            (Some(paper.clone()), None),
+            "a clean hand-over still reports the path"
+        );
+        assert_eq!(
+            open_outcome(Ok((paper.clone(), Some("cannot open it".into())))),
+            (Some(paper), Some("cannot open it".into())),
+            "a failed launcher keeps the path for the copy fallback"
+        );
+        assert_eq!(
+            open_outcome(Err("no document linked".into())),
+            (None, Some("no document linked".into())),
+            "an unresolved document has no path to offer"
         );
     }
 

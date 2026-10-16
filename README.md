@@ -418,10 +418,13 @@ key on hover.
     `[@Kano2022, @Smith2020]`
   - `⧉` *Copy citation key* — copies the Markdown form `@key`
   - the **eye** *opens the paper in your system viewer* (the app's own PDF
-    handler — Sciscraper does not embed one). The document is the entry's
-    `file` field, or a corpus file named after the key — the *same* rule
-    `@Key` attaching uses, so a row and its citation always mean the same
-    paper. If it cannot be found, the pane says why under the file line.
+    handler — Sciscraper does not embed one, and your viewers stay open when
+    you quit). The document is the entry's `file` field, or a corpus file
+    named after the key — the *same* rule `@Key` attaching uses, so a row and
+    its citation always mean the same paper. Every attempt is reported under
+    the file line — `Opened …`, or why nothing could be handed over — next to
+    a **copy path** button, because a desktop whose `xdg-open` is missing or
+    misconfigured can swallow the hand-off without a word.
 
 ### Drag a source into the document
 

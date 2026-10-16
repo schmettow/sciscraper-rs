@@ -27,7 +27,8 @@
 //! *document* — not the bibliography — in the system viewer, so a paper in the
 //! list can be read without leaving the app. The document is resolved the same
 //! way a citation is (`file` field, then a corpus file named after the key),
-//! off the UI thread; a resolution that fails is reported under the header.
+//! off the UI thread; every attempt is reported under the header, with the
+//! resolved path on offer for copying.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -72,6 +73,30 @@ pub struct LibraryAction {
     pub attach_bib: Option<bool>,
 }
 
+/// How long an open note stays under the header, in seconds.
+const OPEN_NOTE_SECONDS: f64 = 6.0;
+
+/// One open attempt's outcome, shown for a few seconds under the header.
+///
+/// The path is offered on *every* attempt, not only on a reported failure:
+/// `open::that_detached` cannot see whether the desktop showed anything (a
+/// missing or misconfigured launcher reports success all the same), and the
+/// copy button is the author's way out when the system call silently does
+/// nothing.
+#[derive(Clone)]
+struct OpenNote {
+    /// Localized message (`Opened <file>` or `Cannot open @<key>: <reason>`).
+    message: String,
+    /// The document to offer for copying, when one was resolved.
+    path: Option<PathBuf>,
+    /// When the note appeared; it expires [`OPEN_NOTE_SECONDS`] later.
+    at: f64,
+    /// Whether the copy button was just used (it shows a check while fresh).
+    copied: bool,
+    /// Whether to render as a warning (nothing was handed to the desktop).
+    failed: bool,
+}
+
 /// State of the library section, owned by `AgentPanel`.
 #[derive(Default)]
 pub struct LibrarySection {
@@ -94,9 +119,9 @@ pub struct LibrarySection {
     /// (feature `grobid`).
     #[cfg_attr(not(feature = "grobid"), allow(dead_code))]
     url_input: Option<String>,
-    /// A failed attempt to open a paper in the system viewer: the message and
-    /// the time it should stop showing (RX, sprint 6.10).
-    open_error: Option<(String, f64)>,
+    /// The last open attempt, shown under the header with a copy-path escape
+    /// hatch (RX, sprint 6.10).
+    open_note: Option<OpenNote>,
 }
 
 impl LibrarySection {
@@ -126,10 +151,16 @@ impl LibrarySection {
         }
     }
 
-    /// Record that a paper could not be opened in the system viewer, to show —
-    /// and expire — in the pane under the header (RX, sprint 6.10).
-    pub fn note_open_error(&mut self, message: String, at: f64) {
-        self.open_error = Some((message, at));
+    /// Record the outcome of an open attempt, to show — and expire — in the
+    /// pane under the header (RX, sprint 6.10).
+    pub fn note_open(&mut self, message: String, path: Option<PathBuf>, failed: bool, at: f64) {
+        self.open_note = Some(OpenNote {
+            message,
+            path,
+            at,
+            copied: false,
+            failed,
+        });
     }
 
     /// Toolbar row: add sources to the corpus.
@@ -273,16 +304,50 @@ impl LibrarySection {
         ui.add_space(2.0);
         self.show_toolbar(ui, action);
         self.show_header(ui, tabs, attached, action);
-        // A paper that could not be opened (RX, sprint 6.10): the row's eye is
-        // the only action whose success needs no feedback — the viewer
-        // appearing is the answer — so its failure shows where the click was
-        // made and fades on its own.
-        if let Some((message, at)) = self.open_error.clone() {
+        // The last open attempt (RX, sprint 6.10): the row's eye reports back
+        // here, where the click was made, so no attempt stays silent. The
+        // document's path is offered on *every* attempt, not only on a
+        // reported failure — the detached hand-over cannot see whether the
+        // desktop showed anything (a missing or misconfigured launcher reports
+        // success all the same), so the copy button is the way out when the
+        // system call silently does nothing.
+        if let Some(attempt) = self.open_note.clone() {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
-            if ui.ctx().input(|input| input.time) - at < 6.0 {
-                warning(ui, &message);
+            if ui.ctx().input(|input| input.time) - attempt.at < OPEN_NOTE_SECONDS {
+                ui.horizontal(|ui| {
+                    // The copy button keeps its place whatever the message
+                    // does: reserve it first, the header's file-line recipe.
+                    let reserved = if attempt.path.is_some() {
+                        ui.spacing().interact_size.y + ui.spacing().item_spacing.x
+                    } else {
+                        0.0
+                    };
+                    let width = (ui.available_width() - reserved).max(60.0);
+                    ui.scope(|ui| {
+                        ui.set_max_width(width);
+                        if attempt.failed {
+                            warning(ui, &attempt.message);
+                        } else {
+                            note(ui, &attempt.message);
+                        }
+                    });
+                    if let Some(path) = &attempt.path {
+                        let glyph = if attempt.copied { CHECK } else { COPY };
+                        let hint = if attempt.copied {
+                            t!("agent.library.path_copied")
+                        } else {
+                            t!("agent.library.copy_document_path")
+                        };
+                        if ui.small_button(glyph).on_hover_text(hint).clicked() {
+                            ui.ctx().copy_text(path.display().to_string());
+                            if let Some(current) = self.open_note.as_mut() {
+                                current.copied = true;
+                            }
+                        }
+                    }
+                });
             } else {
-                self.open_error = None;
+                self.open_note = None;
             }
         }
         match self.state.as_ref() {
@@ -1032,6 +1097,16 @@ mod tests {
             "the viewer hint key must resolve"
         );
 
+        // The open note's own strings (6.10): the success line names the file,
+        // the copy hint and its confirmation must resolve too.
+        let opened = t!("agent.library.opened_paper", file = "Caspar2021.pdf").to_string();
+        assert!(opened.contains("Caspar2021.pdf"), "{opened}");
+        assert!(!opened.contains("%{"), "{opened}");
+        let copy_hint = t!("agent.library.copy_document_path").to_string();
+        assert!(!copy_hint.contains("agent."), "missing key: {copy_hint}");
+        let copy_done = t!("agent.library.path_copied").to_string();
+        assert!(!copy_done.contains("agent."), "missing key: {copy_done}");
+
         let inserted = t!("notification.citation_inserted", text = "@X").to_string();
         assert!(inserted.contains("@X"), "{inserted}");
 
@@ -1671,19 +1746,39 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_open_shows_under_the_header_and_expires() {
-        // The eye is the only feedback-less action on success; a failure has to
-        // say why, where the click was made (RX, sprint 6.10).
+    fn an_open_note_shows_the_document_and_copies_it() {
+        // RX (sprint 6.10): every attempt reports under the header, with the
+        // resolved document on offer for copying. The detached hand-over cannot
+        // see whether the desktop showed anything (a missing or misconfigured
+        // launcher reports success all the same), so the silent case is exactly
+        // the one the copy button is for.
         let ctx = egui::Context::default();
-        let marker = "marker-open-failed";
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("Caspar2021 - The Cell model.pdf");
+        let marker = "marker-open-note";
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
         let mut section = LibrarySection::default();
-        section.note_open_error(marker.to_string(), 0.0);
+        section.note_open(marker.to_string(), Some(document.clone()), false, 0.0);
 
-        let full = ctx.run_ui(egui::RawInput::default(), |ui| {
-            section.show(ui, &[], false, &mut LibraryAction::default());
-        });
-        let painted: Vec<String> = painted_shapes(&full)
-            .into_iter()
+        let frame = |section: &mut LibrarySection, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            };
+            ctx.run_ui(input, |ui| {
+                section.show(ui, &[], false, &mut LibraryAction::default());
+            })
+        };
+
+        // The message is painted under the header; the copy glyph locates the
+        // button the next frame's click has to hit. Nothing else in this state
+        // paints a `COPY` (the header needs a loaded bibliography, the rows
+        // need entries), so the glyph is the button.
+        let full = frame(&mut section, vec![]);
+        let shapes = painted_shapes(&full);
+        let painted: Vec<String> = shapes
+            .iter()
             .filter_map(|shape| match shape {
                 egui::Shape::Text(text) => Some(text.galley.text().to_string()),
                 _ => None,
@@ -1691,12 +1786,57 @@ mod tests {
             .collect();
         assert!(
             painted.iter().any(|line| line.contains(marker)),
-            "the reason must be visible: {painted:?}"
+            "the outcome must be visible: {painted:?}"
         );
+        let on_the_button = shapes
+            .iter()
+            .find_map(|shape| match shape {
+                egui::Shape::Text(text) if text.galley.text() == COPY => {
+                    Some(text.pos + text.galley.size() / 2.0)
+                }
+                _ => None,
+            })
+            .expect("the copy button's glyph is painted");
 
-        // Past its window the note drops itself instead of lingering.
+        // Clicking yields the *document's* path — the point of the fallback —
+        // and flips the glyph to the check.
+        let press = |pressed| egui::Event::PointerButton {
+            pos: on_the_button,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let full = frame(
+            &mut section,
+            vec![
+                egui::Event::PointerMoved(on_the_button),
+                press(true),
+                press(false),
+            ],
+        );
+        let copied: Vec<String> = full
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(copied, vec![document.display().to_string()]);
+        assert!(
+            section.open_note.as_ref().is_some_and(|note| note.copied),
+            "the button shows a check after copying"
+        );
+    }
+
+    #[test]
+    fn an_open_note_expires_on_its_own() {
+        // The note is a hint, not a fixture: it drops itself after its window
+        // (RX, sprint 6.10).
+        let ctx = egui::Context::default();
         let mut stale = LibrarySection::default();
-        stale.note_open_error(marker.to_string(), 0.0);
+        stale.note_open("stale".to_string(), None, true, 0.0);
         let _ = ctx.run_ui(
             egui::RawInput {
                 time: Some(10.0),
@@ -1706,7 +1846,7 @@ mod tests {
                 stale.show(ui, &[], false, &mut LibraryAction::default());
             },
         );
-        assert!(stale.open_error.is_none(), "a stale note is dropped");
+        assert!(stale.open_note.is_none(), "a stale note is dropped");
     }
 
     #[test]

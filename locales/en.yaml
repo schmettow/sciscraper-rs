@@ -1175,6 +1175,8 @@ agent:
     copied: "Copied @%{key}"
     open_paper: "Open the paper in the system viewer"
     open_paper_failed: "Cannot open @%{key}: %{reason}"
+    opened_paper: "Opened %{file}"
+    copy_document_path: "Copy the document's path"
     chip: "Library"
     refresh: "Re-read the bibliography"
     open_hint: "Open the bibliography in the editor"

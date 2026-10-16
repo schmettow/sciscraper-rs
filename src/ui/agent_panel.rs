@@ -1038,17 +1038,37 @@ impl AgentPanel {
                 self.session = current;
             }
             RagEvent::Library { state } => self.library.apply(*state),
-            RagEvent::PaperUnavailable { key, reason } => {
-                // The eye button opens the viewer off the UI thread; a failure
-                // (no workspace, no resolvable document, no handler) reports
-                // back here and shows under the library header (RX, 6.10).
-                self.library.note_open_error(
-                    t!(
+            RagEvent::PaperOpen { key, path, error } => {
+                // The eye button hands the document to the desktop off the UI
+                // thread; the outcome — the resolved document, or why nothing
+                // was handed over — reports back here and shows under the
+                // library header, with the path on offer for copying
+                // (`open::that_detached` cannot tell whether anything opened;
+                // RX, 6.10).
+                let message = match &error {
+                    Some(reason) => t!(
                         "agent.library.open_paper_failed",
                         key = key.as_str(),
                         reason = reason.as_str()
                     )
                     .to_string(),
+                    None => {
+                        // A hand-over without a document is impossible; the
+                        // key is a fallback that keeps the line truthful.
+                        let file = match path.as_deref() {
+                            Some(document) => document.file_name().map_or_else(
+                                || document.display().to_string(),
+                                |name| name.to_string_lossy().into_owned(),
+                            ),
+                            None => key.clone(),
+                        };
+                        t!("agent.library.opened_paper", file = file.as_str()).to_string()
+                    }
+                };
+                self.library.note_open(
+                    message,
+                    path,
+                    error.is_some(),
                     ctx.input(|input| input.time),
                 );
             }
