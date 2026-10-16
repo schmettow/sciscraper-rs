@@ -266,7 +266,9 @@ impl Default for RagSettings {
         ragrig.embed.similarity_threshold = DEFAULT_SIMILARITY_THRESHOLD;
         ragrig.memory.strategy = MemoryStrategyKind::Transcript;
         Self {
-            enabled: false,
+            // Both panes (agent on the right, library on the left) are open
+            // on a fresh profile; the ribbon toggle hides them together.
+            enabled: true,
             width: DEFAULT_PANEL_WIDTH,
             library_width: DEFAULT_LIBRARY_WIDTH,
             agent_collapsed: false,
@@ -340,7 +342,7 @@ mod tests {
     #[test]
     fn default_settings_follow_the_decisions() {
         let settings = RagSettings::default();
-        assert!(!settings.enabled);
+        assert!(settings.enabled, "both panes are open on a fresh profile");
         assert!(settings.embeddings_enabled, "retrieval is on by default");
         assert!(
             settings.buffer_attached,
