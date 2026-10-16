@@ -81,7 +81,7 @@ enum Copied {
     /// The citation key, in the Markdown form `@key`.
     Key(String),
     /// The row's resolved document path.
-    DocumentPath,
+    DocumentPath(PathBuf),
 }
 
 /// How long an open note stays under the header, in seconds.
@@ -396,8 +396,10 @@ impl LibrarySection {
                             Copied::Key(key) => {
                                 t!("agent.library.copied", key = key.as_str()).to_string()
                             }
-                            Copied::DocumentPath => {
-                                t!("agent.library.document_path_copied").to_string()
+                            Copied::DocumentPath(path) => {
+                                let path = path.display().to_string();
+                                t!("agent.library.document_path_copied", path = path.as_str())
+                                    .to_string()
                             }
                         };
                         note(ui, &message);
@@ -641,8 +643,8 @@ fn show_list(
                 if let Some(key) = &outcome.copied {
                     copied = Some(Copied::Key(key.clone()));
                 }
-                if outcome.copied_path {
-                    copied = Some(Copied::DocumentPath);
+                if let Some(path) = &outcome.copied_path {
+                    copied = Some(Copied::DocumentPath(path.clone()));
                 }
                 if outcome.open {
                     action.commands.push(open_paper_command(entry));
@@ -689,8 +691,8 @@ struct RowOutcome {
     insert_bracketed: bool,
     /// The eye button asked for the entry's document in the system viewer.
     open: bool,
-    /// The file button copied the entry's document path.
-    copied_path: bool,
+    /// The row's document path, when the file button copied it.
+    copied_path: Option<PathBuf>,
     copied: Option<String>,
 }
 
@@ -752,10 +754,12 @@ fn show_row(
     }
 
     // Layout: meta line (Au · Yr — Source) above the title; the action
-    // buttons keep the right edge.
-    let [insert_rect, bracketed_rect, copy_rect, view_rect, path_rect] = action_buttons(rect);
+    // buttons keep the right edge. The slots run right to left from the
+    // corner — insert · APA · key · file · eye — so the outermost one bounds
+    // the text.
+    let [insert_rect, bracketed_rect, copy_rect, path_rect, view_rect] = action_buttons(rect);
     let mut text_rect = rect.shrink2(egui::vec2(4.0, 2.0));
-    text_rect.max.x = (path_rect.min.x - ui.spacing().item_spacing.x).max(text_rect.min.x + 20.0);
+    text_rect.max.x = (view_rect.min.x - ui.spacing().item_spacing.x).max(text_rect.min.x + 20.0);
     let mut row_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(text_rect)
@@ -870,7 +874,7 @@ fn show_row(
     ) {
         if let Some(document) = &entry.document {
             ui.ctx().copy_text(document.display().to_string());
-            outcome.copied_path = true;
+            outcome.copied_path = Some(document.clone());
         }
     }
 
@@ -880,10 +884,10 @@ fn show_row(
     outcome
 }
 
-/// The five action buttons of a row — laid out right to left behind the text:
+/// The five action buttons of a row, laid out right to left behind the text:
 /// insert at the cursor (the primary action, keeping the corner the `+` always
-/// had), the APA form, copy the key, open the document in the system viewer
-/// and copy its path.
+/// had), the APA form, copy the key, copy the document's path and open it in
+/// the system viewer.
 fn action_buttons(rect: egui::Rect) -> [egui::Rect; 5] {
     const SIZE: f32 = 18.0;
     const GAP: f32 = 2.0;
@@ -1181,8 +1185,10 @@ mod tests {
         assert!(!copy_hint.contains("agent."), "missing key: {copy_hint}");
         let copy_done = t!("agent.library.path_copied").to_string();
         assert!(!copy_done.contains("agent."), "missing key: {copy_done}");
-        let path_done = t!("agent.library.document_path_copied").to_string();
-        assert!(!path_done.contains("agent."), "missing key: {path_done}");
+        let path_done = t!("agent.library.document_path_copied", path = "/x/paper.pdf").to_string();
+        assert!(path_done.contains("\"/x/paper.pdf\""), "{path_done}");
+        assert!(!path_done.contains("%{"), "{path_done}");
+        assert!(!path_done.contains("agent."), "{path_done}");
         let no_document = t!("agent.library.no_document").to_string();
         assert!(
             !no_document.contains("agent."),
@@ -1779,7 +1785,8 @@ mod tests {
         let row_height = 36.0;
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
         let row = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, row_height));
-        let target = action_buttons(row)[3].center();
+        // The outermost slot holds the eye.
+        let target = action_buttons(row)[4].center();
 
         // Frame 1: the pointer rests on the row, so the buttons are laid out.
         let mut outcome = RowOutcome::default();
@@ -1850,7 +1857,8 @@ mod tests {
         let row_height = 36.0;
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
         let row = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, row_height));
-        let target = action_buttons(row)[4].center();
+        // The file button sits in the slot inside the eye's.
+        let target = action_buttons(row)[3].center();
 
         // Frame 1: the pointer rests on the row, so the buttons are laid out.
         let mut outcome = RowOutcome::default();
@@ -1863,7 +1871,7 @@ mod tests {
             outcome = show_row(ui, entry, row_height, false, &drag);
         });
         assert!(
-            !outcome.copied_path,
+            outcome.copied_path.is_none(),
             "hovering alone only reveals the buttons"
         );
 
@@ -1882,7 +1890,10 @@ mod tests {
         let full = ctx.run_ui(input, |ui| {
             outcome = show_row(ui, entry, row_height, false, &drag);
         });
-        assert!(outcome.copied_path, "the file button copies the document");
+        assert!(
+            outcome.copied_path.as_deref() == Some(document.as_path()),
+            "the file button copies the document"
+        );
         assert!(
             !outcome.open && outcome.copied.is_none() && !outcome.clicked,
             "copying the path is neither an open, a key copy nor a row click"
@@ -1919,7 +1930,7 @@ mod tests {
         let row_height = 36.0;
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
         let row = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, row_height));
-        let target = action_buttons(row)[4].center();
+        let target = action_buttons(row)[3].center();
 
         // Frame 1 lays the buttons out, frame 2 clicks the disabled one.
         let mut outcome = RowOutcome::default();
@@ -1945,7 +1956,10 @@ mod tests {
         let full = ctx.run_ui(input, |ui| {
             outcome = show_row(ui, entry, row_height, false, &drag);
         });
-        assert!(!outcome.copied_path, "a disabled button copies nothing");
+        assert!(
+            outcome.copied_path.is_none(),
+            "a disabled button copies nothing"
+        );
         let copied = full
             .platform_output
             .commands

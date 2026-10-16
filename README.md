@@ -417,16 +417,16 @@ key on hover.
   - `[ ]` *Insert [@key] (APA)* — for a multi-selection this expands to
     `[@Kano2022, @Smith2020]`
   - `⧉` *Copy citation key* — copies the Markdown form `@key`
+  - the **file** *copies the document's path* — the way out when the desktop
+    swallows the hand-off, which a missing or misconfigured `xdg-open` does
+    without a word. When the row has no document, the button is disabled and
+    its hover text says so.
   - the **eye** *opens the paper in your system viewer* (the app's own PDF
     handler — Sciscraper does not embed one, and your viewers stay open when
     you quit). The document is the entry's `file` field, or a corpus file
     named after the key — the *same* rule `@Key` attaching uses, so a row and
     its citation always mean the same paper. Every attempt is reported under
     the file line (`Opened …`, or why nothing could be handed over).
-  - the **file** *copies the document's path*, next to the eye it belongs to —
-    the way out when the desktop swallows the hand-off, which a missing or
-    misconfigured `xdg-open` does without a word. When the row has no
-    document, the button is disabled and its hover text says so.
 
 ### Drag a source into the document
 

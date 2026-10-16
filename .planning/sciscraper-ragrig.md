@@ -1030,17 +1030,18 @@ unresolved one reports the resolver's own reason: *no document linked*, *linked 
 found*, *N candidate files (ambiguous)*, *no RAG workspace…*. The note shows under the file
 line for six seconds (`note()`/`warning()` from `ragrig-egui::form`) and drops itself.
 
-**The buttons.** A fourth hover action on the row (eye, `EYE`) opens the document, a fifth
-(file, `FILE_PDF`) copies its path; the two sit left of the citation actions, so `+` keeps
-the corner it always had. Both follow the sprint-6.6 invariants to the letter: laid out every
-frame, painted and interactive only while the pointer is on the row (`UiBuilder::invisible`,
-now the `Reveal` enum: `Hidden` / `Active` / `Disabled` — a row with no document keeps the
-file button in place but greyed, explaining itself in its hover text), per-row stable ids
-(`("open", key)`, `("path", key)`), inside `ui.new_child` (never `scope_builder`). The
-`show_list`→worker hop reuses the existing `LibraryAction::commands` channel; no new action
-field. The copy itself needed the resolved path *on the row*, so `LibraryView::resolve_documents`
-resolves every entry once per load — in the worker, one `read_dir` for the whole list, silent
-about the misses (the eye re-resolves and reports the reason when asked).
+**The buttons.** A file button (fourth hover action, `FILE_PDF`) copies the row's document
+path and an eye (fifth, `EYE`) opens it in the system viewer; the two sit left of the citation
+actions — the eye outermost — so `+` keeps the corner it always had. Both follow the
+sprint-6.6 invariants to the letter: laid out every frame, painted and interactive only while
+the pointer is on the row (`UiBuilder::invisible`, now the `Reveal` enum: `Hidden` /
+`Active` / `Disabled` — a row with no document keeps the file button in place but greyed,
+explaining itself in its hover text), per-row stable ids (`("path", key)`, `("open", key)`),
+inside `ui.new_child` (never `scope_builder`). The `show_list`→worker hop reuses the existing
+`LibraryAction::commands` channel; no new action field. The copy itself needed the resolved
+path *on the row*, so `LibraryView::resolve_documents` resolves every entry once per load — in
+the worker, one `read_dir` for the whole list, silent about the misses (the eye re-resolves
+and reports the reason when asked).
 
 Verification: sciscraper with `rag` — 1681 pass (the known pre-existing failures of §5, plus
 the intermittent `markdown::cache` flake that passes in isolation; the five stale test modules

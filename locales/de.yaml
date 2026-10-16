@@ -1109,7 +1109,7 @@ agent:
     open_paper_failed: "@%{key} kann nicht geöffnet werden: %{reason}"
     opened_paper: "Geöffnet: %{file}"
     copy_document_path: "Den Pfad des Dokuments kopieren"
-    document_path_copied: "Pfad des Dokuments kopiert"
+    document_path_copied: "\"%{path}\" kopiert"
     no_document: "Kein Dokument in diesem Eintrag verlinkt"
     chip: "Bibliografie"
     refresh: "Bibliografie neu einlesen"
