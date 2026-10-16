@@ -37,6 +37,14 @@ pub struct LibraryEntry {
     /// The document recorded in the entry (`file`/`pdf`), when it points
     /// somewhere.
     pub file: Option<PathBuf>,
+    /// The document this row points at, resolved against the corpus folder
+    /// ([`resolve_document`]); `None` when nothing resolves.
+    ///
+    /// Filled once per load by [`LibraryView::resolve_documents`], because the
+    /// row's *copy path* button needs the answer while the pointer is on the
+    /// row and must not wait for a round trip. The eye re-resolves on click
+    /// instead: only that way can it report *why* a row has no document.
+    pub document: Option<PathBuf>,
     /// Pre-computed, lower-cased search text (kept private to the filter).
     search: String,
 }
@@ -58,6 +66,7 @@ impl LibraryEntry {
             title,
             source,
             file,
+            document: None,
             search: String::new(),
         };
         entry.search = entry.build_search();
@@ -112,6 +121,20 @@ pub struct LibraryView {
 }
 
 impl LibraryView {
+    /// Resolve every row's document against the corpus `folder`.
+    ///
+    /// One `read_dir` for the whole view (`resolve_document`'s scan cache),
+    /// and deliberately silent: the pane only needs to know *whether* a row
+    /// has a document. The reason a row has none is reported when the author
+    /// asks for it — the eye re-resolves and says why.
+    pub fn resolve_documents(&mut self, folder: &Path) {
+        let mut scan = None;
+        for entry in &mut self.entries {
+            entry.document =
+                resolve_document(&entry.key, entry.file.as_deref(), folder, &mut scan).ok();
+        }
+    }
+
     /// Row indices matching `query`, best match first.
     ///
     /// An empty query keeps the bibliography order. Matching is fuzzy over
@@ -203,11 +226,17 @@ pub fn load_state(workspace: Option<&Path>, settings: &LibrarySettings) -> Libra
         };
     }
     match load(&bib) {
-        Ok(view) => LibraryState::Ready {
-            path: bib,
-            discovered: paths.discovered,
-            view,
-        },
+        Ok(mut view) => {
+            // The rows carry the documents the corpus folder resolves for
+            // them (the row's copy-path button reads them); this runs in the
+            // worker, so the scan never touches the UI thread.
+            view.resolve_documents(&paths.folder);
+            LibraryState::Ready {
+                path: bib,
+                discovered: paths.discovered,
+                view,
+            }
+        }
         Err(error) => LibraryState::Corrupt { path: bib, error },
     }
 }
@@ -617,6 +646,38 @@ mod tests {
         assert!(path.ends_with("CEH.bib"));
         assert!(discovered, "a lone workspace bibliography is discovered");
         assert_eq!(view.entries.len(), 3);
+    }
+
+    #[test]
+    fn resolve_documents_fills_the_rows_from_the_corpus_folder() {
+        // The pane's file button reads the resolved path off the row, so the
+        // view resolves every entry once — and stays silent about the misses:
+        // the eye re-resolves and reports the reason when it is asked.
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path();
+        let bib = write(
+            folder,
+            "library.bib",
+            "@misc{Linked2024,\n  file = {paper.pdf}\n}\n\n@misc{Keyed2024,\n  title = {T}\n}\n\n@misc{Unlinked2024,\n  title = {T}\n}\n",
+        );
+        let linked = write(folder, "paper.pdf", "%PDF");
+        let keyed = write(folder, "Keyed2024 - A Paper.pdf", "%PDF");
+        let mut view = load(&bib).unwrap();
+        view.resolve_documents(folder);
+
+        let document = |key: &str| {
+            view.entries
+                .iter()
+                .find(|entry| entry.key == key)
+                .expect("the row is there")
+                .document
+                .clone()
+        };
+        // The `file` field answers for one row, the keyed name for the other —
+        // the same cascade `@Key` attaching uses.
+        assert_eq!(document("Linked2024").as_deref(), Some(linked.as_path()));
+        assert_eq!(document("Keyed2024").as_deref(), Some(keyed.as_path()));
+        assert_eq!(document("Unlinked2024"), None);
     }
 
     #[test]

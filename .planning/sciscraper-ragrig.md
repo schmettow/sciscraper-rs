@@ -1009,10 +1009,10 @@ it. Decision: `open::that_detached` now, portal only if the Flatpak turns out to
 channel: the intermediate process exits before the grandchild `exec`s, so the launcher's exit
 status is unreachable — `Ok` means *a launcher was spawned*, never *a viewer appeared*. A
 missing or misconfigured `xdg-open` (the author's KDE desktop) therefore reports success and
-does nothing. So the pane reports **every** attempt under the file line — `Opened <file>`, or
-the reason — with a *copy path* button beside it: when the system call silently does nothing,
-the author still has the file. That is why the note is not failure-only, and why
-`RagEvent::PaperOpen` always carries the resolved path.
+does nothing, so the author needs the file in hand. Two affordances carry that: a **file
+button on the row** (next to the eye) that copies the document's path, and the note under the
+file line, which reports every attempt (that is why `RagEvent::PaperOpen` always carries the
+resolved path) with the same path on offer.
 
 **One resolver, not two.** Opening a row needed the *document* of an entry — the same
 cascade `cite::resolve` already had (`file` field, resolved against the corpus folder, else a
@@ -1030,20 +1030,28 @@ unresolved one reports the resolver's own reason: *no document linked*, *linked 
 found*, *N candidate files (ambiguous)*, *no RAG workspace…*. The note shows under the file
 line for six seconds (`note()`/`warning()` from `ragrig-egui::form`) and drops itself.
 
-**The button.** A fourth hover action on the row (eye, `EYE`), leftmost so `+` keeps the
-corner it always had. It follows the sprint-6.6 invariants to the letter: laid out every
-frame, painted and interactive only while the pointer is on the row (`UiBuilder::invisible`),
-per-row stable id (`("open", key)`), inside `ui.new_child` (never `scope_builder`). The
+**The buttons.** A fourth hover action on the row (eye, `EYE`) opens the document, a fifth
+(file, `FILE_PDF`) copies its path; the two sit left of the citation actions, so `+` keeps
+the corner it always had. Both follow the sprint-6.6 invariants to the letter: laid out every
+frame, painted and interactive only while the pointer is on the row (`UiBuilder::invisible`,
+now the `Reveal` enum: `Hidden` / `Active` / `Disabled` — a row with no document keeps the
+file button in place but greyed, explaining itself in its hover text), per-row stable ids
+(`("open", key)`, `("path", key)`), inside `ui.new_child` (never `scope_builder`). The
 `show_list`→worker hop reuses the existing `LibraryAction::commands` channel; no new action
-field.
+field. The copy itself needed the resolved path *on the row*, so `LibraryView::resolve_documents`
+resolves every entry once per load — in the worker, one `read_dir` for the whole list, silent
+about the misses (the eye re-resolves and reports the reason when asked).
 
-Verification: sciscraper with `rag` — 1679 pass (the known pre-existing failures of §5; the
-five stale test modules quarantined and restored). New: `library::resolve_document` unit tests
-(file field absolute + relative, keyed name, case-insensitivity, ambiguity, missing), the eye
-click-through (`the_eye_button_asks_the_worker_to_open_the_document`, asserting the command's
-key and *unresolved* file), the note's visibility + copy click (`OutputCommand::CopyText`
-carries the document's path) and its expiry, `open_outcome` keeping the path on a failed
-hand-over, and two worker events (`opening_a_paper_without_a_workspace_explains_itself`,
+Verification: sciscraper with `rag` — 1681 pass (the known pre-existing failures of §5, plus
+the intermittent `markdown::cache` flake that passes in isolation; the five stale test modules
+quarantined and restored). New: `library::resolve_document` unit tests (file field absolute +
+relative, keyed name, case-insensitivity, ambiguity, missing) and `resolve_documents` filling
+the rows; the eye click-through (`the_eye_button_asks_the_worker_to_open_the_document`,
+asserting the command's key and *unresolved* file); the file button copying the document on
+the row (`the_file_button_copies_the_documents_path`, reading the frame's `CopyText`) and
+refusing to when the row has none (`the_file_button_is_disabled_without_a_document`); the
+note's visibility, copy click and expiry; `open_outcome` keeping the path on a failed
+hand-over; and two worker events (`opening_a_paper_without_a_workspace_explains_itself`,
 `opening_a_paper_resolves_its_document_before_the_viewer` — both on the resolution-failure
 path, because a resolvable row would launch a real viewer wherever the tests run).
 rustfmt-clean on the pinned 1.92.0; clippy reports nothing new in the touched files.

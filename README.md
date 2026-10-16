@@ -408,7 +408,7 @@ key on hover.
   the count line shows `shown of total`.
 - **Select** — click a row; **Ctrl+click** extends the selection; clicking the
   only selected row clears it.
-- **Row actions on hover** — while the pointer is on a row, four buttons
+- **Row actions on hover** — while the pointer is on a row, five buttons
   appear at its right edge:
   - `+` *Insert @key at the cursor* — e.g. `@Kano2022` (a **double-click**
     does the same). While the **chat prompt holds the keyboard** (its frame
@@ -422,9 +422,11 @@ key on hover.
     you quit). The document is the entry's `file` field, or a corpus file
     named after the key — the *same* rule `@Key` attaching uses, so a row and
     its citation always mean the same paper. Every attempt is reported under
-    the file line — `Opened …`, or why nothing could be handed over — next to
-    a **copy path** button, because a desktop whose `xdg-open` is missing or
-    misconfigured can swallow the hand-off without a word.
+    the file line (`Opened …`, or why nothing could be handed over).
+  - the **file** *copies the document's path*, next to the eye it belongs to —
+    the way out when the desktop swallows the hand-off, which a missing or
+    misconfigured `xdg-open` does without a word. When the row has no
+    document, the button is disabled and its hover text says so.
 
 ### Drag a source into the document
 

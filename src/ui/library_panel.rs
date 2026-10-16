@@ -28,7 +28,9 @@
 //! list can be read without leaving the app. The document is resolved the same
 //! way a citation is (`file` field, then a corpus file named after the key),
 //! off the UI thread; every attempt is reported under the header, with the
-//! resolved path on offer for copying.
+//! resolved path on offer for copying. Next to the eye sits a *file* button
+//! that copies that same path — the way out when the desktop swallows the
+//! hand-over (a missing or misconfigured launcher is silent).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -43,8 +45,8 @@ use crate::rag::library::file_label;
 use crate::rag::{CitePayload, LibraryEntry, LibraryState, LibraryView, RagCommand};
 use crate::state::{Tab, TabKind};
 use crate::ui::phosphor_icons::{
-    ARROWS_CLOCKWISE, BRACKETS_SQUARE, CHECK, COPY, EYE, MAGNIFYING_GLASS, PAPERCLIP, PLUS,
-    UPLOAD_SIMPLE, X,
+    ARROWS_CLOCKWISE, BRACKETS_SQUARE, CHECK, COPY, EYE, FILE_PDF, MAGNIFYING_GLASS, PAPERCLIP,
+    PLUS, UPLOAD_SIMPLE, X,
 };
 
 /// What one frame of the library section produced.
@@ -71,6 +73,15 @@ pub struct LibraryAction {
     /// The header's attach toggle was clicked, with the value it now asks
     /// for: the bibliography then rides along with every question.
     pub attach_bib: Option<bool>,
+}
+
+/// What a row put on the clipboard (the transient confirmation follows).
+#[derive(Clone)]
+enum Copied {
+    /// The citation key, in the Markdown form `@key`.
+    Key(String),
+    /// The row's resolved document path.
+    DocumentPath,
 }
 
 /// How long an open note stays under the header, in seconds.
@@ -110,8 +121,8 @@ pub struct LibrarySection {
     watcher: Option<LibraryWatcher>,
     /// Modification time of the file the current state was built from.
     loaded_mtime: Option<SystemTime>,
-    /// Last copied key and when (for the transient "copied" hint).
-    copied: Option<(String, f64)>,
+    /// Last copy action and when (for the transient "copied" hint).
+    copied: Option<(Copied, f64)>,
     /// When the header's copy-path button was last clicked: it shows a check
     /// until two seconds later (RX, sprint 6.7).
     copied_path: Option<f64>,
@@ -378,10 +389,18 @@ impl LibrarySection {
                     &mut self.copied,
                     action,
                 );
-                if let Some((key, at)) = &self.copied {
+                if let Some((what, at)) = &self.copied {
                     ui.ctx().request_repaint_after(Duration::from_millis(250));
                     if ui.ctx().input(|input| input.time) - at < 2.0 {
-                        note(ui, &t!("agent.library.copied", key = key.as_str()));
+                        let message = match what {
+                            Copied::Key(key) => {
+                                t!("agent.library.copied", key = key.as_str()).to_string()
+                            }
+                            Copied::DocumentPath => {
+                                t!("agent.library.document_path_copied").to_string()
+                            }
+                        };
+                        note(ui, &message);
                     } else {
                         self.copied = None;
                     }
@@ -568,7 +587,7 @@ fn show_list(
     view: &LibraryView,
     filter: &mut String,
     selected: &mut BTreeSet<String>,
-    copied: &mut Option<(String, f64)>,
+    copied: &mut Option<(Copied, f64)>,
     action: &mut LibraryAction,
 ) {
     ui.horizontal(|ui| {
@@ -609,10 +628,10 @@ fn show_list(
     let row_height = ui.text_style_height(&egui::TextStyle::Small)
         + ui.text_style_height(&egui::TextStyle::Body)
         + 6.0;
-    let copied_row: Option<String> = egui::ScrollArea::vertical()
+    let copied_row: Option<Copied> = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show_rows(ui, row_height, visible.len(), |ui, range| {
-            let mut copied = None;
+            let mut copied: Option<Copied> = None;
             for row in range {
                 let entry = &view.entries[visible[row]];
                 let is_selected = selected.contains(&entry.key);
@@ -620,7 +639,10 @@ fn show_list(
                 let drag = payload_for(entry, grouped, view, &visible, selected);
                 let outcome = show_row(ui, entry, row_height, is_selected, &drag);
                 if let Some(key) = &outcome.copied {
-                    copied = Some(key.clone());
+                    copied = Some(Copied::Key(key.clone()));
+                }
+                if outcome.copied_path {
+                    copied = Some(Copied::DocumentPath);
                 }
                 if outcome.open {
                     action.commands.push(open_paper_command(entry));
@@ -651,9 +673,9 @@ fn show_list(
             copied
         })
         .inner;
-    if let Some(key) = copied_row {
+    if let Some(what) = copied_row {
         let now = ui.ctx().input(|input| input.time);
-        *copied = Some((key, now));
+        *copied = Some((what, now));
     }
 }
 
@@ -667,6 +689,8 @@ struct RowOutcome {
     insert_bracketed: bool,
     /// The eye button asked for the entry's document in the system viewer.
     open: bool,
+    /// The file button copied the entry's document path.
+    copied_path: bool,
     copied: Option<String>,
 }
 
@@ -684,11 +708,11 @@ fn open_paper_command(entry: &LibraryEntry) -> RagCommand {
 ///
 /// The row is a `click_and_drag` widget (the tab-bar pattern): clicking
 /// selects, dragging publishes `drag` as the egui payload. While the pointer
-/// is on the row, four action buttons appear at its right edge — insert at
+/// is on the row, five action buttons appear at its right edge — insert at
 /// the cursor, insert the APA form, copy the key (sprint 6.5: they replaced a
-/// right-click menu that was hard to hit) and open the document in the system
-/// viewer (sprint 6.10). Their space is always reserved, so the text does not
-/// jump when they appear.
+/// right-click menu that was hard to hit), open the document in the system
+/// viewer and copy its path (sprint 6.10). Their space is always reserved, so
+/// the text does not jump when they appear.
 fn show_row(
     ui: &mut egui::Ui,
     entry: &LibraryEntry,
@@ -729,9 +753,9 @@ fn show_row(
 
     // Layout: meta line (Au · Yr — Source) above the title; the action
     // buttons keep the right edge.
-    let [insert_rect, bracketed_rect, copy_rect, view_rect] = action_buttons(rect);
+    let [insert_rect, bracketed_rect, copy_rect, view_rect, path_rect] = action_buttons(rect);
     let mut text_rect = rect.shrink2(egui::vec2(4.0, 2.0));
-    text_rect.max.x = (view_rect.min.x - ui.spacing().item_spacing.x).max(text_rect.min.x + 20.0);
+    text_rect.max.x = (path_rect.min.x - ui.spacing().item_spacing.x).max(text_rect.min.x + 20.0);
     let mut row_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(text_rect)
@@ -767,6 +791,11 @@ fn show_row(
     // ids only sometimes, renumbering every widget of the rows below — egui
     // flags that as a widget id change between passes (red debug frames) and
     // the rows' hover state flickers with it.
+    let reveal = if hovering {
+        Reveal::Active
+    } else {
+        Reveal::Hidden
+    };
     if action_button(
         ui,
         insert_rect,
@@ -774,7 +803,7 @@ fn show_row(
         "insert",
         PLUS,
         &t!("agent.library.insert_hint"),
-        hovering,
+        reveal,
     ) {
         outcome.insert = true;
     }
@@ -785,7 +814,7 @@ fn show_row(
         "bracketed",
         BRACKETS_SQUARE,
         &t!("agent.library.insert_bracketed"),
-        hovering,
+        reveal,
     ) {
         outcome.insert_bracketed = true;
     }
@@ -796,7 +825,7 @@ fn show_row(
         "copy",
         COPY,
         &t!("agent.library.copy_key"),
-        hovering,
+        reveal,
     ) {
         // The Markdown form, not the bare key: it is what the author pastes
         // into a document or a question (RX, sprint 6.9).
@@ -810,9 +839,39 @@ fn show_row(
         "open",
         EYE,
         &t!("agent.library.open_paper"),
-        hovering,
+        reveal,
     ) {
         outcome.open = true;
+    }
+    // The document's path, next to the eye it belongs to. The row already
+    // carries the resolved document (the view resolved it at load, off the UI
+    // thread), so this is a plain copy — no round trip, no waiting for a
+    // frame. A row with nothing to point at keeps the button as a disabled
+    // placeholder and says so in its hover text: an action that silently does
+    // nothing is worse than one that explains itself.
+    let path_hint = if entry.document.is_some() {
+        t!("agent.library.copy_document_path")
+    } else {
+        t!("agent.library.no_document")
+    };
+    let path_reveal = match (hovering, entry.document.is_some()) {
+        (false, _) => Reveal::Hidden,
+        (true, true) => Reveal::Active,
+        (true, false) => Reveal::Disabled,
+    };
+    if action_button(
+        ui,
+        path_rect,
+        &entry.key,
+        "path",
+        FILE_PDF,
+        &path_hint,
+        path_reveal,
+    ) {
+        if let Some(document) = &entry.document {
+            ui.ctx().copy_text(document.display().to_string());
+            outcome.copied_path = true;
+        }
     }
 
     outcome.clicked = response.clicked();
@@ -821,10 +880,11 @@ fn show_row(
     outcome
 }
 
-/// The four action buttons of a row: insert at the cursor (the primary
-/// action, keeping the corner the `+` always had), the APA form, copy and the
-/// system-viewer eye — laid out right to left behind the text.
-fn action_buttons(rect: egui::Rect) -> [egui::Rect; 4] {
+/// The five action buttons of a row — laid out right to left behind the text:
+/// insert at the cursor (the primary action, keeping the corner the `+` always
+/// had), the APA form, copy the key, open the document in the system viewer
+/// and copy its path.
+fn action_buttons(rect: egui::Rect) -> [egui::Rect; 5] {
     const SIZE: f32 = 18.0;
     const GAP: f32 = 2.0;
     let y = rect.center().y - SIZE / 2.0;
@@ -832,7 +892,19 @@ fn action_buttons(rect: egui::Rect) -> [egui::Rect; 4] {
         let x = (rect.max.x - 2.0 - SIZE - slot as f32 * (SIZE + GAP)).max(rect.min.x);
         egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(SIZE, SIZE))
     };
-    [at(0), at(1), at(2), at(3)]
+    [at(0), at(1), at(2), at(3), at(4)]
+}
+
+/// How a row's action button appears this frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reveal {
+    /// Laid out, but invisible and non-interactive: the pointer is elsewhere.
+    Hidden,
+    /// Shown and clickable.
+    Active,
+    /// Shown but disabled — the row has nothing for this action, and the
+    /// hover text says why. It keeps its place, so the row never re-layouts.
+    Disabled,
 }
 
 /// One row action button, with a per-row stable id: a recycled auto id could
@@ -843,10 +915,10 @@ fn action_buttons(rect: egui::Rect) -> [egui::Rect; 4] {
 /// bottom edge, a few pixels above the row's. That pulled every row below the
 /// hovered one up while the pointer rested on it.
 ///
-/// `shown` controls visibility: the button is *laid out* in every frame (its
-/// child ui consumes an auto id of the list, so creating it conditionally would
-/// renumber every widget of the rows below) and painted and interactive only
-/// while the pointer is on the row.
+/// `reveal` controls visibility and interactivity: the button is *laid out* in
+/// every frame (its child ui consumes an auto id of the list, so creating it
+/// conditionally would renumber every widget of the rows below) and painted
+/// and interactive only while the pointer is on the row.
 fn action_button(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -854,15 +926,18 @@ fn action_button(
     action: &str,
     icon: &str,
     hint: &str,
-    shown: bool,
+    reveal: Reveal,
 ) -> bool {
     let mut builder = egui::UiBuilder::new().max_rect(rect).id_salt((action, key));
-    if !shown {
+    if reveal == Reveal::Hidden {
         builder = builder.invisible();
     }
     let mut button_ui = ui.new_child(builder);
     button_ui
-        .add(egui::Button::new(icon).small().frame(false))
+        .add_enabled(
+            reveal != Reveal::Disabled,
+            egui::Button::new(icon).small().frame(false),
+        )
         .on_hover_text(hint)
         .clicked()
 }
@@ -1106,6 +1181,13 @@ mod tests {
         assert!(!copy_hint.contains("agent."), "missing key: {copy_hint}");
         let copy_done = t!("agent.library.path_copied").to_string();
         assert!(!copy_done.contains("agent."), "missing key: {copy_done}");
+        let path_done = t!("agent.library.document_path_copied").to_string();
+        assert!(!path_done.contains("agent."), "missing key: {path_done}");
+        let no_document = t!("agent.library.no_document").to_string();
+        assert!(
+            !no_document.contains("agent."),
+            "missing key: {no_document}"
+        );
 
         let inserted = t!("notification.citation_inserted", text = "@X").to_string();
         assert!(inserted.contains("@X"), "{inserted}");
@@ -1283,7 +1365,7 @@ mod tests {
             "hovering one row renumbered the widgets of another"
         );
         // Sanity check that the rows were there to begin with: two row-height
-        // widgets (`click_and_drag` rows), the smallest are the three buttons.
+        // widgets (`click_and_drag` rows), the smallest are the five buttons.
         assert_eq!(
             resting
                 .iter()
@@ -1346,7 +1428,7 @@ mod tests {
                 .iter()
                 .any(|shape| matches!(shape, egui::Shape::Rect(rect) if rect.fill == hover_fill))
         };
-        let glyphs = [PLUS, BRACKETS_SQUARE, COPY, EYE];
+        let glyphs = [PLUS, BRACKETS_SQUARE, COPY, EYE, FILE_PDF];
         let painted_glyphs = |shapes: &[egui::Shape]| {
             shapes
                 .iter()
@@ -1370,7 +1452,7 @@ mod tests {
         );
         assert_eq!(
             painted_glyphs(&hovering),
-            4,
+            5,
             "the pointer on the row text showed no buttons"
         );
     }
@@ -1743,6 +1825,134 @@ mod tests {
         };
         assert_eq!(key, "Caspar2021");
         assert_eq!(file.as_deref(), Some(Path::new("paper.pdf")));
+    }
+
+    #[test]
+    fn the_file_button_copies_the_documents_path() {
+        // RX (sprint 6.10): the row carries its resolved document — the view
+        // resolved it at load, off the UI thread — so the copy is immediate.
+        // This is the author's way out when the desktop swallows the eye's
+        // hand-over.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut view = view_of(SAMPLE, dir.path());
+        let document = dir.path().join("paper.pdf");
+        std::fs::write(&document, "%PDF").unwrap();
+        view.resolve_documents(dir.path());
+        let entry = view
+            .entries
+            .iter()
+            .find(|entry| entry.key == "Caspar2021")
+            .expect("the sample row is there");
+        assert_eq!(entry.document.as_deref(), Some(document.as_path()));
+
+        let drag = CitePayload::inline(entry.key.clone());
+        let row_height = 36.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, row_height));
+        let target = action_buttons(row)[4].center();
+
+        // Frame 1: the pointer rests on the row, so the buttons are laid out.
+        let mut outcome = RowOutcome::default();
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![egui::Event::PointerMoved(target)],
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+        assert!(
+            !outcome.copied_path,
+            "hovering alone only reveals the buttons"
+        );
+
+        // Frame 2: the click lands on the file button.
+        let press = |pressed| egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![press(true), press(false)],
+            ..egui::RawInput::default()
+        };
+        let full = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+        assert!(outcome.copied_path, "the file button copies the document");
+        assert!(
+            !outcome.open && outcome.copied.is_none() && !outcome.clicked,
+            "copying the path is neither an open, a key copy nor a row click"
+        );
+        let copied: Vec<String> = full
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(copied, vec![document.display().to_string()]);
+    }
+
+    #[test]
+    fn the_file_button_is_disabled_without_a_document() {
+        // A row with nothing to point at keeps the button in place — the row's
+        // layout never moves — but copying is refused, not silently empty:
+        // `Kahle2000` has no `file` field and no corpus file named after it.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut view = view_of(SAMPLE, dir.path());
+        view.resolve_documents(dir.path());
+        let entry = view
+            .entries
+            .iter()
+            .find(|entry| entry.key == "Kahle2000")
+            .expect("the sample row is there");
+        assert_eq!(entry.document, None);
+
+        let drag = CitePayload::inline(entry.key.clone());
+        let row_height = 36.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, row_height));
+        let target = action_buttons(row)[4].center();
+
+        // Frame 1 lays the buttons out, frame 2 clicks the disabled one.
+        let mut outcome = RowOutcome::default();
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![egui::Event::PointerMoved(target)],
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+        let press = |pressed| egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![press(true), press(false)],
+            ..egui::RawInput::default()
+        };
+        let full = ctx.run_ui(input, |ui| {
+            outcome = show_row(ui, entry, row_height, false, &drag);
+        });
+        assert!(!outcome.copied_path, "a disabled button copies nothing");
+        let copied = full
+            .platform_output
+            .commands
+            .iter()
+            .filter(|command| matches!(command, egui::OutputCommand::CopyText(_)))
+            .count();
+        assert_eq!(copied, 0, "the clipboard stays untouched");
     }
 
     #[test]

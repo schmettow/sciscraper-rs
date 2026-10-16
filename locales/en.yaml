@@ -1177,6 +1177,8 @@ agent:
     open_paper_failed: "Cannot open @%{key}: %{reason}"
     opened_paper: "Opened %{file}"
     copy_document_path: "Copy the document's path"
+    document_path_copied: "Document path copied"
+    no_document: "No document linked in this entry"
     chip: "Library"
     refresh: "Re-read the bibliography"
     open_hint: "Open the bibliography in the editor"
