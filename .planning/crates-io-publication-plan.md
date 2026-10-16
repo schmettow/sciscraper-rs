@@ -1,289 +1,300 @@
 # crates.io Publication Plan — Sciscraper, ragrig-egui, grobid-bibtex
 
-Created: 2026-10-16 · Status: **plan only, no execution yet**
+v2 — 2026-10-16 · incorporates the product/branding policy and decisions from the review round.
+Status: **plan only, no execution yet** (a later run will execute the whole project independently).
 
-Verified against crates.io API and the three working trees on 2026-10-16.
+## 0 — Product and branding policy (drives everything below)
 
-## 0 — Verified publication status
+- **Sciscraper is an independent product.** Ferrite is one of its *software
+  components* — the policy word is "**Ferrite Inside**", alongside "**Ragrig
+  Inside**" for the RAG framework. `ragrig-egui` is the pane layer that keeps
+  the agent side independent of the editor side; the editor component can be
+  swapped without touching it.
+- **Ferrite synchronization is a deliberate, rare event.** The next granted
+  moment to sync with upstream Ferrite is **Ferrite v1.0.0**.
+- **We keep Ferrite in all exports and credit lines, as long as the component
+  is in use** — with a grateful nod: Ferrite was chosen because it is
+  best-of-breed for egui.
+- **Classification rule for every branding change:**
+  - *Product-level* (installers, repository, maintainers, identifiers, app
+    chrome that presents the product) → **Sciscraper / Martin Schmettow**.
+  - *Component-level* (everything that presents or configures the embedded
+    Ferrite editor: config dir, locale strings such as "Ferrite accent",
+    "Ferrite Workspace", recovery text, internal identifiers, module paths,
+    env vars) → **stays Ferrite** — it acts strictly on that one component.
+- **Locales:** keep all existing Ferrite wording. **Only the copyright line
+  changes**: EN `© 2026 Ferrite and Sciscape contributors`, DE
+  `© 2026 Sciscape und Ferrite Beitragende` (other locales reproduced in their
+  own language, same two names — *see question Q1 on the exact spelling*).
+- **ROADMAP.md preamble** must state this policy (draft in §E3).
+- **Logo:** keep the Ferrite logo/icon set for now; the dedicated logo is being
+  produced in parallel. Where the README wants a logo, use a **blank
+  placeholder** (no broken links). No icon/logo cleanup this round.
+
+## 0.1 — Verified publication status
 
 | Crate | crates.io | Local | Action |
 |---|---|---|---|
-| `ragrig` | **1.1.1** (2026-10-05) | external repo | none — `ragrig = "1"` resolves; Cargo.lock pins 1.1.1 |
-| `grobid` | **0.6.0** (2026-10-05) | external repo | none — `grobid-bibtex` requires `grobid = "0.6.0"` ✓ |
-| `grobid-bibtex` | 0.2.0 (2026-10-08) | **0.2.1** unpublished | publish 0.2.1 (this closes `UPSTREAM.md` US-1) |
-| `ragrig-egui` | **name is free** | 0.5.0 | first-ever publish |
-| `sciscraper` | **name is free** | 0.3.0 | first-ever publish |
+| `ragrig` | **1.1.1** (2026-10-05) | external repo | none — `ragrig = "1"` resolves; lock pins 1.1.1 |
+| `grobid` | **0.6.0** (2026-10-05) | external repo | none |
+| `grobid-bibtex` | 0.2.0 (2026-10-08) | **0.2.1** unpublished | publish 0.2.1 (closes `UPSTREAM.md` US-1) |
+| `ragrig-egui` | **name free** | 0.5.0 | first-ever publish; repo renamed to `github.com/schmettow/ragrig-egui` (metadata already matches) |
+| `sciscraper` | **name free** | 0.3.0 | first-ever publish |
 
-**Publication order (dependencies first):**
-
-```text
-ragrig-egui 0.5.0  →  grobid-bibtex 0.2.1  →  sciscraper 0.3.0
-```
-
-`sciscraper` depends on both `ragrig-egui = { version = "0.5.0", path = "../ragrig-egui" }`
-and `grobid-bibtex = { version = "0.2.1", path = "../grobid-bibtex" }`. The `path`
-key is local-only: `cargo publish` strips it and resolves the version from the
-registry — so the paths **stay** in `Cargo.toml`, but the two siblings must be
-live on crates.io before `sciscraper` can be published.
+**Order (dependencies first):** `ragrig-egui 0.5.0` → `grobid-bibtex 0.2.1` → `sciscraper 0.3.0`.
+The `path` keys in `sciscraper/Cargo.toml` stay (local dev); `cargo publish`
+resolves the version from the registry — siblings must be live first.
+**Tagging happens *after* publication** (all three).
 
 ## A — Environment and repository prerequisites
 
-1. **Install `libfontconfig1-dev`.**
-   `cargo check --all-targets --all-features` currently fails locally with
-   `yeslogic-fontconfig-sys ... The system library 'fontconfig' ... was not found`.
-   The CI workflow already knows this (`ci.yml` line 22 installs
-   `libgtk-3-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig1-dev`).
-   Without it no mandatory check (nor `cargo publish --dry-run` verify, which
-   recompiles from the tarball) can run on this machine.
-2. **Reconcile the toolchain story.**
-   - `rust-toolchain.toml`: `channel = "1.99.0"`
-   - `Cargo.toml`: `rust-version = "1.92"`
-   - `ci.yml` / `nix.yml`: pin `1.92.0`, with the comment "MSRV from
-     rust-toolchain.toml" — stale either way.
-   - `README.md` says "the crate pins its MSRV in `rust-toolchain.toml`" — not true today.
-   Decision: keep MSRV 1.92 (CI-verified), set `rust-toolchain.toml` to 1.92.0
-   (or drop the file), fix the CI comment and the README sentence.
-3. **Repository state (all clean working trees).**
-   - `sciscraper-rs`: branch `master` == `origin/master`, remote
-     `github.com/schmettow/sciscraper-rs`, **no tags yet** → cut `v0.3.0` on release.
-   - `grobid-bibtex`: on branch `dev` (a2c8434), tags up to `v0.2.0` → merge to
-     `main`, tag `v0.2.1`.
-   - `ragrig_egui`: branch `main`, **no tags** → tag `v0.5.0`. Remote is
-     `github.com/schmettow/egui_chat` but `Cargo.toml repository` says
-     `.../ragrig-egui`, and the README links sciscraper's repo. Align: rename
-     the GitHub repo to `ragrig-egui` (recommended) or fix the metadata.
-4. **Decide the open questions in §G before freezing versions.**
+1. **fontconfig: done.** `libfontconfig1-dev` is installed.
+   `RUST_FONTCONFIG_DLOPEN=1` works as the alternative — document it in
+   `CONTRIBUTING.md` dev setup.
+2. **Toolchain: pin back to 1.92.0.** Change `rust-toolchain.toml` to
+   `channel = "1.92.0"`. Verified today on 1.92.0 with `--all-targets
+   --all-features`: the whole dependency graph resolves (no "requires rustc"
+   error — the earlier `pdf-sink` 1.99 issue does not reproduce with the
+   current lockfile). Optional hardening: `resolver = "3"` (MSRV-aware
+   resolution) so a future `cargo update` cannot silently pull a >1.92
+   dependency. With 1.92 pinned, the CI comment "MSRV from
+   rust-toolchain.toml" and the README sentence become true again.
+   *(Side finding: on 1.99.0 the tree produces 172 warnings, 158 of them the
+   future-incompatible `float_literal_f32_fallback` lint — issue #154024.
+   On 1.92.0 that lint does not exist; only 14 warnings remain. That alone
+   justifies the move. A Ferrite-1.0.0 sync on a newer toolchain will need the
+   `_f32` suffix pass.)*
+3. **Repositories:** all three clean.
+   - `sciscraper-rs` — `master` == `origin/master`; no tags yet; tag **after**
+     the crates.io publish.
+   - `grobid-bibtex` — on `dev` (a2c8434) past `v0.2.0`; publish 0.2.1, then tag
+     `v0.2.1`.
+   - `ragrig_egui` — `main`; repo renamed to `schmettow/ragrig-egui`; update the
+     local remote (`git remote set-url origin …`) if still pointing at
+     `egui_chat`. Cargo metadata already correct. Publish, then tag `v0.5.0`.
 
-## B — Re-branding sweep (non-destructive)
+## B — Re-branding sweep
 
-**Rule:** user-visible strings and distribution artifacts change;
-**internal identifiers stay** (`FerriteApp`, `src/editor/ferrite/`,
-`get_ferrite_editor_mut`, `ferrite_accent_rgb`, locale *keys* such as
-`ferrite_workspace`, docs paths) so future Ferrite back-ports merge cleanly.
-Warning fixes likewise: `_`-prefix and scoped `#[allow(...)]` with a short
-comment — never delete upstream code just to silence a warning.
+Everything follows the §0 classification rule.
 
-### B1 — User-visible strings in code
+### B1 — Code strings
 
-| Location | Today | Change to |
-|---|---|---|
-| `src/ui/settings.rs:715` (About) | `RichText::new("Ferrite")` | `t!("app.name")` (or `"Sciscraper"`) |
-| `src/ui/welcome.rs:86` (Welcome) | `RichText::new("Ferrite")` | same |
-| `src/export/html.rs:862` | `<meta name="generator" content="Ferrite">` | `Sciscraper` |
-| `src/app/export.rs:328` | temp file `ferrite-print-preview-*.pdf` | `sciscraper-print-preview-*.pdf` |
+| Location | Decision |
+|---|---|
+| `src/ui/settings.rs:715` About `RichText::new("Ferrite")` | **Q2** — propose "Sciscraper" (app chrome) |
+| `src/ui/welcome.rs:86` Welcome heading | **Q2** — same |
+| `src/export/html.rs:862` `<meta name="generator" content="Ferrite">` | **keep** — "Ferrite in all exports" policy |
+| `src/app/export.rs:328` temp file `ferrite-print-preview-*.pdf` | **keep** (internal, component-scoped) |
+| `src/config/persistence.rs` `APP_NAME = "ferrite"`, `FERRITE_DATA_DIR` | **keep** — component config compat |
+| window title / app id (`src/app/mod.rs:774`, `src/main.rs:194`) | already Sciscraper ✓ |
 
-Already correct: window title and app id (`src/app/mod.rs:774`,
-`src/main.rs:194`, `.with_app_id("sciscraper")`).
+### B2 — Locales
 
-**Deliberately kept:** `src/config/persistence.rs` `APP_NAME = "ferrite"`
-(config dir compat, documented in README) and the `FERRITE_DATA_DIR` env var.
-Optional (decision §G2): add a `SCISCRAPER_DATA_DIR` alias with fallback.
+- Copyright line only, as decided in §0 (EN/DE given; other 8 locales mirror it
+  in-language). *(Pending Q1: "Sciscape" spelling.)*
+- `locales/cs.yaml` `app.name` is empty while the other nine say "Sciscraper" —
+  fill it (product name).
+- **All other Ferrite wording in the locales stays** ("Ferrite accent",
+  "Ferrite Workspace", recovery text, headers).
 
-### B2 — Locale values (all 10 files; keys untouched)
+### B3 — Packaging metadata (product-level → Schmettow/Sciscraper)
 
-`locales/*.yaml` still contain the proper noun "Ferrite" in **values**:
-headers (`# Ferrite - …`), `about.copyright` ("© 2026 Ferrite Contributors" /
-"Ferrite-Entwicklungshelfer" / "Contribuidores de Ferrite"), code-execution
-consent text, quick-note tooltip, welcome hints, session-recovery text,
-`settings.appearance.accent_color` ("Ferrite accent"), terminal filter preset
-labels ("Ferrite Workspace"). Additionally `locales/cs.yaml` has an **empty
-`app.name`** — set to `"Sciscraper"`.
+- `[package.metadata.deb]`: `maintainer = "Martin Schmettow <…>"` (Q6 on the
+  address); `copyright` carries both lines (OlaProeis 2024–2025 + Schmettow
+  2026).
+- `[package.metadata.generate-rpm]`: `url = "https://github.com/schmettow/sciscraper-rs"`.
+- `[package.metadata.wix]`: `manufacturer = "Martin Schmettow"`;
+  `wix/main.wxs` Manufacturer + registry keys → `Software\schmettow\Sciscraper`
+  (keep the MSI `UpgradeCode` unchanged).
+- `[package.metadata.bundle]`: `identifier = "io.github.schmettow.sciscraper"`.
+- `authors = ["Martin Schmettow"]`; `readme = "README.md"` explicit.
+- `wix/license.rtf`: Sciscraper MIT text incl. both copyright lines.
+- `LICENSE`: add `Copyright (c) 2026 Martin Schmettow` below the retained
+  OlaProeis line (MIT requires keeping the upstream notice).
+- **Stays Ferrite (component-scoped):** `~/.config/ferrite/` data dir
+  (G.2 = keep as suggested) — and per G.3, **add `~/.config/sciscraper/` for
+  Sciscraper-owned state** (proposal in Q3).
 
-Sweep: `rg -n "Ferrite" locales/` and replace the proper noun in values only.
-`de`, `es`, `en`, `et` are known; `ja`, `nb_NO`, `pt`, `ru`, `zh_Hans`, `cs`
-must be checked in the same pass.
+### B4 — Repository artifacts
 
-### B3 — Packaging metadata (`Cargo.toml`, `wix/`, `LICENSE`)
-
-- `[package.metadata.deb]`: `maintainer = "OlaProeis <…>"` → fork maintainer;
-  `copyright = "2024-2026, OlaProeis"` → both copyright lines.
-- `[package.metadata.generate-rpm]`: `url = "https://github.com/OlaProeis/Ferrite"` → sciscraper-rs URL.
-- `[package.metadata.wix]`: `manufacturer = "OlaProeis"` → fork author.
-- `[package.metadata.bundle]`: `identifier = "com.olaproeis.sciscraper"` → e.g. `io.github.schmettow.sciscraper` (stable forever once released).
-- `authors = ["Schmettow"]` → real name; set `readme = "README.md"` explicitly.
-- `wix/main.wxs`: `Manufacturer='OlaProeis'` and registry keys
-  `Software\OlaProeis\Sciscraper` (also `HKCU`/`HKLM` install markers). Keep
-  `UpgradeCode` stable; regenerate via `cargo wix` after updating metadata.
-- `wix/license.rtf`: still ships the *Ferrite* MIT notice + upstream link — replace.
-- `LICENSE`: MIT requires retaining the upstream notice — add
-  `Copyright (c) 2026 Martin Schmettow` **below** `Copyright (c) 2024-2025 OlaProeis`.
-
-### B4 — Repository artifacts (assets, workflows, docs)
-
-- `assets/icons/`: keep the set used by packaging (`icon_16…512.png`,
-  `icon_1024_transparent.png`, `windows/app.ico` + `app.rc`,
-  `macos/Sciscraper.icns` + `app.iconset/`, `linux/sciscraper.desktop`);
-  retire Ferrite leftovers (`ferritelogo.jpg` in two places,
-  `assets/icons/linux/*/ferrite.png`, `test_md/assets/*ferritelogo.jpg`).
-  `icon-1024x1024.png` / `icon-192x192.png` are unused by packaging.
-- **Logo (pending):** when the dedicated logo arrives, replace the icon
-  sources, regenerate PNG set + `app.ico` + `Sciscraper.icns` (+ `app.iconset`),
-  and treat the current Windows/macOS icons as placeholders.
-- `assets/linux/io.github.olaproeis.Ferrite.{desktop,metainfo.xml}`: unused
-  Flathub leftovers (the deb/rpm use `assets/icons/linux/sciscraper.desktop`);
-  the old desktop file says `Name=Ferrite`, `Exec=ferrite`. Rebrand for a
-  later Flathub push or delete; update `docs/flathub-maintenance.md`,
+- **Logo/icons: unchanged this round** (keep `ferritelogo.jpg`, the icon set,
+  `generate_*.py`). README gets a blank logo placeholder.
+- `assets/linux/io.github.olaproeis.Ferrite.{desktop,metainfo.xml}` →
+  **rebrand** (G.7): `io.github.schmettow.Sciscraper`, `Exec=sciscraper`,
+  `Icon=sciscraper`; update `docs/flathub-maintenance.md`,
   `docs/github-release-checklist.md`, `docs/linux-package-distribution-plan.md`.
-- `.github/FUNDING.yml`: `github: [OlaProeis]` → remove or point at schmettow.
-- `.github/ISSUE_TEMPLATE/bug_report.md`: "Ferrite version" → Sciscraper.
-- `.github/workflows/release.yml`: `portable/FerriteMDPortable/**` paths,
-  `FerriteMDPortable_<v>_English.paf.exe` artifact, NSIS installer name;
-  SignPath `project-slug: 'Ferrite'` (external service setting — rename there
-  too, or accept). Artifact names `sciscraper-*` are already good.
-- `CONTRIBUTING.md`: still "Contributing to Ferrite" — rebrand or replace.
-- `README.zh-CN.md`: carries a clear pre-fork disclaimer; decide keep/drop
-  (§G6); excluded from the crate either way.
-- Keep in repo but **out of the crate**: `docs/`, `.planning/`, `test_md/`,
-  `portable/`, `scripts/`, `wix/`, `Tasks.txt`, `ai-context.md`,
-  `current-handover-prompt.md`, `update-handover-prompt.md`, `UPSTREAM.md`,
-  `flake.nix`/`flake.lock`.
+- `.github/FUNDING.yml`: `github: [OlaProeis]` → remove (upstream funding is not
+  ours) or point at schmettow.
+- `.github/ISSUE_TEMPLATE/bug_report.md`: "Ferrite version" → "Sciscraper version".
+- `.github/workflows/release.yml`: PortableApps/SignPath items are follow-ups
+  (PortableApps rebranding; SignPath project slug `Ferrite` is an external
+  service setting to rename). Artifact names `sciscraper-*` already right.
+- `CONTRIBUTING.md`: rebrand + dev-setup note for `RUST_FONTCONFIG_DLOPEN=1`.
+- `README.zh-CN.md`: **Q5** (unanswered G.6).
+- Out of the crate, kept in repo: `docs/`, `.planning/`, `test_md/`, `portable/`,
+  `scripts/`, `wix/`, `Tasks.txt`, `ai-context.md`, handover files,
+  `UPSTREAM.md`, flake files.
 
-## C — Package hygiene (the publishable tarball)
+## C — Package hygiene
 
-### C1 — `exclude`/`include` is **mandatory**, not cosmetic
+1. **`include` whitelist — approved (C.1 = yes).** Current draft (§C1 in v1):
+   `src/**/*.rs`, `build.rs`, `locales/*.yaml`, `assets/fonts/*.ttf`,
+   `assets/prompts/*.md`, `assets/icons/icon_*.png`,
+   `assets/icons/{windows,macos,linux}/**`,
+   `assets/macos/info_plist_ext.xml`, `LICENSE`, `README.md`, `CHANGELOG.md`,
+   `ROADMAP.md`.
+   Rationale: tracked tree has `test_md/` 86 MB, `docs/` 6.9 MB, screenshots
+   2.2 MB — far beyond the 10 MB crates.io limit. All compile-time assets
+   (fonts, prompts, `icon_256` + `icon_1024_transparent`, locales, Windows
+   `.rc`) must stay in; `cargo publish --dry-run` verify is the safety net.
+2. **Default features (G.1):** `default = ["bundle-icon", "high-perf-alloc", "rag"]`.
+   `grobid` stays optional. Consequence: `cargo install sciscraper` ships the
+   agent pane; CI (`cargo check/test --locked`, default features) will from then
+   on exercise the `rag` path — bonus coverage for free.
+3. Registry-resolution rehearsal: after publishing the siblings,
+   `cargo update -p ragrig-egui -p grobid-bibtex`, rebuild, then dry-run publish.
 
-The tracked tree contains `test_md/` (86 MB, 54 files), `docs/` (6.9 MB,
-314 files), `assets/screenshots/` (2.2 MB), `assets/20260130-084650-demo.gif`
-(1.4 MB), `portable/` (with a tracked `.exe`) — the default package would blow
-crates.io's 10 MB compressed limit. Prefer a whitelist `include` in
-`[package]` (safer than exclude: nothing bulky can sneak in):
+## D — Warnings and mandatory checks (measured today)
 
-```toml
-include = [
-    "src/**/*.rs",
-    "build.rs",
-    "locales/*.yaml",
-    "assets/fonts/*.ttf",
-    "assets/prompts/*.md",
-    "assets/icons/icon_*.png",
-    "assets/icons/windows/*",
-    "assets/icons/macos/*",        # incl. app.iconset/, Sciscraper.icns
-    "assets/icons/linux/sciscraper.desktop",
-    "assets/macos/info_plist_ext.xml",   # referenced by [package.metadata.bundle]
-    "LICENSE", "README.md", "CHANGELOG.md", "ROADMAP.md",
-]
+**Measured inventory (this machine, `--all-targets --all-features`):**
+
+| Toolchain | Bin warnings | Test target |
+|---|---|---|
+| 1.99.0 (old pin) | 172 (158 × `float_literal_f32_fallback`, future-incompatible) | **25 errors** |
+| **1.92.0 (new pin)** | **14** | **42 errors** (cascades from ~4 root causes) |
+
+**D1 — Release blocker #1: the test target does not compile** (both default and
+all-features; `cargo test` is red today). Root-cause clusters:
+- `src/editor/ferrite/history.rs` (17×): `#[cfg(test)]` code misses
+  `use crate::editor::ferrite::buffer::TextBuffer` (and E0282 cascades).
+- `src/markdown/mermaid/mod.rs` (19×): tests still import
+  `parse_direction`, `parse_edge_line_full`, `parse_node_from_text` from
+  `flowchart`, but those now live (as `pub(crate)`) in
+  `flowchart/parser.rs`; missing re-export or stale paths. Plus `expand_rect`,
+  `CHECK`, `X` test helpers gone.
+- `src/ui/productivity_panel.rs` (3×): `Task::to_markdown` vanished/renamed.
+- Remaining E0282/E0433 are cascades.
+Fix minimally (test imports/helpers), non-destructively.
+
+**D2 — The 14 real bin warnings**, fixed with the non-destructive policy
+(`_` prefix, scoped `#[allow(…)]` with a one-line rationale comment; only
+fork-local dead code may be removed; the two egui deprecations migrate to the
+upstream direction — `Context::run_ui`, `CentralPanel::show_inside`):
+- 9 × unused imports (mostly the deferred-LSP modules and video-embed leftovers),
+- 7 × unused variables (`pid`, `start`, `hash2`, `remaining`, `e`, `shell_type`×2),
+- 3 × `unused_mut`,
+- 4 × dead code across cfgs (`allow_set_foreground_window`, `read_primary_pid`,
+  LSP manager methods, `parse_video_embed_url`).
+
+**D3 — Mandatory matrix** (pinned 1.92.0; run per crate as applicable):
+
+```bash
+cargo fmt --check
+cargo check --all-targets --all-features
+cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo doc --no-deps --all-features
+cargo package --list
+cargo publish --dry-run
 ```
 
-### C2 — Why that whitelist is exactly this (compile-time asset inventory)
+Coverage for the release notes: `cargo llvm-cov --all-features`
+(doctests not measured on stable).
 
-Verified `include_bytes!`/`include_str!`/macro embedding:
-
-- `src/fonts.rs` + `src/export/pdf/fonts.rs` → `assets/fonts/*.ttf` (Inter + JetBrains Mono)
-- `src/ui/icons.rs` → `assets/icons/icon_256.png`, `icon_1024_transparent.png` (feature `bundle-icon` is default!)
-- `src/rag/worker.rs:1638` → `assets/prompts/sciscraper-cowriter.md`
-- `locales/` → embedded by `rust_i18n::i18n!` (build.rs rerun-if-changed)
-- `build.rs` (Windows) → `assets/icons/windows/app.rc` + `app.ico`
-
-The `cargo publish --dry-run` **verify** step recompiles from the packaged
-tarball — it is the safety net that fails loudly if a needed asset is missing
-from `include`.
-
-### C3 — Registry resolution rehearsal
-
-After `ragrig-egui` and `grobid-bibtex` are published:
-`cargo update -p ragrig-egui -p grobid-bibtex` (locks the registry copies),
-then re-run the full matrix. Strict rehearsal (optional): temporarily move
-`../ragrig-egui` away and build — proves the registry versions suffice.
-
-### C4 — `cargo package --list` review for all three crates before publishing.
-
-## D — Warnings and the mandatory checks (non-destructive)
-
-1. **Inventory first** (blocked until A1): `cargo check --all-targets
-   --all-features` and default `cargo build`; collect warnings.
-   *(Not measurable in this sandbox — the fontconfig failure aborted the run
-   before the `sciscraper` crate itself was checked.)*
-2. **Fix loop:** `_`-prefix unused bindings/params, scoped
-   `#[allow(unused_imports)]` / `#[allow(dead_code)]` with a
-   `// fork: … (back-port friendly)` comment. No code deletion for warnings.
-3. **Mandatory matrix green per crate** (sciscraper: all-features includes
-   `rag`, `grobid`, `lsp`, async workers; MSRV 1.92 per CI):
-
-   ```bash
-   cargo fmt --check
-   cargo check --all-targets --all-features
-   cargo test --all-features
-   cargo clippy --all-targets --all-features -- -D warnings
-   cargo doc --no-deps --all-features          # sciscraper is bin-only: lower risk
-   cargo package --list
-   cargo publish --dry-run
-   ```
-
-4. **Coverage report for the CHANGELOG `### Quality` section** (per project
-   rules): `cargo llvm-cov --all-features` (doctests not measured on stable).
-5. **CI gap (note, not blocker):** `ci.yml` is PR-only and runs
-   `check`/`test --locked` with **default features** (i.e. *without*
-   `rag`/`grobid`) on Rust 1.92. Consider adding fmt/clippy/`--all-features`
-   later; for the release, the local matrix above is authoritative.
+**D4 — CI note:** `ci.yml` is PR-only, default features, no fmt/clippy — and it
+would have caught D1 (`cargo test`). Extending CI is a follow-up, not a
+blocker; the local matrix is authoritative for the release.
 
 ## E — Non-code artifacts and docs
 
-1. **README.md** — add a crates.io section:
-   - Install: `cargo install sciscraper --features rag,grobid` (and explain the
-     default-features question, §G1).
-   - Badges (crates.io version + CI), first-release status line, logo slot.
-   - Keep the Ferrite fork credit; verify the feature table matches `Cargo.toml`.
-2. **CHANGELOG.md** — prepend a Sciscraper release section, e.g.
-   `## [0.3.0] — 2026-… — Sciscraper first crates.io release` summarising the
-   fork's own features (agent pane, library pane, `@Key` citations, GROBID
-   ingest, focus/co-edit) and a `### Quality` subsection with the coverage
-   numbers and the verification results from §D. Keep the inherited Ferrite
-   history below, clearly labelled (back-port context).
-3. **ROADMAP.md** — re-title to Sciscraper; Sciscraper priorities on top
-   (agent/library/ingest), inherited Ferrite roadmap moved under a clearly
-   labelled "Inherited / upstream watch" section.
-4. **UPSTREAM.md** — mark US-1 resolved once `grobid-bibtex 0.2.1` is live.
-5. **ragrig-egui** — add `Changelog.md` (0.5.0 first-release entry; can be
-   distilled from git log `0.1→0.5`), fix the repository URL mismatch (§A3),
-   optional short ROADMAP.
-6. **grobid-bibtex** — per its `AGENTS.md`: run the full checklist (coverage,
-   tests incl. live GROBID runs when the server is up, all seven cargo checks)
-   and write the `### Quality` report for v0.2.1 into `Changelog.md`.
+1. **README.md** — crates.io section: `cargo install sciscraper` (agent pane
+   included by default), `--features grobid` for PDF/URL ingest; badges
+   (crates.io + CI); first-release note; **blank logo placeholder**; keep the
+   Ferrite fork credit and extend it into the "Ferrite Inside / Ragrig Inside"
+   wording; verify the feature table against the new defaults.
+2. **CHANGELOG.md** — prepend the Sciscraper first-release section
+   (`## [0.3.0] — 2026-… — Sciscraper first crates.io release`) with the fork's
+   features and a `### Quality` subsection carrying the §D results; label the
+   inherited Ferrite history as such.
+3. **ROADMAP.md** — new preamble (policy, drafted below); then Sciscraper
+   priorities; inherited Ferrite roadmap kept in a clearly labelled section
+   ("Inherited / upstream watch", synced at Ferrite 1.0.0). **Add:** the
+   **cross-building pipeline for Windows** item (see Q4, reference ragrig-cli).
 
-## F — Release runbook (execute in this order)
+   Draft preamble:
+   > **Sciscraper is an independent product.** It embeds components and credits
+   > them as such: **Ferrite Inside** — the editor engine (editing, preview,
+   > viewers, export, terminal) — and **Ragrig Inside** — the RAG framework
+   > behind the agent pane. The `ragrig-egui` pane layer keeps the two sides
+   > separable: the editor component can be swapped without touching the agent
+   > side. We chose Ferrite because it is best-of-breed for egui — with a
+   > grateful nod to its developers. The fork is not a race: Sciscraper tracks
+   > upstream at synchronization points, and the next granted moment to sync
+   > with Ferrite is its **v1.0.0** release. Until then Ferrite stays present in
+   > all exports and credits, as long as the component is in use.
+4. **UPSTREAM.md** — US-1 resolved once `grobid-bibtex 0.2.1` is live.
+5. **ragrig-egui** — add `Changelog.md` (0.5.0 first release; distil 0.1→0.5
+   from git), optional short ROADMAP.
+6. **grobid-bibtex** — per its `AGENTS.md`: coverage + tests (incl. live GROBID
+   when the server is up) + all seven cargo checks, `### Quality` report for
+   v0.2.1 in `Changelog.md`.
 
-1. Resolve §G decisions; freeze versions.
-2. `grobid-bibtex`: merge `dev` → `main`, run AGENTS.md steps 1–4, tag
-   `v0.2.1`, `cargo publish`.
-3. `ragrig-egui`: full checklist + `cargo publish` (first publish — confirm the
-   crates.io name reservation immediately; consider publishing early then
-   bumping later, the name is currently free).
+## F — Release runbook
+
+0. Fix D1 (test target) — nothing ships before `cargo test --all-features` is green.
+1. Land §A2 (toolchain back to 1.92.0) + §B metadata + §C defaults + §E docs;
+   re-run the full matrix.
+2. `grobid-bibtex`: merge `dev` → `main`, AGENTS.md steps 1–4, `cargo publish`,
+   **then** tag `v0.2.1`.
+3. `ragrig-egui`: full checklist, `cargo publish`, **then** tag `v0.5.0`.
+   (The crates.io name is free today — publish promptly after freeze.)
 4. `sciscraper`: `cargo update -p ragrig-egui -p grobid-bibtex`; re-run matrix;
-   `cargo package --list`; `cargo publish --dry-run` (also validates that the
-   registry can resolve both siblings); `cargo publish`; tag `v0.3.0`.
-5. Post-publish: `cargo install sciscraper --locked` in a scratch target dir
-   and launch it; check docs.rs builds for the two library crates; fix any
-   README/crates.io render issues.
-6. Later (not crates.io blockers): GitHub release artifacts + SignPath project
-   rename, Flathub leftovers, PortableApps rebranding, logo rollout.
+   `cargo package --list`; `cargo publish --dry-run`; `cargo publish`;
+   **then** tag `v0.3.0`.
+5. Post-publish: `cargo install sciscraper` from a scratch dir + launch;
+   docs.rs builds for the two library crates; README render check.
+6. Follow-ups (not crates.io blockers): GitHub release artifacts, SignPath
+   rename, Flathub leftovers, PortableApps, logo rollout, cross-build pipeline.
 
-## G — Open decisions (needed before executing)
+## G — Decisions recorded from the review
 
-1. **Default features for `cargo install sciscraper`.** Today `rag`/`grobid`
-   are opt-in (Ferrite parity). On crates.io, the default install would lack
-   the very panes that make it Sciscraper. Recommendation: make
-   `default = ["bundle-icon", "high-perf-alloc", "rag", "grobid"]`, keep the
-   Ferrite-parity build as `--no-default-features…`. Your call — it changes
-   install weight (tokio, ragrig, reqwest) and the meaning of "default".
-2. Keep `~/.config/ferrite` + `FERRITE_DATA_DIR` (recommended, documented) or
-   add a `SCISCRAPER_DATA_DIR` alias with fallback.
-3. MSRV: keep 1.92 / fix `rust-toolchain.toml` + CI comment + README sentence
-   (§A2)?
-4. `ragrig_egui` repo rename (`egui_chat` → `ragrig-egui`) vs metadata fix.
-5. Packaging identifiers: adopt `io.github.schmettow.sciscraper`, maintainer
-   "Martin Schmettow", registry key `Software\schmettow\Sciscraper` (keep the
-   MSI `UpgradeCode`)?
-6. `README.zh-CN.md`: keep as legacy translation / drop / update later?
-7. Flathub leftovers in `assets/linux/`: rebrand now for later use, or delete?
-8. Logo timing: everything icon-related stays placeholder until the logo lands
-   (regeneration steps in §B4).
+| # | Topic | Decision |
+|---|---|---|
+| G.1 | Default features | `bundle-icon`, `high-perf-alloc`, **`rag`**; `grobid` optional |
+| G.2 | Config dir | keep `~/.config/ferrite` + `FERRITE_DATA_DIR` (component) |
+| G.3 | New config dir | **add `~/.config/sciscraper`** for Sciscraper-owned state (details Q3) |
+| — | MSRV/toolchain (A.2) | back to **1.92.0**; whole graph verified |
+| G.4 | ragrig-egui repo | renamed to `schmettow/ragrig-egui`; metadata already matches |
+| G.5 | Product identifiers | yes — `io.github.schmettow.sciscraper`, maintainer Martin Schmettow, key `Software\schmettow\Sciscraper` |
+| G.7 | Flathub leftovers | rebrand to Sciscraper |
+| G.8 | Logo | blank placeholder in README; icons unchanged for now |
+| B.2 | Locales | Ferrite wording stays; only copyright lines change |
+| B.4 | Logo assets | keep as-is (new logo in production) |
 
-## H — Known gaps of this plan
+## H — Remaining questions (Q1–Q6)
 
-- Warning inventory could not be taken in this sandbox (missing
-  `libfontconfig1-dev`, §A1) — first execution step.
-- `sciscraper`'s own test suite was not run here (same blocker).
-  `ragrig-egui` was verified: `check --all-targets --all-features` clean and
-  57 tests green (46 unit + 2 + 9).
-- crates.io name availability checked 2026-10-16; names are unclaimed but
-  first-come — publish promptly after the freeze.
+- **Q1** "Sciscape" vs "Sciscraper" in the copyright line — is `Sciscape` an
+  intentional brand, or a typo for Sciscraper? (Affects 10 locales; the plan
+  currently assumes it is written exactly as given.)
+- **Q2** About dialog + Welcome headings: currently hard-coded "Ferrite".
+  Proposal: they are app chrome → "Sciscraper" (component strings like
+  "Ferrite accent" stay). Confirm or keep.
+- **Q3** `~/.config/sciscraper/` scope — proposal: agent/RAG settings, GROBID
+  config, library paths (Sciscraper-owned), while `~/.config/ferrite/` keeps
+  editor settings/session/recovery untouched; read-old-location fallback once
+  for existing installs. Confirm the split.
+- **Q4** Cross-building pipeline for Windows: I found no xwin/cross/CI pipeline
+  in `ragrig-cli` (only MSVC/MinGW *support*, cfg(unix) gating). Should the
+  roadmap item reference ragrig-cli as the pattern (and the pipeline gets built
+  fresh), or is the pipeline elsewhere?
+- **Q5** `README.zh-CN.md` (unanswered G.6): keep as legacy translation, drop,
+  or update later?
+- **Q6** deb maintainer address: use
+  `Martin Schmettow <schmettow@users.noreply.github.com>` or a real address?
+
+## I — Open verification gaps
+
+- `sciscraper` test suite is red (D1) — the fix is the first execution step.
+- `grobid-bibtex` 0.2.1 readiness not re-verified this round (its own checklist
+  applies at release time; last documented state: green through 0.2.0).
+- `ragrig-egui` verified green earlier today: 57 tests, clean all-features check.
