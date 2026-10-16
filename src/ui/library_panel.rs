@@ -108,6 +108,24 @@ struct OpenNote {
     failed: bool,
 }
 
+/// One line of the open note: styled like `ragrig_egui::form`'s helpers, but
+/// truncated to the width it is handed, with the full text on hover.
+///
+/// `note` and `warning` are `ui.label`, and a label inside a *horizontal*
+/// layout extends to its natural width instead of wrapping — a long file name
+/// used to push the row past the pane, and the dock returns its content's
+/// min-rect as the pane's new width, so the pane grew and stayed grown. The
+/// row's own labels truncate for the same reason.
+fn open_note_line(ui: &mut egui::Ui, text: &str, failed: bool) {
+    let rich = if failed {
+        egui::RichText::new(text).color(ui.visuals().warn_fg_color)
+    } else {
+        egui::RichText::new(text).weak()
+    };
+    let line = ui.add(egui::Label::new(rich).truncate().selectable(false));
+    line.on_hover_text(text);
+}
+
 /// State of the library section, owned by `AgentPanel`.
 #[derive(Default)]
 pub struct LibrarySection {
@@ -328,19 +346,18 @@ impl LibrarySection {
                 ui.horizontal(|ui| {
                     // The copy button keeps its place whatever the message
                     // does: reserve it first, the header's file-line recipe.
+                    // `interact_size.x` over-estimates a small button on
+                    // purpose — an under-estimate would widen the pane (see
+                    // `open_note_line`).
                     let reserved = if attempt.path.is_some() {
-                        ui.spacing().interact_size.y + ui.spacing().item_spacing.x
+                        ui.spacing().interact_size.x + ui.spacing().item_spacing.x
                     } else {
                         0.0
                     };
                     let width = (ui.available_width() - reserved).max(60.0);
                     ui.scope(|ui| {
                         ui.set_max_width(width);
-                        if attempt.failed {
-                            warning(ui, &attempt.message);
-                        } else {
-                            note(ui, &attempt.message);
-                        }
+                        open_note_line(ui, &attempt.message, attempt.failed);
                     });
                     if let Some(path) = &attempt.path {
                         let glyph = if attempt.copied { CHECK } else { COPY };
@@ -495,7 +512,11 @@ fn header(
         }
         // The file toggle keeps the space of the two controls after it, so a
         // long name truncates instead of pushing them out of the pane.
-        let reserved = 2.0 * ui.spacing().interact_size.y + 2.0 * ui.spacing().item_spacing.x;
+        // `interact_size.x` over-estimates one small button on purpose: the
+        // dock returns its content's min-rect as the pane's width and the host
+        // persists it, so an under-estimate grows the pane for good (see
+        // `open_note_line`).
+        let reserved = 2.0 * ui.spacing().interact_size.x + 2.0 * ui.spacing().item_spacing.x;
         let file_width = (ui.available_width() - reserved).max(40.0);
         let mut hint = path.display().to_string();
         if discovered {

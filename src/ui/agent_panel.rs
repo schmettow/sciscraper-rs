@@ -2469,6 +2469,89 @@ mod tests {
     }
 
     #[test]
+    fn an_open_note_never_widens_the_library_pane() {
+        // Regression: the note's line used the `form` helpers, which are
+        // `ui.label` — and a label inside a *horizontal* layout extends to its
+        // natural width instead of wrapping. A long message made the note row
+        // wider than the pane; the dock returns its content's min-rect as the
+        // pane's width and the host persists it, so the pane jumped ~100 px
+        // wider and stayed wide (the editor's left edge moved right, and the
+        // strip the dock did not paint showed the desktop through the window).
+        let dir = tempfile::tempdir().unwrap();
+        let long = "Opened Caspar2021 - The Cell model for continuous variables, a \
+                    deliberately very long file name that could never fit in the pane.pdf";
+        for (message, path, failed) in [
+            (long.to_string(), Some(dir.path().join("paper.pdf")), false),
+            (long.to_string(), None, true),
+        ] {
+            let ctx = egui::Context::default();
+            let mut settings = RagSettings::default();
+            settings.ragrig.workspace = dir.path().to_path_buf();
+            let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
+            panel.library.note_open(message, path, failed, 0.0);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 800.0),
+                )),
+                ..egui::RawInput::default()
+            };
+            for _ in 0..3 {
+                let _ = ctx.run_ui(input.clone(), |ui| {
+                    let _ = panel.show_ui(ui, &mut settings, Some(dir.path()), &[], &[], None);
+                });
+            }
+            assert_eq!(
+                settings.library_width,
+                crate::rag::DEFAULT_LIBRARY_WIDTH,
+                "the note widened the library pane (failed: {failed})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_header_never_widens_the_library_pane() {
+        // The same trap as the note's line, in the file line the dock has
+        // carried since 6.7: its reservation for the two controls to the right
+        // was under-estimated, so a long bibliography path pushed the row past
+        // the pane and the pane grew (337 px in place of 320) — and stuck.
+        let dir = tempfile::tempdir().unwrap();
+        let long = dir
+            .path()
+            .join("a-rather-long-directory-name-for-the-corpus")
+            .join("another-rather-long-directory-name");
+        std::fs::create_dir_all(&long).unwrap();
+        let bib = long.join("a-bibliography-with-a-long-file-name.bib");
+        std::fs::write(&bib, "@misc{Kahle2000,\n  title = {T}\n}\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut settings = RagSettings::default();
+        settings.ragrig.workspace = dir.path().to_path_buf();
+        let mut panel = AgentPanel::new(&settings, Some(dir.path().to_path_buf()));
+        panel.library.apply(crate::rag::LibraryState::Ready {
+            path: bib.clone(),
+            discovered: false,
+            view: crate::rag::library::load(&bib).unwrap(),
+        });
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..egui::RawInput::default()
+        };
+        for _ in 0..3 {
+            let _ = ctx.run_ui(input.clone(), |ui| {
+                let _ = panel.show_ui(ui, &mut settings, Some(dir.path()), &[], &[], None);
+            });
+        }
+        assert_eq!(
+            settings.library_width,
+            crate::rag::DEFAULT_LIBRARY_WIDTH,
+            "the header widened the library pane"
+        );
+    }
+
+    #[test]
     fn each_pane_gets_its_own_width_and_hosts_its_bar() {
         // The two docks are sequential `show_inside` panels: the library
         // (left) is drawn first and stays outermost, the agent (right) second.

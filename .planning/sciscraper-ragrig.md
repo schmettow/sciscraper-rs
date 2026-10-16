@@ -1043,16 +1043,31 @@ path *on the row*, so `LibraryView::resolve_documents` resolves every entry once
 the worker, one `read_dir` for the whole list, silent about the misses (the eye re-resolves
 and reports the reason when asked).
 
-Verification: sciscraper with `rag` — 1681 pass (the known pre-existing failures of §5, plus
-the intermittent `markdown::cache` flake that passes in isolation; the five stale test modules
-quarantined and restored). New: `library::resolve_document` unit tests (file field absolute +
-relative, keyed name, case-insensitivity, ambiguity, missing) and `resolve_documents` filling
-the rows; the eye click-through (`the_eye_button_asks_the_worker_to_open_the_document`,
-asserting the command's key and *unresolved* file); the file button copying the document on
-the row (`the_file_button_copies_the_documents_path`, reading the frame's `CopyText`) and
-refusing to when the row has none (`the_file_button_is_disabled_without_a_document`); the
-note's visibility, copy click and expiry; `open_outcome` keeping the path on a failed
-hand-over; and two worker events (`opening_a_paper_without_a_workspace_explains_itself`,
+**The dock trap (user report: the editor's left edge jumped right, the freed strip showed the
+desktop).** A `ragrig_egui` dock pins its content to the panel width
+(`ui.set_min_width(ui.available_width())`) and reports the panel's *rendered* width back, which
+the host persists — so **any row whose content exceeds the pane permanently widens the pane**.
+The note's line was the offender: `form::note`/`warning` are `ui.label`, and a label inside a
+*horizontal* layout **extends** to its natural width instead of wrapping, so a long file name
+pushed the row ~100 px past a 320 px pane (measured: 424). The line now truncates
+(`open_note_line`, full text on hover) and reserves `interact_size.x` for the copy button.
+The same probe found the pre-existing file line of 6.7 doing it too (+17 px with a long
+bibliography path) — its reservation counted a small button as `interact_size.y`, which is the
+height, not the width; it counts `interact_size.x` now. Both cases are pinned by
+`an_open_note_never_widens_the_library_pane` and `the_header_never_widens_the_library_pane`,
+which render the panel against a real bibliography and assert `library_width` is untouched.
+
+Verification: sciscraper with `rag` — 1684 pass (the known pre-existing failures of §5; the
+five stale test modules quarantined and restored). New: `library::resolve_document` unit tests
+(file field absolute + relative, keyed name, case-insensitivity, ambiguity, missing) and
+`resolve_documents` filling the rows; the eye click-through
+(`the_eye_button_asks_the_worker_to_open_the_document`, asserting the command's key and
+*unresolved* file); the file button copying the document on the row
+(`the_file_button_copies_the_documents_path`, reading the frame's `CopyText`) and refusing to
+when the row has none (`the_file_button_is_disabled_without_a_document`); the note's
+visibility, copy click and expiry; `open_outcome` keeping the path on a failed hand-over; the
+two width regressions above; and two worker events
+(`opening_a_paper_without_a_workspace_explains_itself`,
 `opening_a_paper_resolves_its_document_before_the_viewer` — both on the resolution-failure
 path, because a resolvable row would launch a real viewer wherever the tests run).
 rustfmt-clean on the pinned 1.92.0; clippy reports nothing new in the touched files.
