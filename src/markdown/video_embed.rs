@@ -4,9 +4,7 @@
 //! Trusted domains (YouTube / youtu.be) may use interactive WebView overlays; others
 //! fall back to thumbnail-only rendering (handled in a later task).
 
-use super::parser::{
-    MarkdownNode, MarkdownNodeType, VideoEmbedInfo, VideoProvider,
-};
+use super::parser::{MarkdownNode, MarkdownNodeType, VideoEmbedInfo, VideoProvider};
 
 const TRUSTED_VIDEO_HOSTS: &[&str] = &[
     "youtube.com",
@@ -97,10 +95,7 @@ fn parse_braced_video_syntax(text: &str) -> Option<&str> {
     if !trimmed.starts_with("{{video") || !trimmed.ends_with("}}") {
         return None;
     }
-    let inner = trimmed
-        .strip_prefix("{{video")?
-        .strip_suffix("}}")?
-        .trim();
+    let inner = trimmed.strip_prefix("{{video")?.strip_suffix("}}")?.trim();
     if inner.is_empty() {
         return None;
     }
@@ -144,9 +139,19 @@ pub fn try_parse_video_paragraph(node: &MarkdownNode) -> Option<VideoEmbedInfo> 
 }
 
 fn extract_bare_youtube_url(node: &MarkdownNode) -> Option<String> {
-    match node.children.len() {
-        0 => None,
-        1 => match &node.children[0].node_type {
+    // Empty text nodes are a by-product of other post-processing passes; they
+    // must not mask a lone autolinked URL.
+    let children: Vec<&MarkdownNode> = node
+        .children
+        .iter()
+        .filter(|child| {
+            !matches!(&child.node_type, MarkdownNodeType::Text(text) if text.trim().is_empty())
+        })
+        .collect();
+
+    match children.as_slice() {
+        [] => None,
+        [child] => match &child.node_type {
             MarkdownNodeType::Text(text) => {
                 let trimmed = text.trim();
                 if trimmed.is_empty() || trimmed.contains('\n') {
@@ -159,14 +164,13 @@ fn extract_bare_youtube_url(node: &MarkdownNode) -> Option<String> {
             _ => None,
         },
         _ => {
-            if node
-                .children
+            if children
                 .iter()
                 .any(|child| !matches!(child.node_type, MarkdownNodeType::Text(_)))
             {
                 return None;
             }
-            let combined = node.text_content();
+            let combined: String = children.iter().map(|child| child.text_content()).collect();
             let trimmed = combined.trim();
             if trimmed.is_empty() || trimmed.contains('\n') {
                 None

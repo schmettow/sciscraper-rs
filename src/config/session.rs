@@ -341,6 +341,16 @@ pub struct RecoveryContent {
     /// that omit this field. See [`RECOVERY_CONTENT_SCHEMA_VERSION`].
     #[serde(default = "RecoveryContent::default_schema_version")]
     pub schema_version: u32,
+
+    /// Whether this snapshot was written by an identity-aware version.
+    ///
+    /// Legacy files omit the field and deserialize as `false`; those keep the
+    /// historical tab-id-only fallback. New snapshots set it to `true`, so a
+    /// `None` path is a verified "untitled" identity rather than missing
+    /// metadata — which lets restore reject a reused tab id on a path-backed
+    /// tab without breaking legacy back-compat.
+    #[serde(default)]
+    pub identity_recorded: bool,
 }
 
 impl Default for RecoveryContent {
@@ -352,6 +362,7 @@ impl Default for RecoveryContent {
             path: None,
             original_content_hash: None,
             schema_version: RECOVERY_CONTENT_SCHEMA_VERSION,
+            identity_recorded: false,
         }
     }
 }
@@ -376,6 +387,7 @@ impl RecoveryContent {
             path: None,
             original_content_hash: None,
             schema_version: RECOVERY_CONTENT_SCHEMA_VERSION,
+            identity_recorded: false,
         }
     }
 
@@ -398,6 +410,7 @@ impl RecoveryContent {
             path,
             original_content_hash,
             schema_version: RECOVERY_CONTENT_SCHEMA_VERSION,
+            identity_recorded: true,
         }
     }
 }
@@ -956,11 +969,7 @@ pub fn prune_recovery_dir(valid_tab_ids: &HashSet<usize>) -> usize {
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
         Err(e) => {
-            warn!(
-                "Could not read recovery directory {}: {}",
-                dir.display(),
-                e
-            );
+            warn!("Could not read recovery directory {}: {}", dir.display(), e);
             return 0;
         }
     };
@@ -1519,11 +1528,7 @@ pub fn prune_auto_save_dir(valid_tab_ids: &HashSet<usize>) -> usize {
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
         Err(e) => {
-            warn!(
-                "Could not read autosave directory {}: {}",
-                dir.display(),
-                e
-            );
+            warn!("Could not read autosave directory {}: {}", dir.display(), e);
             return 0;
         }
     };
@@ -1814,13 +1819,9 @@ mod tests {
         assert_eq!(loaded.content, "old content");
         assert_eq!(loaded.saved_at, 1700000000);
         assert_eq!(loaded.path, None, "missing path → None");
+        assert_eq!(loaded.original_content_hash, None, "missing hash → None");
         assert_eq!(
-            loaded.original_content_hash, None,
-            "missing hash → None"
-        );
-        assert_eq!(
-            loaded.schema_version,
-            RECOVERY_CONTENT_SCHEMA_VERSION,
+            loaded.schema_version, RECOVERY_CONTENT_SCHEMA_VERSION,
             "missing schema_version → default v1"
         );
     }
@@ -1833,6 +1834,7 @@ mod tests {
         assert_eq!(recovery.path, None);
         assert_eq!(recovery.original_content_hash, None);
         assert_eq!(recovery.schema_version, RECOVERY_CONTENT_SCHEMA_VERSION);
+        assert!(!recovery.identity_recorded);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1892,14 +1894,14 @@ mod tests {
             "saved_at": 1700000001
         }"#;
 
-        let parsed =
-            parse_recovery_content_json(legacy_json).expect("legacy JSON must round-trip");
+        let parsed = parse_recovery_content_json(legacy_json).expect("legacy JSON must round-trip");
 
         assert_eq!(parsed.tab_id, 9);
         assert_eq!(parsed.content, "older buffer");
         assert_eq!(parsed.path, None);
         assert_eq!(parsed.original_content_hash, None);
         assert_eq!(parsed.schema_version, RECOVERY_CONTENT_SCHEMA_VERSION);
+        assert!(!parsed.identity_recorded, "missing marker is legacy");
     }
 
     #[test]
@@ -1918,6 +1920,7 @@ mod tests {
         assert_eq!(parsed.path, Some(PathBuf::from("/notes/x.md")));
         assert_eq!(parsed.original_content_hash, Some(0xfeed_face));
         assert_eq!(parsed.schema_version, RECOVERY_CONTENT_SCHEMA_VERSION);
+        assert!(parsed.identity_recorded);
     }
 
     #[test]
@@ -2010,10 +2013,8 @@ mod tests {
     #[test]
     fn test_auto_save_identity_path_mismatch_rejected() {
         let meta = AutoSaveMetadata::new(
-            10,
-            None, // metadata says: untitled
-            1,
-            None,
+            10, None, // metadata says: untitled
+            1, None,
         );
         // ...but the tab is now path-backed at the same id (the cross-tab
         // bleed scenario from the task 106 acceptance criteria).
@@ -2045,12 +2046,7 @@ mod tests {
     fn test_auto_save_identity_hash_match_accepted() {
         let path = PathBuf::from("/work/file.md");
         let disk_body = "stable disk body";
-        let meta = AutoSaveMetadata::new(
-            6,
-            Some(path.clone()),
-            123,
-            Some(hash_content(disk_body)),
-        );
+        let meta = AutoSaveMetadata::new(6, Some(path.clone()), 123, Some(hash_content(disk_body)));
         assert!(
             check_auto_save_identity(&meta, Some(&path), Some(disk_body)),
             "matching disk hash must accept"
@@ -2158,8 +2154,7 @@ mod tests {
             "content": "older buffer",
             "saved_at": 1700000001
         }"#;
-        let parsed =
-            parse_recovery_content_json(legacy_json).expect("legacy file must round-trip");
+        let parsed = parse_recovery_content_json(legacy_json).expect("legacy file must round-trip");
         assert_eq!(parsed.tab_id, 4);
         assert_eq!(parsed.path, None);
         assert_eq!(parsed.original_content_hash, None);
@@ -2204,12 +2199,7 @@ mod tests {
         // Subtask 106.7 #5b: external edit between sessions changes the
         // disk hash; autosave anchored to the old hash must not be applied.
         let path = PathBuf::from("/notes/file.md");
-        let meta = AutoSaveMetadata::new(
-            3,
-            Some(path.clone()),
-            0,
-            Some(hash_content("old disk")),
-        );
+        let meta = AutoSaveMetadata::new(3, Some(path.clone()), 0, Some(hash_content("old disk")));
         assert!(!check_auto_save_identity(
             &meta,
             Some(&path),

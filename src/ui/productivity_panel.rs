@@ -85,6 +85,17 @@ impl Task {
         })
     }
 
+    /// Render the task in markdown checkbox syntax.
+    #[cfg(test)]
+    pub fn to_markdown(&self) -> String {
+        let checkbox = if self.completed { "x" } else { " " };
+        let priority = match self.priority {
+            0 => "",
+            1 => "! ",
+            _ => "!! ",
+        };
+        format!("- [{checkbox}] {priority}{}", self.text)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1280,7 +1291,11 @@ impl ProductivityPanel {
     }
 
     /// Build button label text with a Phosphor icon glyph followed by caption text.
-    fn pomodoro_button_label(icon: &str, label: &str, color: eframe::egui::Color32) -> eframe::egui::text::LayoutJob {
+    fn pomodoro_button_label(
+        icon: &str,
+        label: &str,
+        color: eframe::egui::Color32,
+    ) -> eframe::egui::text::LayoutJob {
         use crate::ui::icons::phosphor_font;
         use eframe::egui::text::{LayoutJob, TextFormat};
         use eframe::egui::FontId;

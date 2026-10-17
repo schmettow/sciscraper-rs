@@ -1,14 +1,46 @@
 [package]
 name = "sciscraper"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version = "1.92"
 description = "A scientific Markdown editor with integrated reference management and RAG writing assistance"
 repository = "https://github.com/schmettow/sciscraper-rs"
 license = "MIT"
 authors = ["Schmettow"]
-keywords = ["markdown", "editor", "scientific", "LLM", "egui"]
+keywords = ["markdown", "editor", "scientific", "llm", "egui"]
 categories = ["text-editors", "gui"]
+readme = "README.md"
+# Development-only material is not needed to build or run the crate; keeping
+# it out also keeps the package below crates.io's size limit.
+exclude = [
+    ".github/**",
+    ".planning/**",
+    ".signpath/**",
+    "docs/**",
+    "portable/**",
+    "scripts/**",
+    "test_md/**",
+    "wix/**",
+    "CONTRIBUTING.md",
+    "Makefile",
+    "ROADMAP.md",
+    "Tasks.txt",
+    "UPSTREAM.md",
+    "ai-context.md",
+    "current-handover-prompt.md",
+    "update-handover-prompt.md",
+    "flake.lock",
+    "flake.nix",
+    "rust-toolchain.toml",
+    "assets/screenshots/**",
+    "assets/*.gif",
+    "assets/*.jpg",
+    "assets/icons/generate_*.py",
+    "assets/icons/macos/**",
+    "assets/icons/linux/**",
+    "assets/macos/**",
+    "assets/linux/**",
+]
 
 [features]
 default = ["bundle-icon", "high-perf-alloc"]
@@ -152,7 +184,7 @@ ragrig-egui = { version = "0.5.0", optional = true }
 # shared citation-attach and GROBID pre-pass pipelines. The path serves local
 # co-development: publish grobid-bibtex 0.3.0 (the `pipeline` feature) before
 # dropping it.
-grobid-bibtex = { version = "0.3.0", path = "../grobid-bibtex", optional = true }
+grobid-bibtex = { version = "0.3.0", optional = true }
 # Entry fields (authors, year, title, source) for the library rows. The same
 # version grobid-bibtex uses, so `Collection`-produced `Entry` values need no
 # conversion; `CiteEntry` (key + file only) is too thin for a list UI (US-12).

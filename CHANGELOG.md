@@ -5,18 +5,35 @@ All notable changes to Ferrite will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v0.3.1
+## [0.3.2]
 
-Work in progress on `master`; not yet tagged.
+Release candidate; not yet tagged.
 
 ### Added
 
 - **CSV rendered cell editing (MVP)** — Double-click to edit cells in the CSV/TSV Rendered view for small files; RFC 4180 serialization, undo integration, keyboard commit/cancel. Large lazy-parsed files still prompt to edit in Raw view. See [`docs/technical/viewers/csv-viewer.md`](docs/technical/viewers/csv-viewer.md).
 - **Video embed parsing** — Detect `{{video URL}}` and bare YouTube URLs in their own paragraph; `VideoEmbed` AST node with allowlist and round-trip `source_text`. Playback rendering (wry / thumbnail fallback) is follow-up work. See [`docs/technical/markdown/video-embed-parsing.md`](docs/technical/markdown/video-embed-parsing.md).
 
+### Changed
+
+- **Shared RAG pipeline** — Citation attach (`@Key`) and the GROBID drop-to-ingest pre-pass now call `grobid_bibtex::cite` and `grobid_bibtex::prepass` (`grobid-bibtex` 0.3.0, `pipeline` feature). The local orchestrators in `src/rag/cite.rs` and `src/rag/ingest.rs` are reduced to host policy: attachment limits/truncation, downloads, file placement, progress and cancellation.
+- **Recovery identity marker** — `RecoveryContent` grew `identity_recorded` (serde-defaulted). Legacy snapshots keep the historical tab-id-only fallback; identity-aware snapshots with no path are treated as verified untitled tabs, so a reused tab id is still rejected for path-backed tabs.
+- **Packaging** — `Cargo.toml` now declares `readme` and excludes development-only material (plans, docs, installers, handover notes, screenshots and `test_md`), keeping the published crate at 240 files / 3.6 MiB compressed.
+- **MSRV preserved** — the refreshed lockfile pins `pdfsink-rs` 0.2.10, the last release supporting the declared Rust 1.92 (UPSTREAM US-3); `cargo +1.92 check --all-targets --all-features` passes.
+
 ### Fixed
 
 - **Windows single-instance foreground** ([#147](https://github.com/OlaProeis/Ferrite/issues/147)) — Opening a file from Explorer into an already-running Ferrite window now raises the existing window more reliably. The secondary process reads `instance.pid` and calls `AllowSetForegroundWindow(primary_pid)` before forwarding paths; the primary also sends `ViewportCommand::RequestUserAttention(Informational)` when focus alone is insufficient. Thanks [@Star-sumi](https://github.com/Star-sumi) ([PR #148](https://github.com/OlaProeis/Ferrite/pull/148)). See [`docs/technical/platform/single-instance.md`](docs/technical/platform/single-instance.md).
+- **Test targets compile again** — Restored the missing `TextBuffer` test import, pointed the Mermaid tests at `flowchart::parser` and `flowchart::utils::expand_rect`, and gave the test-only `RunStatus::glyph` its icon imports.
+- **Bare YouTube URLs with an empty text sibling** — A standalone autolinked video paragraph is now detected when post-processing leaves an empty `Text` node next to the link.
+- **`Task::to_markdown` round-trip** — Restored the checkbox/priority renderer exercised by the task-list tests.
+- **Mermaid title-width test** — Compared subgraph widths with a small f32 epsilon instead of exact equality.
+
+### Quality
+
+- **Test coverage** (`cargo llvm-cov --all-features`; one binary target, doctests are not measured on stable Rust): **43.4%** overall line coverage, expected for an egui desktop application whose UI layer is mostly exercised manually. The affected modules are well covered: `rag/cite.rs` 95.1%, `rag/ingest.rs` 93.1%, `rag/library.rs` 97.7%, `rag/worker.rs` 86.7%, `rag/status.rs` 96.7%, `rag/roundtrip.rs` 99.3%, `markdown/video_embed.rs` 90.2%, `editor/ferrite/history.rs` 95.7% and `markdown/mermaid/mod.rs` 82.4%. The broad UI modules remain light (`ui/productivity_panel.rs` 17.2%, `config/session.rs` 44.8%, `state.rs` 64.1%).
+- **Verification**: `cargo fmt --check`, `cargo check --all-targets --all-features`, `cargo test --all-features` (**1813 passed, 2 ignored, 0 failed**), `cargo +1.92 check --all-targets --all-features` and `cargo doc --no-deps --all-features` pass. `cargo package --list` ships 240 files, and `cargo publish --dry-run` packages and verifies 10.2 MiB (3.6 MiB compressed). No live GROBID server or GUI session was provided for this pass; the pre-pass and citation paths are covered by the mock-server unit tests.
+- **Release blocker — clippy.** `cargo clippy --all-targets --all-features -- -D warnings` still reports **519 pre-existing lint errors**, led by 158 `float_literal_f32_fallback` (also a future hard error), 37 `field_reassign_with_default`, 32 `useless_to_string`, 25 needless borrows and 21 collapsible `if`s. These are not introduced by 0.3.2 but must be cleared before the crate can claim a green clippy gate. `cargo doc` also emits 38 pre-existing rustdoc warnings (unresolved intra-doc links and one unclosed HTML tag) if `RUSTDOCFLAGS="-D warnings"` is used.
 
 ## [0.3.0] - 2026-05-22
 

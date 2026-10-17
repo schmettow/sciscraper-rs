@@ -2622,7 +2622,9 @@ impl Tab {
     /// [`crate::markdown::rendered_commit_undo::take_pending_commits`].
     pub fn apply_rendered_commit_undo_entries(
         &mut self,
-        entries: impl IntoIterator<Item = crate::markdown::rendered_commit_undo::PendingRenderedCommitUndo>,
+        entries: impl IntoIterator<
+            Item = crate::markdown::rendered_commit_undo::PendingRenderedCommitUndo,
+        >,
     ) {
         let final_content = self.content.clone();
         for entry in entries {
@@ -4820,7 +4822,10 @@ impl AppState {
     pub fn keep_recovered_buffer(&mut self, tab_id: usize) -> bool {
         let removed = self.recovery_conflicts.remove(&tab_id).is_some();
         if removed {
-            log::info!("Recovery conflict for tab {} resolved: kept recovered buffer", tab_id);
+            log::info!(
+                "Recovery conflict for tab {} resolved: kept recovered buffer",
+                tab_id
+            );
         }
         removed
     }
@@ -5144,7 +5149,8 @@ impl AppState {
                     log::info!(
                         "Recovery conflict for tab {} ({}): recovered buffer differs \
                          from current disk content; banner will be shown.",
-                        tab_id, session_tab.display_title
+                        tab_id,
+                        session_tab.display_title
                     );
                     self.recovery_conflicts.insert(tab_id, conflict);
                 }
@@ -5293,14 +5299,18 @@ impl AppState {
         session_tab: &crate::config::SessionTabState,
         recovered: &crate::config::RecoveryContent,
     ) -> Option<ResolvedContent> {
-        let is_legacy =
-            recovered.path.is_none() && recovered.original_content_hash.is_none();
+        let is_legacy = !recovered.identity_recorded
+            && recovered.path.is_none()
+            && recovered.original_content_hash.is_none();
 
         if is_legacy {
             // Pre-task-106 recovery file with no identity to verify.
             // Preserve historical behaviour so upgrading users keep their
             // recovered buffers; the caller already required has_unsaved_content
             // and `prune_stale_recovery_files` cleans up dangling tab ids.
+            // Identity-aware snapshots (even untitled ones) take the path
+            // check below instead, so a reused tab id cannot bleed into a
+            // path-backed tab.
             debug!(
                 "Applying legacy recovery (no identity) for tab {} ({})",
                 session_tab.tab_id, session_tab.display_title
@@ -5314,20 +5324,14 @@ impl AppState {
                 "Rejecting recovery for tab {} ({}): recovered path {:?} \
                  does not match session path {:?}; recovery file is from a \
                  reused tab id and will be pruned.",
-                session_tab.tab_id,
-                session_tab.display_title,
-                recovered.path,
-                session_tab.path
+                session_tab.tab_id, session_tab.display_title, recovered.path, session_tab.path
             );
             crate::diag::event(
                 "session_recovery_identity_mismatch",
                 format!(
                     "tab_id={} title={} session_path={:?} recovered_path={:?} \
                      reason=path_mismatch",
-                    session_tab.tab_id,
-                    session_tab.display_title,
-                    session_tab.path,
-                    recovered.path,
+                    session_tab.tab_id, session_tab.display_title, session_tab.path, recovered.path,
                 ),
             );
             return None;
@@ -5342,9 +5346,7 @@ impl AppState {
             .filter(|p| p.exists())
             .and_then(|p| std::fs::read_to_string(p).ok());
 
-        if let (Some(want), Some(disk)) =
-            (recovered.original_content_hash, disk_content.as_ref())
-        {
+        if let (Some(want), Some(disk)) = (recovered.original_content_hash, disk_content.as_ref()) {
             let got = crate::config::hash_content(disk);
             if got != want {
                 warn!(
@@ -6134,12 +6136,7 @@ mod tests {
 
         let st = session_tab(12, Some(path.clone()), true);
         let want = crate::config::hash_content(body);
-        let rc = RecoveryContent::new_with_identity(
-            12,
-            body.to_string(),
-            Some(path),
-            Some(want),
-        );
+        let rc = RecoveryContent::new_with_identity(12, body.to_string(), Some(path), Some(want));
 
         let resolved = AppState::try_apply_recovery(&st, &rc).expect("identity ok");
         assert!(
@@ -6222,12 +6219,7 @@ mod tests {
             Some(PathBuf::from("/notes/task_50_table_inline_formatting.md")),
             true,
         );
-        let rc = RecoveryContent::new_with_identity(
-            10,
-            "asdasd".into(),
-            None,
-            None,
-        );
+        let rc = RecoveryContent::new_with_identity(10, "asdasd".into(), None, None);
 
         assert!(
             AppState::try_apply_recovery(&st, &rc).is_none(),
@@ -6400,10 +6392,7 @@ mod tests {
 
     /// Build a fresh AppState with one path-backed document tab and a
     /// pre-populated recovery conflict for that tab. Returns (state, tab_id).
-    fn state_with_conflict(
-        recovered_buffer: &str,
-        on_disk: &str,
-    ) -> (AppState, usize) {
+    fn state_with_conflict(recovered_buffer: &str, on_disk: &str) -> (AppState, usize) {
         let mut state = AppState::with_settings(Settings::default());
         // Reset to a known-clean tab list — `with_settings` always seeds an
         // empty untitled tab, but we want a single path-backed tab.
@@ -6444,8 +6433,7 @@ mod tests {
 
     #[test]
     fn test_recovery_conflict_reload_from_disk_replaces_buffer_and_marks_saved() {
-        let (mut state, tab_id) =
-            state_with_conflict("recovered + edits", "fresh disk content");
+        let (mut state, tab_id) = state_with_conflict("recovered + edits", "fresh disk content");
         assert!(state.has_recovery_conflict(tab_id));
 
         let applied = state.apply_reload_from_disk_for_conflict(tab_id);

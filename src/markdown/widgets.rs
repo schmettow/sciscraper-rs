@@ -1079,10 +1079,7 @@ fn table_cell_raw_cursor_at_click(
         )
     };
     let galley = ui.fonts_mut(|f| f.layout_job(job));
-    let local_pos = egui::Vec2::new(
-        click_pos.x - cell_rect.min.x,
-        click_pos.y - cell_rect.min.y,
-    );
+    let local_pos = egui::Vec2::new(click_pos.x - cell_rect.min.x, click_pos.y - cell_rect.min.y);
     let displayed_idx = galley.cursor_from_pos(local_pos).index;
     map_displayed_to_raw(displayed_idx, raw_text).min(raw_text.chars().count())
 }
@@ -1648,9 +1645,7 @@ pub fn signal_table_force_commit(ctx: &egui::Context, table_line: usize) {
 /// Consume the force-commit signal for `table_line` (one-shot).
 fn take_table_force_commit(ui: &mut Ui, table_line: usize) -> bool {
     let id = table_force_commit_id(table_line);
-    let v = ui
-        .memory(|m| m.data.get_temp::<bool>(id))
-        .unwrap_or(false);
+    let v = ui.memory(|m| m.data.get_temp::<bool>(id)).unwrap_or(false);
     if v {
         ui.memory_mut(|m| m.data.remove::<bool>(id));
     }
@@ -2557,9 +2552,7 @@ impl<'a> EditableTable<'a> {
                                                                     ),
                                                                 ),
                                                             );
-                                                            output
-                                                                .state
-                                                                .store(ui.ctx(), cell_id);
+                                                            output.state.store(ui.ctx(), cell_id);
                                                         }
                                                     }
                                                     if response.has_focus() {
@@ -2654,9 +2647,7 @@ impl<'a> EditableTable<'a> {
                                                     if activate_cell {
                                                         let cursor_char = ui
                                                             .ctx()
-                                                            .input(|i| {
-                                                                i.pointer.interact_pos()
-                                                            })
+                                                            .input(|i| i.pointer.interact_pos())
                                                             .map(|click_pos| {
                                                                 table_cell_raw_cursor_at_click(
                                                                     ui,
@@ -2744,8 +2735,7 @@ impl<'a> EditableTable<'a> {
                 }
 
                 // Fallback when defocus-only click did not set pending_focus above.
-                let cross_table_edit =
-                    global.active_table.is_some_and(|t| t != table_id);
+                let cross_table_edit = global.active_table.is_some_and(|t| t != table_id);
                 if edit_state.pending_focus.is_none()
                     && (edit_state.had_focus_last_frame || cross_table_edit)
                 {
@@ -2780,25 +2770,23 @@ impl<'a> EditableTable<'a> {
                                     } else {
                                         colors.text
                                     };
-                                    let cursor_char = self
-                                        .data
-                                        .rows
-                                        .get(row)
-                                        .and_then(|r| r.get(col))
-                                        .map(|cell| {
-                                            table_cell_raw_cursor_at_click(
-                                                ui,
-                                                pos,
-                                                *cell_rect,
-                                                &cell.text,
-                                                self.font_size,
-                                                &ef,
-                                                text_color,
-                                                colors.code_bg,
-                                                inner_w,
-                                                row == 0,
-                                            )
-                                        });
+                                    let cursor_char =
+                                        self.data.rows.get(row).and_then(|r| r.get(col)).map(
+                                            |cell| {
+                                                table_cell_raw_cursor_at_click(
+                                                    ui,
+                                                    pos,
+                                                    *cell_rect,
+                                                    &cell.text,
+                                                    self.font_size,
+                                                    &ef,
+                                                    text_color,
+                                                    colors.code_bg,
+                                                    inner_w,
+                                                    row == 0,
+                                                )
+                                            },
+                                        );
                                     request_table_cell_focus(
                                         &mut edit_state,
                                         &mut global,
@@ -3159,12 +3147,11 @@ impl<'a> EditableTable<'a> {
         // it unconditionally would falsely re-activate the cell to the session the
         // frame AFTER the user clicked a heading/paragraph, ping-ponging focus.
         // Gate on actual current focus or in-flight focus intent.
-        let focused_cell_out =
-            if any_cell_has_focus || edit_state.pending_focus.is_some() {
-                edit_state.pending_focus.or(edit_state.focused_cell)
-            } else {
-                None
-            };
+        let focused_cell_out = if any_cell_has_focus || edit_state.pending_focus.is_some() {
+            edit_state.pending_focus.or(edit_state.focused_cell)
+        } else {
+            None
+        };
 
         let pending_focus_dbg = edit_state.pending_focus;
         let pending_cell_dbg = global.pending_cell;
