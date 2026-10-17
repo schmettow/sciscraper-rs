@@ -17,7 +17,7 @@ every entry is filed and closed.
 | # | Target | Severity | Title | Status |
 |---|---|---|---|---|
 | US-1 | crates.io / grobid-bibtex | blocker | Publish `grobid-bibtex` 0.2.1 (`Collection::cite_entries` is missing from 0.2.0) | to file |
-| US-2 | grobid-bibtex (or ragrig) | medium | GROBID pre-pass and citation attach exist only inside the `ragrig-cli` binary | to file |
+| US-2 | grobid-bibtex (or ragrig) | medium | GROBID pre-pass and citation attach exist only inside the `ragrig-cli` binary | fixed upstream (0.3.0) |
 | US-3 | ragrig (dependency chain) | medium | PDF parser chain resolves to a version requiring Rust 1.97 | to file |
 | US-4 | ragrig-cli | medium | Profiles store the provider API key in plain text | to file |
 | US-5 | ragrig + ragrig-cli | low | The BibTeX merge target is not part of `RagrigConfig`/profiles, so tools cannot interoperate | to file |
@@ -79,6 +79,10 @@ every entry is filed and closed.
   `pipeline` (`prepass(folder, config)`, `attach(keys, library)`) or a small
   `ragrig-grobid` crate — with the manifest and rename policy as the single source of truth.
   Downstreams would then delete their copies and call it.
+- **Resolved (grobid-bibtex 0.3.0).** `grobid_bibtex::cite` is always available and
+  `grobid_bibtex::prepass` ships with the `pipeline` feature. `ragrig-cli` and sciscraper
+  both call them now; their duplicated orchestration was deleted. The manifest name and the
+  rename policy are public constants in `prepass`.
 
 ## US-3 — PDF parser chain resolves to a version requiring Rust 1.97
 
@@ -382,7 +386,7 @@ every entry is filed and closed.
 | Upstream issue | Local workaround | Where |
 |---|---|---|
 | US-1 | `path + version` dependency, documented publish order | `Cargo.toml` |
-| US-2 | Re-implemented citation attach (simplified, no-guess) | `src/rag/cite.rs` |
+| US-2 | Resolved in grobid-bibtex 0.3.0: both hosts call `grobid_bibtex::cite`/`prepass` | `src/rag/cite.rs`, `src/rag/ingest.rs` |
 | US-3 | `cargo update -p pdfsink-rs --precise 0.2.10` | `Cargo.lock` |
 | US-4 | Key read from env/settings only, never written | `src/rag/mod.rs`, docs |
 | US-5 | Bibliography configurable in the Corpus menu + discovery | `src/rag/mod.rs`, `src/ui/agent_panel.rs` |

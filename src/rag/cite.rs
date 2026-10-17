@@ -1,23 +1,29 @@
 //! `@Key` citation resolution for query attachments (decision D5).
 //!
-//! Mirrors the semantics of ragrig-cli's citation attach:
+//! The scan and the lookup live in [`grobid_bibtex::cite`], shared with the
+//! other hosts of the crate (see `UPSTREAM.md`, US-2):
 //!
 //! 1. [`cite_keys`] scans the query for `@Key` mentions (word boundaries, so
 //!    e-mail addresses never match).
-//! 2. [`resolve`] looks each key up in the library bibliography
-//!    ([`grobid_bibtex::Collection`]) and falls back to a corpus file named
-//!    after the key (`<key> - …`, the ragrig rename convention).
+//! 2. [`grobid_bibtex::cite::CiteState::locate`] looks each key up in the
+//!    library bibliography ([`grobid_bibtex::Collection`]) and falls back to
+//!    a corpus file named after the key (`<key> - …`, the ragrig rename
+//!    convention).
 //! 3. The matched document is parsed with the ragrig parser cascade and
 //!    returned as a one-shot [`AttachedDocument`].
 //!
-//! Failures are reported per key with a human-readable reason; missed keys
-//! never abort a query. Ambiguous keyed file names are reported instead of
-//! guessing — silently attaching the wrong paper would be worse than a miss.
+//! On top of the shared resolver this module applies the host policy: at most
+//! [`MAX_ATTACHMENTS`] documents per query, each truncated to
+//! [`MAX_ATTACH_CHARS`]. Failures are reported per key with a human-readable
+//! reason; missed keys never abort a query. Ambiguous keyed file names are
+//! reported instead of guessing — silently attaching the wrong paper would be
+//! worse than a miss.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use grobid_bibtex::Collection;
+pub use grobid_bibtex::cite::cite_keys;
+use grobid_bibtex::cite::{CiteState, Located};
 use ragrig::parsers::DocumentParsers;
 use ragrig::{build_parsers, AttachedDocument};
 
@@ -52,47 +58,6 @@ impl PartialEq for CiteResolution {
                 .zip(&other.attachments)
                 .all(|(a, b)| a.name == b.name && a.content == b.content)
     }
-}
-
-/// Scan `text` for citation-key mentions.
-///
-/// A mention is `@` at the start of the input or after a character that is
-/// not alphanumeric (so `user@example.com` never matches), followed by at
-/// least one key character (ASCII letter/digit or one of `_ . : + -`).
-/// Trailing `.`, `:`, `+` and `-` are treated as sentence punctuation and
-/// trimmed; the first character must be a letter or digit. Mentions are
-/// deduplicated in order of first appearance.
-pub fn cite_keys(text: &str) -> Vec<String> {
-    let mut keys: Vec<String> = Vec::new();
-    let mut prev: Option<char> = None;
-    let mut chars = text.char_indices().peekable();
-    while let Some((start, c)) = chars.next() {
-        if c == '@' && !prev.is_some_and(char::is_alphanumeric) {
-            let key_start = start + 1;
-            let mut end = key_start;
-            while let Some(&(index, next)) = chars.peek() {
-                if !is_key_char(next) {
-                    break;
-                }
-                end = index + next.len_utf8();
-                chars.next();
-            }
-            let token = text[key_start..end].trim_end_matches(['.', ':', '+', '-']);
-            let well_formed = token
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphanumeric());
-            if well_formed && !keys.iter().any(|key| key == token) {
-                keys.push(token.to_string());
-            }
-        }
-        prev = Some(c);
-    }
-    keys
-}
-
-fn is_key_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '+' | '-')
 }
 
 /// What the library pane hands to the editor (decision D2).
@@ -194,74 +159,43 @@ pub fn resolve(workspace: &Path, library: &LibrarySettings, keys: &[String]) -> 
         }
         return resolution;
     }
-    let bib = configured;
+
     let folder = paths.folder;
-    let collection = match Collection::load_or_new(&bib) {
-        Ok(collection) => collection,
-        Err(err) => {
-            for key in keys {
-                resolution
-                    .missed
-                    .push(format!("@{key} — cannot read {}: {err}", bib.display()));
-            }
-            return resolution;
-        }
-    };
-    let entries: Vec<_> = collection.cite_entries().collect();
+    let mut state = CiteState::default();
+    let located = state.locate(keys, Some(&configured), &[&folder]);
     let parsers = DocumentParsers::new(build_parsers());
-    let mut scan: Option<Vec<(String, PathBuf)>> = None;
     let mut attached_paths: HashSet<PathBuf> = HashSet::new();
 
-    for key in keys {
-        let Some(entry) = entries
-            .iter()
-            .find(|entry| entry.key.eq_ignore_ascii_case(key))
-        else {
-            resolution.missed.push(format!("@{key} — unknown key"));
-            continue;
-        };
-        let canonical = entry.key.clone();
-        // The entry's recorded document, else a corpus file named after the
-        // key: the same resolution the library pane's viewer uses
-        // ([`library::resolve_document`]), so citing and opening can never
-        // disagree about which paper a row means.
-        let path = match library::resolve_document(
-            &canonical,
-            entry.file.as_deref(),
-            &folder,
-            &mut scan,
-        ) {
-            Ok(path) => path,
-            Err(reason) => {
-                resolution.missed.push(format!("@{canonical} — {reason}"));
-                continue;
+    for item in &located {
+        match item {
+            Located::Found { key, path, .. } => {
+                if attached_paths.contains(path) {
+                    // An alias of an already attached document counts as
+                    // resolved.
+                    resolution.resolved.push(key.clone());
+                    continue;
+                }
+                if resolution.attachments.len() >= MAX_ATTACHMENTS {
+                    resolution.missed.push(format!(
+                        "@{key} — attachment limit ({MAX_ATTACHMENTS}) reached"
+                    ));
+                    continue;
+                }
+                match parsers.parse(path) {
+                    Ok(text) => {
+                        resolution.attachments.push(AttachedDocument {
+                            name: format!("@{key}"),
+                            content: truncate(text, MAX_ATTACH_CHARS),
+                        });
+                        resolution.resolved.push(key.clone());
+                        attached_paths.insert(path.clone());
+                    }
+                    Err(err) => resolution
+                        .missed
+                        .push(format!("@{key} — cannot read {}: {err:#}", path.display())),
+                }
             }
-        };
-
-        if attached_paths.contains(&path) {
-            // An alias of an already attached document counts as resolved.
-            resolution.resolved.push(canonical);
-            continue;
-        }
-        if resolution.attachments.len() >= MAX_ATTACHMENTS {
-            resolution.missed.push(format!(
-                "@{canonical} — attachment limit ({MAX_ATTACHMENTS}) reached"
-            ));
-            continue;
-        }
-        match parsers.parse(&path) {
-            Ok(text) => {
-                resolution.attachments.push(AttachedDocument {
-                    name: format!("@{canonical}"),
-                    content: truncate(text, MAX_ATTACH_CHARS),
-                });
-                resolution.resolved.push(canonical);
-                attached_paths.insert(path);
-            }
-            Err(err) => resolution.missed.push(format!(
-                "@{canonical} — cannot read {}: {err:#}",
-                path.display()
-            )),
+            other => resolution.missed.push(other.describe()),
         }
     }
     resolution
@@ -331,6 +265,25 @@ mod tests {
         assert!(resolution.attachments[0]
             .content
             .contains("Content of the paper."));
+    }
+
+    #[test]
+    fn resolve_attaches_a_nested_relative_file_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let folder = workspace.join("library");
+        let bib = folder.join("library.bib");
+        write(
+            &folder.join("papers").join("paper.md"),
+            "nested corpus content",
+        );
+        write(&bib, "@misc{Smith2024,\n  file = {papers/paper.md}\n}\n");
+
+        let resolution = resolve(workspace, &library(&folder, &bib), &["Smith2024".into()]);
+        assert_eq!(resolution.resolved, vec!["Smith2024"]);
+        assert!(resolution.attachments[0]
+            .content
+            .contains("nested corpus content"));
     }
 
     #[test]

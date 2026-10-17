@@ -327,12 +327,14 @@ fn file_of(entry: &Entry) -> Option<PathBuf> {
 
 /// Resolve the document of a bibliography entry within the corpus `folder`.
 ///
-/// This is the same cascade the citation attach uses (decision D5): the
-/// entry's recorded `file`/`pdf` field first — resolved against the corpus
-/// folder when it is relative — then a corpus file named after the key
-/// (`<key> - …`, the ragrig rename convention). `scan` caches the folder
-/// listing across calls, so opening many rows pays for one `read_dir`, not one
-/// per row.
+/// This mirrors the citation-attach cascade (decision D5) — the entry's
+/// recorded `file`/`pdf` field first, then a corpus file named after the key
+/// (`<key> - …`, the ragrig rename convention) — with the viewer's policy: a
+/// recorded absolute path is opened even when it lies outside the corpus, and
+/// the scan is not recursive. Citation attach is deliberately stricter: it
+/// only reads files inside the active corpora (see `grobid_bibtex::cite`).
+/// `scan` caches the folder listing across calls, so opening many rows pays
+/// for one `read_dir`, not one per row.
 ///
 /// Errors carry a user-presentable reason and never guess: a missing document
 /// and an ambiguous keyed name are reported, not silently resolved — opening

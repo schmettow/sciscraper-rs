@@ -1,9 +1,10 @@
 //! Drop-to-ingest (feature `grobid`): PDFs and URLs become library files and
 //! bibliography entries.
 //!
-//! This module re-orchestrates the GROBID pre-pass of `ragrig-cli` against the
-//! public `grobid-bibtex` API (the orchestration itself is not exposed as a
-//! library — see `UPSTREAM.md`, US-1). Semantics mirror the CLI:
+//! This module delegates the orchestration to the shared
+//! [`grobid_bibtex::prepass`] pipeline (see `UPSTREAM.md`, US-2); the manifest
+//! and rename policy are the crate's single source of truth. The pipeline
+//! semantics:
 //!
 //! 1. **Fingerprint** — the sidecar manifest `.ragrig_grobid.json` in the
 //!    library folder records mtime/size and the parsed record of every
@@ -18,10 +19,10 @@
 //! 5. **Merge** — records are appended to the `.bib` with duplicate detection
 //!    and a `file` link to the renamed PDF.
 //!
-//! On top of the CLI semantics this module adds what a GUI needs: dropped
+//! On top of the shared pipeline this module adds what a GUI needs: dropped
 //! files are copied into the library folder (a file dropped from outside must
-//! not be renamed in place), URLs are downloaded first, and both stages report
-//! progress and honour cancellation.
+//! not be renamed in place), URLs are downloaded first, and every stage
+//! reports progress and honours cancellation.
 //!
 //! The index update after a merge is *not* this module's job — the worker runs
 //! an incremental sync once the run succeeded.
@@ -30,39 +31,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use grobid_bibtex::bibtex::{FileStemOptions, FileStemStyle};
-use grobid_bibtex::collection;
-use grobid_bibtex::files::{self, Collision, Manifest, Rename};
-use grobid_bibtex::openalex::Completer;
-use grobid_bibtex::{complete, extract, Biblio, GrobidClient, ProcessOptions};
-use log::{info, warn};
+use grobid_bibtex::prepass::{self, PrepassObserver, PrepassProgress, PrepassStage};
+use grobid_bibtex::{Collection, DEFAULT_GROBID_URL};
 use ragrig::{Cancel, CancellationToken, Cancelled};
 
 use super::status::{IngestProgress, IngestStage};
-
-/// Sidecar manifest with per-file fingerprints; the same file name the
-/// `ragrig-cli` pre-pass uses, so both share one cache.
-const MANIFEST_NAME: &str = ".ragrig_grobid.json";
-
-/// Liveness probes before giving up on the GROBID server; a cold container
-/// preloads its models for a while.
-const PROBE_ATTEMPTS: usize = 5;
-
-/// Delay between liveness probes.
-const PROBE_DELAY: Duration = Duration::from_secs(3);
-
-/// Per-request timeout for OpenAlex lookups, so an unreachable API host cannot
-/// stall a worker for the OS TCP timeout.
-const OPENALEX_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Rename policy: `Key - Full authors - Full title - Year`; syntax characters
-/// are stripped, Unicode letters are kept (the citation key stays ASCII).
-const RENAME_OPTIONS: FileStemOptions = FileStemOptions {
-    style: FileStemStyle::Keyed,
-    // `title_words` only applies to `Compact`; `Keyed` keeps the full title.
-    title_words: 10,
-    ascii_only: false,
-};
 
 /// Mirror of ragrig's `DEFAULT_MAX_DOWNLOAD_BYTES`.
 const MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
@@ -135,8 +108,8 @@ pub fn url_like(value: &str) -> bool {
     matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
 }
 
-/// How a run is parameterised. The defaults match the `ragrig-cli` pre-pass;
-/// the OpenAlex and probe fields are seams for hermetic tests.
+/// How a run is parameterised. The defaults match the shared pre-pass; the
+/// OpenAlex and probe fields are seams for hermetic tests.
 #[derive(Clone, Debug)]
 pub struct IngestOptions {
     /// GROBID server base URL.
@@ -158,13 +131,13 @@ pub struct IngestOptions {
 impl Default for IngestOptions {
     fn default() -> Self {
         Self {
-            grobid_url: "http://localhost:8070".to_string(),
+            grobid_url: DEFAULT_GROBID_URL.to_string(),
             openalex_url: None,
             openalex: true,
             rename: true,
-            workers: 4,
-            probe_attempts: PROBE_ATTEMPTS,
-            probe_delay: PROBE_DELAY,
+            workers: prepass::DEFAULT_WORKERS,
+            probe_attempts: prepass::DEFAULT_PROBE_ATTEMPTS,
+            probe_delay: prepass::DEFAULT_PROBE_DELAY,
         }
     }
 }
@@ -224,20 +197,12 @@ pub async fn run(
     let mut outcome = IngestOutcome::default();
 
     // A corrupt bibliography must fail before any work: the run could not
-    // record what it parses (mirrors the ragrig-cli pre-pass).
+    // record what it parses. The pipeline repeats the check for callers that
+    // do not ingest drops.
     if let Some(bibtex) = targets.bibtex {
-        collection::Collection::load_or_new(bibtex)
+        Collection::load_or_new(bibtex)
             .with_context(|| format!("cannot read the BibTeX file {}", bibtex.display()))?;
     }
-
-    let manifest_path = targets.folder.join(MANIFEST_NAME);
-    let mut manifest = match Manifest::load(&manifest_path) {
-        Ok(manifest) => manifest,
-        Err(err) => {
-            warn!("GROBID: ignoring corrupt manifest: {err}");
-            Manifest::empty(&manifest_path)
-        }
-    };
 
     // 1 — URLs are downloaded into the library folder first; dropped files are
     //     copied in (both end up as local PDF paths under `folder`).
@@ -287,230 +252,88 @@ pub async fn run(
         }
     }
 
-    // 2 — Split into files GROBID must parse and files whose cached record is
-    //     enough (mirrors the ragrig-cli pre-pass partition).
-    let mut needed: Vec<PathBuf> = Vec::new();
-    let mut cached: Vec<(PathBuf, Biblio)> = Vec::new();
-    for path in local {
-        if !manifest.is_unchanged(targets.folder, &path) {
-            needed.push(path);
-            continue;
-        }
-        match manifest.biblio(targets.folder, &path) {
-            Some(biblio) => cached.push((path, biblio.clone())),
-            // Renamed by an earlier run that ran without a bibliography.
-            None => needed.push(path),
-        }
-    }
-    if needed.is_empty() && cached.is_empty() {
+    if local.is_empty() {
         return Ok(outcome);
     }
 
-    // 3 — Parse new and changed files; the rest is merged from the cache
-    //     without touching the server.
-    let mut results: Vec<(PathBuf, Biblio)> = Vec::new();
-    if !needed.is_empty() {
-        parse_headers(
-            &needed,
-            options,
-            cancel,
-            &mut outcome,
-            &mut results,
-            progress,
-        )
-        .await?;
-        if options.openalex {
-            complete_headers(&mut results, options, cancel, &mut outcome, progress).await?;
-        }
-        if !results.is_empty() && options.rename {
-            progress(IngestProgress {
-                stage: IngestStage::Renaming,
-                done: 1,
-                total: 1,
-                name: String::new(),
-            });
-            rename_files(&mut results, &mut outcome);
-        }
+    // 2 — The shared pipeline fingerprints the local files, parses and
+    //     completes the new or changed ones, renames them and merges the
+    //     records; cached records need no server.
+    let config = prepass::PrepassConfig {
+        folder: targets.folder.to_path_buf(),
+        sources: Some(local),
+        bibtex: targets.bibtex.map(|path| prepass::BibtexTarget {
+            path: path.to_path_buf(),
+            link: targets.link,
+        }),
+        grobid_url: options.grobid_url.clone(),
+        openalex_url: options.openalex_url.clone(),
+        openalex: options.openalex,
+        rename: options.rename,
+        workers: options.workers.max(1),
+        probe_attempts: options.probe_attempts,
+        probe_delay: options.probe_delay,
+        openalex_timeout: prepass::DEFAULT_OPENALEX_TIMEOUT,
+    };
+    let mut observer = IngestObserver { cancel, progress };
+    let report = prepass::prepass_with(&config, &mut observer)
+        .await
+        .map_err(abort_error)?;
 
-        // Record every processed file under its final name — including failed
-        // renames and files that already had the right name — so later runs
-        // merge without GROBID.
-        for (path, biblio) in &results {
-            manifest.record_with_biblio(targets.folder, path, biblio);
-        }
-        manifest.prune(targets.folder);
-        if let Err(err) = manifest.save() {
-            warn!("GROBID: {err}");
-        }
-    }
-
-    // 4 — Merge after renaming, so `file` fields point at the final names.
-    let mut records = cached;
-    records.extend(results);
-    outcome.processed = records.len();
-    if let Some(bibtex) = targets.bibtex {
-        if !records.is_empty() {
-            progress(IngestProgress {
-                stage: IngestStage::Merging,
-                done: 1,
-                total: 1,
-                name: display_name(bibtex),
-            });
-            let report = collection::merge_file(bibtex, &records, targets.link)
-                .with_context(|| format!("cannot update the BibTeX file {}", bibtex.display()))?;
-            outcome.merged = report.entries.len();
-            outcome.duplicates = report.duplicates;
-            info!(
-                "BibTeX: merged {} into {} ({} duplicate(s) skipped, {} total).",
-                entry_count(outcome.merged),
-                bibtex.display(),
-                report.duplicates,
-                report.total
-            );
-        }
-    }
+    outcome.processed = report.processed;
+    outcome.renamed = report.renamed;
+    outcome.completed = report.completed;
+    outcome.merged = report.merged;
+    outcome.duplicates = report.duplicates;
+    outcome.failed.extend(
+        report
+            .failed
+            .into_iter()
+            .map(|failure| format!("{} — {}", display_name(&failure.path), failure.reason)),
+    );
     Ok(outcome)
 }
 
-/// Parse `needed` in worker-sized batches: the batch size is the concurrency
-/// bound (as in `ragrig-cli`), and it gives progress and cancellation a
-/// granularity finer than the whole run.
-async fn parse_headers(
-    needed: &[PathBuf],
-    options: &IngestOptions,
-    cancel: &CancellationToken,
-    outcome: &mut IngestOutcome,
-    results: &mut Vec<(PathBuf, Biblio)>,
-    progress: &(dyn Fn(IngestProgress) + Send + Sync),
-) -> Result<()> {
-    let client = GrobidClient::new(&options.grobid_url)
-        .with_context(|| format!("invalid GROBID server URL {:?}", options.grobid_url))?;
-    client
-        .wait_until_ready(options.probe_attempts, options.probe_delay)
-        .await
-        .with_context(|| {
-            format!(
-                "GROBID server at {} is not ready — start one with \
+/// Map the pipeline's cancellation marker to the error the worker matches on.
+fn abort_error(error: prepass::PrepassError) -> anyhow::Error {
+    match error {
+        prepass::PrepassError::Cancelled => anyhow::Error::new(Cancelled),
+        prepass::PrepassError::NotReady { url, source } => {
+            anyhow::Error::new(source).context(format!(
+                "GROBID server at {url} is not ready — start one with \
                  `docker run --rm --init --ulimit core=0 -p 8070:8070 grobid/grobid:0.9.1-crf` \
-                 or change the server URL in the Corpus menu",
-                options.grobid_url
-            )
-        })?;
-
-    let workers = options.workers.max(1);
-    let total = needed.len();
-    let mut done = 0usize;
-    let mut failed = 0usize;
-    for batch in needed.chunks(workers) {
-        check_cancelled(cancel)?;
-        let parsed = extract::headers(
-            &client,
-            batch.to_vec(),
-            ProcessOptions::default(),
-            batch.len(),
-        )
-        .await;
-        for parsed in parsed {
-            match parsed {
-                Ok(extract::Extracted { path, record }) => results.push((path, record)),
-                Err(err) => {
-                    failed += 1;
-                    outcome
-                        .failed
-                        .push(format!("{} — {}", display_name(&err.path), err.source));
-                }
-            }
+                 or change the server URL in the Corpus menu"
+            ))
         }
-        done += batch.len();
-        let name = batch
-            .last()
-            .map(|path| display_name(path))
-            .unwrap_or_default();
-        progress(IngestProgress {
-            stage: IngestStage::Parsing,
-            done,
-            total,
-            name,
-        });
+        other => anyhow::Error::new(other),
     }
-    if results.is_empty() {
-        let first = outcome.failed.first().cloned().unwrap_or_default();
-        bail!(
-            "no document could be parsed by the server at {} — {first}",
-            options.grobid_url
-        );
-    }
-    info!(
-        "GROBID: parsed {} of {total} PDF(s); {failed} failed.",
-        results.len()
-    );
-    Ok(())
 }
 
-/// Complete parsed headers against OpenAlex, batch-wise like [`parse_headers`].
-async fn complete_headers(
-    results: &mut Vec<(PathBuf, Biblio)>,
-    options: &IngestOptions,
-    cancel: &CancellationToken,
-    outcome: &mut IngestOutcome,
-    progress: &(dyn Fn(IngestProgress) + Send + Sync),
-) -> Result<()> {
-    let mut builder = Completer::builder().timeout(OPENALEX_TIMEOUT);
-    if let Some(base_url) = &options.openalex_url {
-        builder = builder.base_url(base_url)?;
-    }
-    let completer = builder.build().context("building the OpenAlex completer")?;
-
-    let workers = options.workers.max(1);
-    let total = results.len();
-    let mut done = 0usize;
-    let mut completed: Vec<(PathBuf, Biblio)> = Vec::with_capacity(total);
-    for batch in results.chunks(workers) {
-        check_cancelled(cancel)?;
-        let report = complete::biblios(&completer, batch.to_vec(), batch.len()).await;
-        for failure in &report.failures {
-            let path = report
-                .records
-                .get(failure.position - 1)
-                .map(|(path, _)| display_name(path))
-                .unwrap_or_default();
-            warn!("OpenAlex lookup failed for {path}: {}", failure.source);
-        }
-        outcome.completed += report.matched;
-        completed.extend(report.records);
-        done += batch.len();
-        progress(IngestProgress {
-            stage: IngestStage::Completing,
-            done,
-            total,
-            name: String::new(),
-        });
-    }
-    *results = completed;
-    Ok(())
+/// Adapts the worker's cancellation token and progress callback to the
+/// pipeline observer.
+struct IngestObserver<'a> {
+    cancel: &'a CancellationToken,
+    progress: &'a (dyn Fn(IngestProgress) + Send + Sync),
 }
 
-/// Rename the parsed files to their metadata name.
-fn rename_files(results: &mut [(PathBuf, Biblio)], outcome: &mut IngestOutcome) {
-    for event in files::rename_pdfs_with(results, &RENAME_OPTIONS, Collision::Year) {
-        match event {
-            Rename::Renamed { from, to } => {
-                info!("GROBID: renamed {} → {}", from.display(), to.display());
-                outcome.renamed += 1;
-            }
-            Rename::Unnamed { path } => {
-                info!(
-                    "GROBID: no usable author/year/title for {}; keeping name",
-                    path.display()
-                );
-            }
-            Rename::Failed { from, source, .. } => {
-                outcome
-                    .failed
-                    .push(format!("{} — cannot rename: {source}", display_name(&from)));
-            }
-            Rename::Unchanged { .. } => {}
-        }
+impl PrepassObserver for IngestObserver<'_> {
+    fn progress(&mut self, update: PrepassProgress) {
+        let stage = match update.stage {
+            PrepassStage::Parsing => IngestStage::Parsing,
+            PrepassStage::Completing => IngestStage::Completing,
+            PrepassStage::Renaming => IngestStage::Renaming,
+            PrepassStage::Merging => IngestStage::Merging,
+        };
+        (self.progress)(IngestProgress {
+            stage,
+            done: update.done,
+            total: update.total,
+            name: update.path.as_deref().map(display_name).unwrap_or_default(),
+        });
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
     }
 }
 
@@ -641,10 +464,6 @@ fn display_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn entry_count(count: usize) -> String {
-    format!("{count} entr{}", if count == 1 { "y" } else { "ies" })
-}
-
 /// Turn cancellation into the marker error the worker matches on.
 fn check_cancelled(cancel: &CancellationToken) -> Result<()> {
     if cancel.is_cancelled() {
@@ -719,7 +538,10 @@ fn download_blocking(url: &str, folder: &Path, cancel: &CancellationToken) -> Re
     };
     std::fs::write(&destination, &bytes)
         .with_context(|| format!("cannot write the download to {}", destination.display()))?;
-    info!("Ingest: downloaded {url} → {}", destination.display());
+    log::info!(
+        "Ingest: downloaded {url} \u{2192} {}",
+        destination.display()
+    );
     Ok(destination)
 }
 
@@ -953,8 +775,10 @@ pub(crate) mod mock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
+
+    use grobid_bibtex::files::{self, Manifest};
 
     fn test_options(grobid_url: String) -> IngestOptions {
         IngestOptions {
@@ -1235,7 +1059,7 @@ mod tests {
         );
 
         // The manifest caches the record, so re-runs need no GROBID.
-        let manifest = Manifest::load(&folder.join(MANIFEST_NAME)).unwrap();
+        let manifest = Manifest::load(&folder.join(prepass::MANIFEST_NAME)).unwrap();
         assert!(manifest.biblio(&folder, &pdfs[0]).is_some());
 
         // Re-dropping the same file is detected, merges a duplicate and

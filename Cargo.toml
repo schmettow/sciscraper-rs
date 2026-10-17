@@ -28,9 +28,9 @@ lsp = []
 # is unchanged; see .planning/sciscraper-ragrig.md.
 rag = ["dep:ragrig", "dep:ragrig-egui", "dep:grobid-bibtex", "dep:biblatex", "dep:anyhow", "async-workers"]
 # Drop-to-ingest (sprint 5): PDFs and URLs dropped on the library go through
-# the GROBID pre-pass (parse → OpenAlex → rename → merge into the `.bib`) and
-# are indexed afterwards. Keeps `rag` free of the OpenAlex completion tier.
-grobid = ["rag", "grobid-bibtex/openalex"]
+# the shared GROBID pre-pass (parse → OpenAlex → rename → merge into the
+# `.bib`) and are indexed afterwards.
+grobid = ["rag", "grobid-bibtex/pipeline"]
 
 [dependencies]
 egui = { version = "0.34", features = ["serde"] }
@@ -148,10 +148,11 @@ ragrig = { version = "1", default-features = false, features = ["internal", "oll
 # helpers (setting rows, note/warning lines).
 # ragrig-egui = { version = "0.5.0", path = "../ragrig-egui", optional = true }
 ragrig-egui = { version = "0.5.0", optional = true }
-# Bibliography model for `@Key` resolution and the library pane. The path
-# serves local co-development: crates.io carries only 0.2.0, which lacks
-# `Collection::cite_entries`; publish 0.2.1 before dropping the path.
-grobid-bibtex = { version = "0.2.1", optional = true }
+# Bibliography model for `@Key` resolution and the library pane, with the
+# shared citation-attach and GROBID pre-pass pipelines. The path serves local
+# co-development: publish grobid-bibtex 0.3.0 (the `pipeline` feature) before
+# dropping it.
+grobid-bibtex = { version = "0.3.0", path = "../grobid-bibtex", optional = true }
 # Entry fields (authors, year, title, source) for the library rows. The same
 # version grobid-bibtex uses, so `Collection`-produced `Entry` values need no
 # conversion; `CiteEntry` (key + file only) is too thin for a list UI (US-12).

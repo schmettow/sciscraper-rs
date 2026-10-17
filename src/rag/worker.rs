@@ -116,7 +116,7 @@ pub enum RagCommand {
     /// The worker resolves the document the same way a citation does — the
     /// entry's recorded `file` field, then a corpus file named after the key
     /// ([`library::resolve_document`]) — so the eye button and `@key`
-    /// attaching can never disagree about which paper a row means.
+    /// attaching resolve the same paper for every link inside the corpus.
     OpenPaper {
         /// Canonical citation key of the row.
         key: String,
@@ -2697,9 +2697,11 @@ mod tests {
     async fn opening_a_paper_resolves_its_document_before_the_viewer() {
         // Resolution happens in the worker, off the UI thread, and a row whose
         // document cannot be found reports the same reasons a citation attach
-        // would — the two share `library::resolve_document` (RX, sprint 6.10).
-        // The row deliberately has no document: resolving one would reach the
-        // hand-over and launch a real viewer wherever the tests run.
+        // would — both resolve the recorded file first, then a keyed corpus
+        // name. The viewer accepts links outside the corpus; attach does not
+        // (RX, sprint 6.10). The row deliberately has no document: resolving
+        // one would reach the hand-over and launch a real viewer wherever the
+        // tests run.
         let dir = tempfile::tempdir().unwrap();
         write_library_file(
             dir.path(),
