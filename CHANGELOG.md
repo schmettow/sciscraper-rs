@@ -5,6 +5,47 @@ All notable changes to Ferrite will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3]
+
+Roll-up of two small changes that had landed on `master` after the 0.3.2
+release line had moved on. The rest of `master`'s older release-prep commits
+are superseded by 0.3.2/0.3.3.
+
+### Added
+
+- **Panes open by default** — a fresh profile now starts with the Agent pane
+  (right) and the Library pane (left) open
+  (`RagSettings::default().enabled = true`).  The ribbon toggle still hides
+  them together, and existing profiles keep their persisted state.
+
+### Fixed
+
+- **Default-build lint gate** — `IngestStage` carries
+  `#[cfg_attr(not(feature = "grobid"), allow(dead_code))]`, so the status
+  enum stays compiled without a warning when the `grobid` feature is off,
+  while dead-code detection stays active in grobid builds.
+- **Parallel test isolation** — the block-height cache tests share a
+  process-global cache; a test-only mutex now serializes them, removing the
+  intermittent `block_height_cache_hit` failure in the parallel suite.
+
+### Quality
+
+- **Test coverage** (`cargo llvm-cov --all-features`): 43.4% overall line
+  coverage, unchanged from 0.3.2.  The affected RAG modules: `rag/cite.rs`
+  95.1%, `rag/ingest.rs` 93.1%, `rag/library.rs` 97.7%, `rag/mod.rs` 99.6%,
+  `rag/worker.rs` 87.0%, `rag/status.rs` 96.7% and `rag/roundtrip.rs` 99.3%.
+- **Verification**: `cargo fmt --check`, `cargo check --all-targets
+  --all-features`, `cargo test --all-features` (**1813 passed, 2 ignored,
+  0 failed**), `cargo +1.92 check --all-targets --all-features` and
+  `cargo doc --no-deps --all-features` pass.  `cargo package --list` ships
+  240 files; `cargo publish --dry-run` packages and verifies 10.2 MiB
+  (3.6 MiB compressed).  No live GUI or GROBID run was made; the ingestion
+  and citation paths remain covered by mock-server tests.
+- **Known blockers**: `cargo clippy --all-targets --all-features --
+  -D warnings` still reports 519 pre-existing lints, and `cargo doc` emits
+  38 pre-existing warnings under `RUSTDOCFLAGS="-D warnings"`; both are
+  unchanged from 0.3.2.
+
 ## [0.3.2]
 
 Release candidate; not yet tagged.
